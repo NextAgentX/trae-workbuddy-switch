@@ -100,10 +100,15 @@
 | G-S02 | region 相关设置项 | 变体相关（侧栏驱动 `TraeSettingsPage.tsx:107`） | A | P1 |
 | G-S03 | （WB 无独立能力面板） | 「平台能力」面板 + `CapabilityBadge` `TraeSettingsPage.tsx:1198-1205` | A（Trae 侧更细） | P1 |
 | G-S04 | （WB 无设备标识重置） | 6 层设备标识重置 `TraeSettingsPage.tsx:1159-1195`；非 Windows 返回 Unsupported `platform.rs:940-959` | A（含 C 分支） | P1 |
-| G-S05 | GitHub 配置 / 更新 / 开机自启 | 全局共用命令，**非 Trae 特化差距** | — 非差距 | — |
+| G-S05 | 外观 / 开机自启 / 自动更新（应用级） | **已收口到共享模块** `src/components/app-settings.tsx`（两模块同一份实现）；入口固定在侧栏底部「版本号上方」（`App.tsx` → `AppSettingsEntry`），不再各自出现在设置页 | — 非差距 | — |
 | G-S06 | 无 | 「登录态快照」profiles `TraeSettingsPage.tsx:604-826` | A（反向，Trae 独有） | P2 |
 
 > 两设置页**共用** `settings-primitives.tsx:33/47/76`（`SettingsGroup`/`SettingsRow`/`SettingsFieldRow`），不得各写一份。
+>
+> **应用级三块**（外观 / 开机自启 / 自动更新）另有一层共享：`components/app-settings.tsx`。
+> 共享的判据是**有无产品耦合** —— 纯版式原语、以及不读 `Region`/`TraeVariant` 的
+> 应用级业务块可以共享；依赖产品上下文的块（版本与账号库、网关、登录态快照、
+> 设备标识…）**仍然各自实现**，不得因为「长得像」而合并。
 
 ### 2.2 组件级
 

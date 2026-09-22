@@ -17,6 +17,7 @@ import TraeSettingsPage from "@/pages/TraeSettingsPage";
 import TraeTokenStatsPage from "@/pages/TraeTokenStatsPage";
 import { StatusDot, AppIconMark, TraeVariantMark, WorkBuddyMark } from "@/components/product-marks";
 import { DonateButton } from "@/components/donate-dialog";
+import { AppSettingsEntry } from "@/components/app-settings";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -440,11 +441,16 @@ function Layout() {
           ))}
         </nav>
 
-        {/* 侧栏底部区块：打赏入口在**版本号上方**。
+        {/* 侧栏底部区块：**通用设置**入口紧贴**版本号上方**，打赏在其上。
+            选择这一位置的依据是「这里是侧栏唯一不随产品切换的区域」，因此**应用级设置**
+            （外观 / 开机自启 / 自动更新）的入口固定在此：两个产品分区走同一份实现，
+            见 `AppSettingsEntry`。它也不属于 `PRODUCT_NAV`，所以不会把
+            「侧栏 5 项 / 路由 5:5」的既有约束变成 6:6。
             打赏在 webui 下**也显示**（版本行不显示），因此容器放在这里、
-            由两个子项共用边框与内边距，而不是塞进 `AppFooter`。 */}
+            由各子项共用边框与内边距，而不是塞进 `AppFooter`。 */}
         <section className="mt-auto flex flex-col gap-2.5 border-t border-sidebar-border px-2 pt-3 text-xs">
           <DonateButton />
+          <AppSettingsEntry />
           {api.isWebui() && !demoModeEnabled ? null : (
             <AppFooter product={product} running={running} version={appVersion} />
           )}

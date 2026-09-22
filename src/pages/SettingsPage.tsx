@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  ArrowUpCircle,
   CircleCheck,
-  ExternalLink,
   FolderOpen,
   Loader2,
   Play,
@@ -13,7 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardContent } from "@/components/ui/card";
@@ -25,23 +23,17 @@ import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { regionDescriptor } from "@/lib/region";
-import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme";
 import type {
   AutoRotateConfig,
   CheckinConfig,
   CheckinLog,
   GatewayConfig,
-  GithubConfig,
   Region,
   RotateLog,
   RotateStatus,
   ScheduleConfig,
   ScheduleRunResult,
-  UpdateInfo,
 } from "@/lib/types";
-import { GITHUB_RELEASE_URL, GITHUB_REPOSITORY_URL, openReleaseUrl } from "@/lib/update";
-import { cn } from "@/lib/utils";
-import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { DemoAction } from "@/components/demo-action";
 import { useAccountsStore } from "@/stores/accounts";
 import { useGatewayStore } from "@/stores/gateway";
@@ -602,296 +594,6 @@ function useAuthFile(): string | undefined {
   return useAccountsStore((s) => s.status?.authFile);
 }
 
-/** 自动更新：检查公开 GitHub Releases 源 + 安装签名更新。 */
-function UpdateCard() {
-  const version = useAccountsStore((s) => s.status?.version);
-  const [info, setInfo] = useState<UpdateInfo | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [installOpen, setInstallOpen] = useState(false);
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
-  const [githubConfig, setGithubConfig] = useState<GithubConfig>({});
-  const [proxyUrl, setProxyUrl] = useState("");
-  const [proxySaving, setProxySaving] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .getGithubConfig()
-      .then((config) => {
-        if (cancelled) return;
-        setGithubConfig(config);
-        setProxyUrl(config.proxy ?? "");
-      })
-      .catch((e) => {
-        if (!cancelled) setMsg({ type: "err", text: api.asError(e) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function check() {
-    setChecking(true);
-    setMsg(null);
-    try {
-      const r = await api.checkUpdate(proxyUrl, true);
-      setInfo(r);
-      if (!r.ok) {
-        setMsg({ type: "err", text: r.message || r.error || "检查失败" });
-      }
-    } catch (e) {
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function saveProxy() {
-    const value = proxyUrl.trim();
-    if (value) {
-      try {
-        const parsed = new URL(value);
-        if (!parsed.hostname || !["http:", "https:"].includes(parsed.protocol)) {
-          throw new Error("unsupported proxy protocol");
-        }
-      } catch {
-        setMsg({ type: "err", text: "代理地址格式不正确，请填写 HTTP/HTTPS 地址，例如 http://127.0.0.1:7897" });
-        return;
-      }
-    }
-
-    setProxySaving(true);
-    setMsg(null);
-    try {
-      const saved = await api.saveGithubConfig({ ...githubConfig, proxy: value });
-      setGithubConfig(saved);
-      setProxyUrl(saved.proxy ?? "");
-      setMsg({ type: "ok", text: value ? "更新代理已保存" : "已关闭更新代理" });
-    } catch (e) {
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setProxySaving(false);
-    }
-  }
-
-  return (
-    <SettingsGroup
-      id="settings-updates"
-      title="自动更新"
-    >
-      <CardContent className="space-y-0 p-0">
-        <div className="border-b border-border/60 px-4 py-3 text-sm sm:px-5">
-          当前版本：<span className="font-mono">v{version || "?"}</span>
-        </div>
-
-        <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/25 px-4 py-3 text-sm sm:px-5">
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">公开更新源</div>
-            <div className="truncate text-xs text-muted-foreground">{GITHUB_REPOSITORY_URL}</div>
-          </div>
-          <DemoAction><Button
-            variant="ghost"
-            size="icon"
-            title="打开 GitHub Release"
-            onClick={() => void openReleaseUrl(GITHUB_RELEASE_URL)}
-          >
-            <ExternalLink />
-          </Button></DemoAction>
-        </div>
-
-        <SettingsFieldRow
-          label="更新代理地址"
-          description="仅用于 GitHub 更新检查和安装包下载；留空表示关闭显式代理。"
-          htmlFor="update-proxy"
-          className="bg-muted/25"
-          operational
-        >
-          <Input
-            id="update-proxy"
-            className="w-full sm:w-80"
-            value={proxyUrl}
-            onChange={(event) => setProxyUrl(event.target.value)}
-            placeholder="例如 http://127.0.0.1:7897"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </SettingsFieldRow>
-
-        <div className="flex flex-wrap gap-2 border-b border-border/60 bg-muted/25 px-4 py-3 sm:px-5">
-          <DemoAction><Button size="sm" variant="outline" onClick={() => void saveProxy()} disabled={proxySaving}>
-            {proxySaving ? <Loader2 className="animate-spin" /> : <Save />}
-            保存代理
-          </Button></DemoAction>
-        </div>
-
-        <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
-          <DemoAction><Button size="sm" variant="outline" onClick={check} disabled={checking}>
-            {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            检查更新
-          </Button></DemoAction>
-        </div>
-
-        {info?.ok && (
-          <Alert variant="default" className={cn("!w-auto mx-4 my-4 sm:mx-5", info.hasUpdate && "border-primary/35 bg-primary/[0.06]")}>
-            {info.hasUpdate && <ArrowUpCircle className="text-primary" />}
-            <AlertDescription className="space-y-2">
-              <AlertTitle className={cn(info.hasUpdate && "text-primary")}>{info.hasUpdate ? "发现新版本" : "更新检查完成"}</AlertTitle>
-              <div className="text-sm">
-                {info.hasUpdate
-                  ? `发现新版本 v${info.latest}（当前 v${info.current}）`
-                  : `已是最新版本 v${info.current}`}
-                {info.releaseName && <span className="text-muted-foreground"> · {info.releaseName}</span>}
-              </div>
-              {info.hasUpdate && (
-                <DemoAction><Button size="sm" onClick={() => setInstallOpen(true)}>
-                  <ArrowUpCircle />
-                  立即升级
-                </Button></DemoAction>
-              )}
-              {info.releaseUrl && (
-                <DemoAction><Button
-                  variant="link"
-                  size="sm"
-                  className="h-auto p-0"
-                  onClick={() => void openReleaseUrl(info.releaseUrl)}
-                >
-                  打开 GitHub Release
-                </Button></DemoAction>
-              )}
-            </AlertDescription>
-          </Alert>
-        )}
-        {msg && (
-          <Alert
-            variant={msg.type === "err" ? "destructive" : "default"}
-            className="!w-auto mx-4 my-4 sm:mx-5"
-          >
-            <AlertDescription>{msg.text}</AlertDescription>
-          </Alert>
-        )}
-        <UpdateInstallDialog
-          open={installOpen}
-          onOpenChange={setInstallOpen}
-          update={info}
-        />
-      </CardContent>
-    </SettingsGroup>
-  );
-}
-
-/** 开机自启（仅桌面端渲染）：开关直接反映系统自启注册状态，切换立即生效。 */
-function StartupCard() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .getLaunchAtLoginEnabled()
-      .then((value) => {
-        if (!cancelled) setEnabled(value);
-      })
-      .catch((e) => {
-        if (!cancelled) setMsg({ type: "err", text: api.asError(e) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function onToggle(value: boolean) {
-    if (busy || enabled === null) return;
-    const previous = enabled;
-    setBusy(true);
-    setMsg(null);
-    try {
-      // 后端回读 OS 权威状态；即使与请求一致，也以回读值显示。
-      const authoritative = await api.setLaunchAtLoginEnabled(value);
-      setEnabled(authoritative);
-      setMsg({ type: "ok", text: authoritative ? "已开启开机自启" : "已关闭开机自启" });
-    } catch (e) {
-      // 失败时恢复到最后一次确认的状态，并显示可读错误。
-      setEnabled(previous);
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <SettingsGroup
-      id="settings-startup"
-      title="启动设置"
-    >
-      <CardContent className="space-y-0 p-0">
-        <SettingsFieldRow
-          className="border-b-0"
-          label="开机时静默启动到托盘"
-          description="开关直接反映系统登录项状态；之后可从托盘「打开主界面」恢复"
-          htmlFor="startup-silent"
-          operational
-        >
-          <Switch
-            id="startup-silent"
-            checked={enabled ?? false}
-            disabled={busy || enabled === null}
-            onCheckedChange={(v) => void onToggle(v)}
-            aria-label="开机时静默启动到托盘"
-          />
-        </SettingsFieldRow>
-
-        {msg && (
-          <Alert
-            variant={msg.type === "err" ? "destructive" : "default"}
-            className="!w-auto mx-4 my-4 sm:mx-5"
-          >
-            <AlertDescription>{msg.text}</AlertDescription>
-          </Alert>
-        )}
-      </CardContent>
-    </SettingsGroup>
-  );
-}
-
-/** 外观：主题选择（持久化到 localStorage）。 */
-function AppearanceCard() {
-  const [theme, setTheme] = useState<ThemePreference>(getThemePreference);
-
-  function onThemeChange(value: string) {
-    if (value !== "system" && value !== "light" && value !== "dark") return;
-    setThemePreference(value);
-    setTheme(value);
-  }
-
-  return (
-    <SettingsGroup
-      id="settings-appearance"
-      title="外观"
-    >
-      <CardContent className="space-y-0 p-0">
-        <SettingsFieldRow
-          className="border-b-0"
-          label="主题"
-          description="选择浅色、深色，或跟随系统外观自动切换"
-          htmlFor="appearance-theme"
-        >
-          <Select value={theme} onValueChange={onThemeChange}>
-            <SelectTrigger id="appearance-theme" size="sm" className="w-full sm:w-40" aria-label="主题">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="system">系统</SelectItem>
-              <SelectItem value="light">浅色</SelectItem>
-              <SelectItem value="dark">深色</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingsFieldRow>
-      </CardContent>
-    </SettingsGroup>
-  );
-}
-
 /** 版本与账号库：两版认证文件路径（只读展示 + 复制）、国际版 UA 版本，及打开账号库目录。 */
 function VersionAccountsCard() {
   const cnStatus = useAccountsStore((s) => s.status);
@@ -1419,25 +1121,31 @@ function ScheduleCard() {
   );
 }
 
-/** 设置页：自动签到配置 / 权限检测 / 更新配置。 */
+/**
+ * 设置页：**产品级**设置。
+ *
+ * 只放依赖本产品上下文的块（版本与账号库、权限检测、网关、签到、排程、CLI 轮换）。
+ *
+ * 应用级的三块（外观 / 开机自启 / 自动更新）已抽到 `@/components/app-settings`，
+ * 入口固定在侧栏底部、**版本号上方** —— 那是两个产品分区唯一共用的位置。
+ */
 export default function SettingsPage() {
   return (
     <div className="mx-auto min-w-0 w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-10 sm:mb-12">
         <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">自动签到、权限检测与自动更新配置。</p>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          自动签到、权限检测与网关配置。外观、开机自启与自动更新属应用级设置，见侧栏底部「通用设置」。
+        </p>
       </header>
 
       <div className="min-w-0 space-y-12">
-        <AppearanceCard />
         <VersionAccountsCard />
         <PermissionCheckCard />
         <GatewaySettingsCard />
         <AutoCheckinCard />
         <ScheduleCard />
         <AutoRotateCard />
-        {api.isDesktop() || api.isDemoMode() ? <StartupCard /> : null}
-        {api.isWebui() && !api.isDemoMode() ? null : <UpdateCard />}
       </div>
     </div>
   );
