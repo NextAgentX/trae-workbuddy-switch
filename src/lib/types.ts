@@ -21,6 +21,12 @@ export interface AccountMeta {
   createdAt: number | null;
   needsRelogin: boolean;
   needsReloginReason: string | null;
+  /**
+   * 用户自填备注（例如「DS4.1 额度 · 10/03 解禁」）。
+   *
+   * 后端**原样透传**：未设置时为 `null` 或缺失，前端按「有值才渲染」处理。
+   */
+  remark?: string | null;
   /** 该账号所属版本（后端 region 化后返回；缺省视为 "cn"）。 */
   region?: Region;
 }
@@ -203,6 +209,14 @@ export interface CheckinResult {
 
 export interface TravelConfig {
   enabled: boolean;
+}
+
+/** 账号切换与账号列表展示配置（`~/.buddy-switch/switch_config.json`，全局单份）。 */
+export interface SwitchConfig {
+  /** 切换账号时默认勾选「复制会话」。默认 `false`（不改变既有切换语义）。 */
+  copy_sessions_by_default: boolean;
+  /** 把当前登录账号排到账号列表第一位。默认 `true`。 */
+  pin_current_account: boolean;
 }
 
 export type TravelStatusLabel = "untraveled" | "no-buddy" | "traveling" | "finished";

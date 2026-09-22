@@ -1,8 +1,9 @@
-import { ArrowRight, Check, CircleCheck, Clock3, Coins, Ellipsis, Loader2, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Check, CircleCheck, Clock3, Coins, Ellipsis, Loader2, Pencil, PlaneTakeoff, RefreshCw, Sparkles, Star, StickyNote, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DemoAction } from "@/components/demo-action";
 import {
   Dialog,
@@ -169,6 +170,14 @@ interface Props {
   onCheckin?: (a: AccountMeta) => void;
   onRefresh?: (a: AccountMeta) => void;
   onSwitch?: (a: AccountMeta) => void;
+  /**
+   * 保存备注；返回 `true` 表示已写回（编辑器才会收起）。
+   *
+   * 由页面提供而不由卡片自己调 `api`：写回后要刷新整个账号列表，
+   * 而卡片手里没有列表状态。返回布尔值而不是抛异常，是为了失败时
+   * **保持编辑态**让用户能改完重试，而不是把半截输入丢掉。
+   */
+  onSaveRemark?: (a: AccountMeta, remark: string) => Promise<boolean>;
   todayCheckedIn?: boolean;
   /** 今日旅行状态（undefined=查询中/未知，不渲染标签） */
   travelStatus?: TravelStatus;
@@ -225,10 +234,60 @@ function ProductCurrentState({ product, compact = false }: { product: "workbuddy
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, travelStatus, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, onSaveRemark, todayCheckedIn, travelStatus, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [remarkEditing, setRemarkEditing] = useState(false);
+  const [remarkDraft, setRemarkDraft] = useState("");
+  const [remarkSaving, setRemarkSaving] = useState(false);
+  const remarkInputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * 取消编辑时置位，用来抵掉紧随其后的那次 blur。
+   *
+   * 编辑态结束时输入框会被卸载，浏览器/React 可能仍补发一次 blur；
+   * 不拦的话「按 Esc 取消」会被那次 blur 反向提交成一次保存。
+   */
+  const skipCommitRef = useRef(false);
   const name = account.nickname || account.uid || "未命名账号";
   const expired = typeof account.expiresAt === "number" && account.expiresAt < Date.now();
+  const remark = account.remark?.trim() || "";
+
+  useEffect(() => {
+    if (!remarkEditing) return;
+    // 延后一帧：从「更多操作」菜单进入时，Radix 会在菜单关闭时把焦点还给触发按钮，
+    // 同一帧内聚焦会被它抢走，表现为「点了编辑但光标不在输入框里」。
+    const timer = window.setTimeout(() => remarkInputRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [remarkEditing]);
+
+  function beginRemarkEdit() {
+    if (featuresDisabled || !onSaveRemark || remarkSaving) return;
+    skipCommitRef.current = false;
+    setRemarkDraft(remark);
+    setRemarkEditing(true);
+  }
+
+  function cancelRemarkEdit() {
+    // 取消即丢弃草稿：下次进入编辑态重新从已保存值起算，不留半截输入。
+    skipCommitRef.current = true;
+    setRemarkEditing(false);
+    setRemarkDraft("");
+  }
+
+  async function commitRemark() {
+    if (skipCommitRef.current) {
+      skipCommitRef.current = false;
+      return;
+    }
+    if (!onSaveRemark || remarkSaving) return;
+    if (remarkDraft.trim() === remark) {
+      cancelRemarkEdit();
+      return;
+    }
+    setRemarkSaving(true);
+    const saved = await onSaveRemark(account, remarkDraft);
+    setRemarkSaving(false);
+    if (saved) setRemarkEditing(false);
+  }
   const avatarClass = avatarTone(name);
   const resources = creditResources(credit);
   const visibleResources = resources.slice(0, 2);
@@ -320,6 +379,9 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                     <CircleCheck />手动签到
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem disabled={featuresDisabled || !onSaveRemark} onSelect={beginRemarkEdit}>
+                  <StickyNote />编辑备注
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive focus:bg-destructive/5 focus:text-destructive" onSelect={() => onDelete(account)}>
                   <Trash2 />删除账号
@@ -421,6 +483,61 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
       </header>
 
       <section className={cn("flex min-w-0 flex-1 flex-col", compact ? "px-3.5 pb-3 pt-3" : "px-5 pb-4 pt-4")}>
+        {/* 备注就地编辑。
+            紧凑模式**只在有备注或正在编辑时**渲染这一行 —— 那里本来就是为了多塞几张卡，
+            给每张卡都加一条空占位行等于白送纵向空间。
+            普通模式的空态常显（弱化色）而不是藏进 hover：备注的价值就在于「我记得要看它」，
+            藏起来等于没人会用。 */}
+        {remarkEditing ? (
+          <Input
+            ref={remarkInputRef}
+            value={remarkDraft}
+            disabled={remarkSaving}
+            onChange={(event) => setRemarkDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void commitRemark();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRemarkEdit();
+              }
+            }}
+            onBlur={() => void commitRemark()}
+            maxLength={80}
+            placeholder="例如：DS4.1 额度 · 10/03 解禁"
+            spellCheck={false}
+            autoComplete="off"
+            aria-label={`${name} 的备注`}
+            className={cn("mb-3 h-7 w-full text-xs", compact && "mb-2")}
+          />
+        ) : remark ? (
+          <button
+            type="button"
+            onClick={beginRemarkEdit}
+            disabled={featuresDisabled || !onSaveRemark}
+            title={remark}
+            aria-label={`编辑 ${name} 的备注`}
+            className={cn(
+              "-mx-1 mb-3 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-1.5 rounded-md px-1 text-left text-[11px] leading-4 text-foreground/80 transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+              compact && "mb-2",
+            )}
+          >
+            <StickyNote className="size-3.5 shrink-0 stroke-[1.75] text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">{remark}</span>
+          </button>
+        ) : compact ? null : (
+          <button
+            type="button"
+            onClick={beginRemarkEdit}
+            disabled={featuresDisabled || !onSaveRemark}
+            className="-mx-1 mb-3 flex w-[calc(100%+0.5rem)] items-center gap-1.5 rounded-md px-1 text-left text-[11px] leading-4 text-muted-foreground/70 transition-colors hover:bg-foreground/[0.04] hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            <Pencil className="size-3 shrink-0" aria-hidden="true" />
+            添加备注
+          </button>
+        )}
+
         {creditLoading ? (
           <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />积分查询中…</div>
         ) : !credit ? (

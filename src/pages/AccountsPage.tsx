@@ -47,6 +47,7 @@ import type {
   CodeBuddyCnIdeStatus,
   CreditExpiry,
   Region,
+  SwitchConfig,
   TravelConfig,
   TravelStatus,
 } from "@/lib/types";
@@ -257,6 +258,14 @@ function RegionPanel({ region }: { region: Region }) {
   const [checkinMap, setCheckinMap] = useState<Record<string, boolean>>({});
   const [autoTravelConfig, setAutoTravelConfig] = useState<TravelConfig | null>(null);
   const [autoTravelSaving, setAutoTravelSaving] = useState(false);
+  /**
+   * 账号切换 / 账号列表展示配置（全局单份，不随 region 分家）。
+   *
+   * 未加载完时保持 `null`：两处消费方都按「拿不到就不用这项偏好」处理 ——
+   * `pin_current_account` 视为关（不改排序）、`copy_sessions_by_default` 视为关
+   * （不改变切换语义）。宁可退化成改造前的行为，也不要凭猜测展示。
+   */
+  const [switchConfig, setSwitchConfig] = useState<SwitchConfig | null>(null);
   /** 账号 id -> 今日旅行状态（undefined=查询中/未知） */
   const [travelMap, setTravelMap] = useState<Record<string, TravelStatus>>({});
   const [codebuddyCli, setCodebuddyCli] = useState<CodeBuddyCliStatus | null>(null);
@@ -303,6 +312,22 @@ function RegionPanel({ region }: { region: Region }) {
         if (!cancelled) {
           toast.error("自动旅行配置加载失败", { description: api.asError(e) });
         }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getSwitchConfig()
+      .then((config) => {
+        if (!cancelled) setSwitchConfig(config);
+      })
+      .catch(() => {
+        // 静默按默认值走：这两项只是偏好（排序 / 默认勾选），读不到不影响核心功能，
+        // 而每次挂载都弹一次错误提示的代价远大于收益。
       });
     return () => {
       cancelled = true;
@@ -638,28 +663,69 @@ function RegionPanel({ region }: { region: Region }) {
   }
 
   const current = status?.current;
+
+  /**
+   * 保存账号备注。
+   *
+   * 成功后**重新拉取账号列表**而不是就地改 state：备注是唯一由用户手改的字段，
+   * 让后端回传的脱敏 meta 成为唯一真相源，可以避免两边说法不一致
+   * （后端会把全空白备注归一成「没有备注」，前端就地改就会留下一个空串）。
+   *
+   * 返回布尔值而不是抛异常：失败时卡片要保持编辑态，让用户改完重试，
+   * 而不是把已输入的文字丢掉。
+   */
+  async function onSaveRemark(account: AccountMeta, remark: string): Promise<boolean> {
+    try {
+      await api.setAccountRemark(account.id, remark, region);
+      await reconcileAccounts(region);
+      toast.success(remark.trim() ? "备注已保存" : "备注已清除");
+      return true;
+    } catch (e) {
+      toast.error("备注保存失败", { description: api.asError(e) });
+      return false;
+    }
+  }
+
   const creditOrderingReady =
     accounts.length > 0 &&
     accounts.every((account) => Boolean(creditMap[account.id]) && !creditLoadingMap[account.id]);
-  const orderedAccounts = creditOrderingReady
-    ? accounts
-        .map((account, index) => ({ account, index }))
-        .sort((left, right) => {
-          const leftCredit = creditMap[left.account.id];
-          const rightCredit = creditMap[right.account.id];
-          const rankDifference = creditPriorityRank(leftCredit) - creditPriorityRank(rightCredit);
-          if (rankDifference !== 0) return rankDifference;
 
-          const leftExpiry = soonestRelevantExpiry(leftCredit);
-          const rightExpiry = soonestRelevantExpiry(rightCredit);
-          if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
+  /**
+   * 列表顺序：**积分优先级为基准**（快过期 / 建议优先的靠前）。
+   *
+   * `pin_current_account` 打开时，把当前登录账号整体提到第一位。这是**显式覆盖**
+   * 而不是往比较函数里插一条分支：置顶与积分排序是同一根轴的两端
+   * （「该切到谁」vs「正在用谁」），插进比较函数会让两者互相打架，
+   * 结果取决于哪条规则先命中 —— 那种「有时候置顶、有时候不置顶」最难排查。
+   * 覆盖之后其余账号的相对顺序完全不动，⭐「建议优先」徽章也照旧渲染，
+   * 因此打开这项设置**不会让用户丢掉原有信息**，只是改变了第一条。
+   */
+  const orderedAccounts = (() => {
+    const base = creditOrderingReady
+      ? accounts
+          .map((account, index) => ({ account, index }))
+          .sort((left, right) => {
+            const leftCredit = creditMap[left.account.id];
+            const rightCredit = creditMap[right.account.id];
+            const rankDifference = creditPriorityRank(leftCredit) - creditPriorityRank(rightCredit);
+            if (rankDifference !== 0) return rankDifference;
 
-          const amountDifference = expiringSoonAmount(rightCredit) - expiringSoonAmount(leftCredit);
-          if (amountDifference !== 0) return amountDifference;
-          return left.index - right.index;
-        })
-        .map(({ account }) => account)
-    : accounts;
+            const leftExpiry = soonestRelevantExpiry(leftCredit);
+            const rightExpiry = soonestRelevantExpiry(rightCredit);
+            if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
+
+            const amountDifference = expiringSoonAmount(rightCredit) - expiringSoonAmount(leftCredit);
+            if (amountDifference !== 0) return amountDifference;
+            return left.index - right.index;
+          })
+          .map(({ account }) => account)
+      : accounts;
+
+    if (!switchConfig?.pin_current_account) return base;
+    const pinned = base.find((account) => isWorkbuddyCurrent(account, current));
+    if (!pinned || base[0]?.id === pinned.id) return base;
+    return [pinned, ...base.filter((account) => account.id !== pinned.id)];
+  })();
   const priorityAccountId = creditOrderingReady
     ? orderedAccounts.find((account) => hasExpiringSoonCredits(creditMap[account.id]))?.id
     : undefined;
@@ -947,6 +1013,7 @@ function RegionPanel({ region }: { region: Region }) {
                     compact={compact}
                     onDelete={onDelete}
                     onSwitch={setSwitchAccount}
+                    onSaveRemark={onSaveRemark}
                     onCheckin={onCheckin}
                     onRefresh={onRefresh}
                     todayCheckedIn={checkinMap[a.id]}
@@ -995,6 +1062,7 @@ function RegionPanel({ region }: { region: Region }) {
         }}
         account={switchAccount}
         region={region}
+        copySessionsByDefault={Boolean(switchConfig?.copy_sessions_by_default)}
         onDone={() => {
           // 切换完成后必须同时刷新账号库与状态：账号库决定卡片内容，
           // `status.current` 决定「当前账号」标记；只刷账号库会让标记留在旧账号上。

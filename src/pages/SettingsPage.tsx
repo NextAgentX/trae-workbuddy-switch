@@ -33,6 +33,7 @@ import type {
   RotateStatus,
   ScheduleConfig,
   ScheduleRunResult,
+  SwitchConfig,
 } from "@/lib/types";
 import { DemoAction } from "@/components/demo-action";
 import { useAccountsStore } from "@/stores/accounts";
@@ -594,6 +595,87 @@ function useAuthFile(): string | undefined {
   return useAccountsStore((s) => s.status?.authFile);
 }
 
+/**
+ * 账号切换：切换账号与账号列表展示的偏好。
+ *
+ * 两项都写 `~/.buddy-switch/switch_config.json`（**全局单份**）：
+ * 它们是「我怎么用这个工具」的偏好，而随版本分家的是账号库本身。
+ */
+function SwitchBehaviorCard() {
+  const [config, setConfig] = useState<SwitchConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getSwitchConfig()
+      .then((value) => {
+        if (!cancelled) setConfig(value);
+      })
+      .catch((e) => {
+        if (!cancelled) toast.error("账号切换配置加载失败", { description: api.asError(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function patch(next: Partial<SwitchConfig>) {
+    if (!config || saving) return;
+    const previous = config;
+    const merged = { ...config, ...next };
+    // 乐观更新：开关必须立刻跟手，否则用户会以为没点上而连点。
+    setConfig(merged);
+    setSaving(true);
+    try {
+      setConfig(await api.saveSwitchConfig(merged));
+    } catch (e) {
+      // 失败时退回改动前的值，界面不停留在「看起来已保存」的状态。
+      setConfig(previous);
+      toast.error("保存失败", { description: api.asError(e) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SettingsGroup id="settings-switch" title="账号切换">
+      <CardContent className="space-y-0 p-0">
+        <SettingsFieldRow
+          label="切换账号时默认复制会话"
+          description="打开后，切换账号时会默认勾选「复制会话」并全选当前账号的会话；仍可在弹窗里逐条取消。"
+          htmlFor="switch-copy-sessions"
+          operational
+        >
+          <Switch
+            id="switch-copy-sessions"
+            checked={config?.copy_sessions_by_default ?? false}
+            disabled={saving || config === null}
+            onCheckedChange={(value) => void patch({ copy_sessions_by_default: value })}
+            aria-label="切换账号时默认复制会话"
+          />
+        </SettingsFieldRow>
+
+        <SettingsFieldRow
+          className="border-b-0"
+          label="把当前账号置顶"
+          description="账号列表里把当前登录账号排到第一位；其余账号仍按积分优先级排序，「建议优先」标记不受影响。"
+          htmlFor="switch-pin-current"
+          operational
+        >
+          <Switch
+            id="switch-pin-current"
+            checked={config?.pin_current_account ?? false}
+            disabled={saving || config === null}
+            onCheckedChange={(value) => void patch({ pin_current_account: value })}
+            aria-label="把当前账号置顶"
+          />
+        </SettingsFieldRow>
+      </CardContent>
+    </SettingsGroup>
+  );
+}
+
 /** 版本与账号库：两版认证文件路径（只读展示 + 复制）、国际版 UA 版本，及打开账号库目录。 */
 function VersionAccountsCard() {
   const cnStatus = useAccountsStore((s) => s.status);
@@ -1141,6 +1223,7 @@ export default function SettingsPage() {
 
       <div className="min-w-0 space-y-12">
         <VersionAccountsCard />
+        <SwitchBehaviorCard />
         <PermissionCheckCard />
         <GatewaySettingsCard />
         <AutoCheckinCard />

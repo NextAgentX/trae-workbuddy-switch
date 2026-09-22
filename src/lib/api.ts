@@ -37,6 +37,7 @@ import type {
   ScheduleConfig,
   ScheduleRunResult,
   Session,
+  SwitchConfig,
   SwitchResult,
   TravelConfig,
   TravelStatus,
@@ -89,6 +90,7 @@ const DEMO_READ_COMMANDS = new Set([
   "get_checkin_logs", "get_auto_rotate_config", "rotate_status", "get_rotate_logs",
   "get_github_config", "check_update", "get_launch_at_login_enabled", "switch_progress",
   "get_travel_status", "get_auto_travel_config", "get_schedule_config",
+  "get_switch_config",
   // API 网关只读命令（演示站需返回虚构数据，否则 build:demo 报错）
   "get_gateway_config", "gateway_status", "list_api_keys", "get_gateway_models",
   "get_account_strategy", "get_gateway_logs",
@@ -138,6 +140,7 @@ const ROUTES: Record<string, Route> = {
   switch_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/switch" },
   detect_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/detect" },
   delete_account: { method: "POST", path: "/api/delete" },
+  set_account_remark: { method: "POST", path: "/api/account/remark" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
   import_local: { method: "POST", path: "/api/import-local" },
@@ -161,6 +164,8 @@ const ROUTES: Record<string, Route> = {
   get_travel_status: { method: "GET", path: "/api/travel/status" },
   get_auto_travel_config: { method: "GET", path: "/api/travel/config" },
   save_auto_travel_config: { method: "POST", path: "/api/travel/config" },
+  get_switch_config: { method: "GET", path: "/api/switch/config" },
+  save_switch_config: { method: "POST", path: "/api/switch/config" },
   get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
   save_auto_rotate_config: { method: "POST", path: "/api/rotate/config" },
   get_schedule_config: { method: "GET", path: "/api/schedule/config" },
@@ -407,6 +412,32 @@ export function switchAccount(args: {
   sourceRegion?: Region;
 }): Promise<SwitchResult> {
   return call("switch_account", args as unknown as Record<string, unknown>);
+}
+
+/**
+ * 设置账号备注（**字段级更新**）。
+ *
+ * 刻意**不**提供「整条账号写回」的口子：前端手上只有脱敏的 `AccountMeta`，
+ * 整条写回会把 `access_token` / `refresh_token` 一并抹掉（账号当场失效且无报错）。
+ * 传空串即清空备注。
+ */
+export function setAccountRemark(
+  accountId: string,
+  remark: string,
+  region?: Region,
+): Promise<AccountMeta> {
+  return call("set_account_remark", { accountId, remark, ...regionArg(region) });
+}
+
+/** 读取账号切换与账号列表展示配置（全局单份）。 */
+export function getSwitchConfig(): Promise<SwitchConfig> {
+  return call("get_switch_config");
+}
+
+export function saveSwitchConfig(config: SwitchConfig): Promise<SwitchConfig> {
+  return call("save_switch_config", {
+    config: config as unknown as Record<string, unknown>,
+  });
 }
 
 /** 切换进度（webui 轮询用；桌面端走事件，此函数无副作用）。 */

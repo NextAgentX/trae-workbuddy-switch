@@ -99,6 +99,8 @@ pub fn account_meta(acc: &Value) -> Value {
         "createdAt": acc.get("createdAt"),
         "needsRelogin": acc.get("needs_relogin").and_then(|v| v.as_bool()) == Some(true),
         "needsReloginReason": acc.get("needs_relogin_reason"),
+        // 用户备注：自由文本，可能缺失或为 null。前端按「有值才渲染」处理。
+        "remark": acc.get("remark"),
     })
 }
 
@@ -158,6 +160,11 @@ pub fn upsert_collected_account(accounts: &mut Vec<Value>, mut collected: Value)
         }
         if let Some(created_at) = existing.get("createdAt").cloned() {
             collected["createdAt"] = created_at;
+        }
+        // 备注是**本地标注**，采集结果里永远不会有它；不显式带回就会丢，
+        // 且触发场景很常见：重新扫码登录同一个账号、再次「导入本机账号」。
+        if let Some(remark) = existing.get("remark").cloned() {
+            collected["remark"] = remark;
         }
 
         for index in matching_indexes.into_iter().rev() {
@@ -572,6 +579,72 @@ mod tests {
         // 与既有的 CN 兼容路径保持一致，避免两处逻辑漂移。
         assert_eq!(cn, crate::modules::config::accounts_file());
     }
+
+    /// 备注是**本地标注**，重新采集时必须被带回。
+    ///
+    /// 可证伪：删掉 `upsert_collected_account` 里 `existing.get("remark")` 那段保留逻辑，
+    /// 这条测试立刻变红。
+    #[test]
+    fn upsert_collected_account_keeps_local_remark() {
+        let mut accounts = vec![json!({
+            "id": "stable",
+            "uid": "uid-1",
+            "nickname": "旧名称",
+            "access_token": "OLD",
+            "remark": "DS4.1 · 10/03 解禁",
+        })];
+        upsert_collected_account(&mut accounts, account("generated", Some("uid-1"), "新名称", None));
+
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(
+            accounts[0].get("remark").and_then(Value::as_str),
+            Some("DS4.1 · 10/03 解禁"),
+            "重新扫码登录 / 再次导入本机账号都不得清空本地备注"
+        );
+    }
+
+    /// 字段级更新只动 remark，绝不碰 token。
+    ///
+    /// 这条钉住的是「脱敏 meta 不能拿来整条写回」这条红线：失败模式下
+    /// 账号会被写成没有 token 的空壳，而且没有任何报错。
+    #[test]
+    fn set_remark_only_touches_remark_and_preserves_tokens() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-remark-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("accounts.json");
+        save_accounts_to_path(
+            &path,
+            &[json!({
+                "id": "a1", "uid": "u1", "nickname": "小明",
+                "access_token": "AT", "refresh_token": "RT",
+            })],
+        )
+        .expect("seed accounts");
+
+        let meta = set_remark_in_path(&path, "a1", Some("  10/03 解禁  ")).expect("set remark");
+        assert_eq!(meta["remark"], "10/03 解禁", "备注应去首尾空白");
+        assert!(meta.get("access_token").is_none(), "meta 不得泄露 token");
+
+        let raw = load_accounts_from_path(&path);
+        assert_eq!(raw[0]["remark"], "10/03 解禁");
+        assert_eq!(raw[0]["access_token"], "AT", "token 不得被抹掉");
+        assert_eq!(raw[0]["refresh_token"], "RT", "token 不得被抹掉");
+
+        // 空备注 = 删除该键，而不是留一个空串。
+        set_remark_in_path(&path, "a1", Some("   ")).expect("clear remark");
+        let cleared = load_accounts_from_path(&path);
+        assert!(cleared[0].get("remark").is_none(), "空备注应删除字段");
+        assert_eq!(cleared[0]["access_token"], "AT");
+
+        // uid 也能定位；不存在的账号必须报错，不能静默成功。
+        assert!(set_remark_in_path(&path, "u1", Some("按 uid 定位")).is_ok());
+        assert!(set_remark_in_path(&path, "nope", None).is_err());
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
 }
 
 /// 删除账号（按 id，CN）。
@@ -582,6 +655,60 @@ pub fn delete_account(account_id: &str) -> Result<(), String> {
 /// 按 region 删除账号（按 id）。
 pub fn delete_account_for(region: Region, account_id: &str) -> Result<(), String> {
     delete_account_from_path(&accounts_file_for(region), account_id)
+}
+
+/// 就地修改**原始记录**里的备注（字段级更新），返回更新后的脱敏元数据。
+///
+/// ## 为什么必须是字段级，而不是「读 meta → 改 → 整条写回」
+///
+/// [`account_meta`] 是**脱敏白名单**，不含 `access_token` / `refresh_token`。
+/// 若让调用方拿 meta 改完再走 [`upsert_account_for`]，两个 token 会被一起抹掉，
+/// 账号当场失效**且不会有任何报错**。所以读原始记录、只改一个键、再原子写回。
+///
+/// 备注传空（或全空白）时**删除该键**而不是写空串：账号库是用户可见的文件，
+/// 没有备注就不该多出一个字段。
+fn set_remark_in_path(
+    path: &Path,
+    account_id: &str,
+    remark: Option<&str>,
+) -> Result<Value, String> {
+    let mut accounts = load_accounts_from_path(path);
+    let Some(index) = accounts.iter().position(|account| {
+        account.get("id").and_then(Value::as_str) == Some(account_id)
+            || account.get("uid").and_then(Value::as_str) == Some(account_id)
+    }) else {
+        return Err("账号不存在".to_string());
+    };
+
+    let record = accounts[index]
+        .as_object_mut()
+        .ok_or_else(|| "账号记录格式异常".to_string())?;
+    match remark.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => {
+            record.insert("remark".to_string(), json!(text));
+        }
+        None => {
+            record.remove("remark");
+        }
+    }
+
+    let updated = accounts[index].clone();
+    save_accounts_to_path(path, &accounts).map_err(|error| error.to_string())?;
+    Ok(account_meta(&updated))
+}
+
+/// 按 region 设置账号备注（按 id 或 uid 定位）。
+pub fn set_account_remark_for(
+    region: Region,
+    account_id: &str,
+    remark: Option<&str>,
+) -> Result<Value, String> {
+    set_remark_in_path(&accounts_file_for(region), account_id, remark)
+}
+
+/// 设置 CN 账号备注。
+pub fn set_account_remark(account_id: &str, remark: Option<&str>) -> Result<Value, String> {
+    set_account_remark_for(Region::Cn, account_id, remark)
 }
 
 /// 导入本机当前账号（从认证文件读取，CN）。

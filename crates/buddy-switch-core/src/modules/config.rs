@@ -296,6 +296,14 @@ pub fn auto_rotate_logs_file() -> PathBuf {
     store_dir().join("auto_rotate_logs.json")
 }
 
+/// 账号切换与账号列表展示的配置（全局单份，无需 region）。
+///
+/// 两项都服务于**频繁切号**这一个场景，因此共用一个文件、一套命令：
+/// 拆成两份就要多一套命令与六处登记点，收益只是形式上的整齐。
+pub fn switch_config_file() -> PathBuf {
+    store_dir().join("switch_config.json")
+}
+
 pub fn workbuddy_exe_cache_file() -> PathBuf {
     store_dir().join("workbuddy_exe.json")
 }
@@ -715,6 +723,58 @@ pub fn save_auto_rotate_config(cfg: &Value) -> std::io::Result<()> {
     std::fs::create_dir_all(store_dir())?;
     let content = serde_json::to_string_pretty(&merged).unwrap_or_default();
     atomic_write(&auto_rotate_config_file(), &content)
+}
+
+// ---------------------------------------------------------------------------
+// 账号切换 / 账号列表展示（全局单份，无需 region）
+// ---------------------------------------------------------------------------
+
+/// 账号切换与账号列表展示的默认配置。
+///
+/// - `copy_sessions_by_default` **默认关**：切换时复制会话是「顺带搬一个数据副本」，
+///   沉默地改变切换语义会让人以为切错了号，必须由用户显式打开。
+/// - `pin_current_account` **默认开**：它只改展示顺序、不动任何数据，
+///   而频繁切号的用户最需要「我正在用哪个」一眼可见。
+pub fn default_switch_config() -> Value {
+    json!({
+        "copy_sessions_by_default": false,
+        "pin_current_account": true,
+    })
+}
+
+/// 合并默认值与已知字段；未知键一律丢弃（与 `save_auto_rotate_config` 同口径）。
+///
+/// 缺失的键**回落到默认值**而不是原样透传：前端老版本不带新字段时，
+/// 行为必须等于「刚装上」，否则新设置项会表现为随机取值。
+fn normalize_switch_config(input: &Value) -> Value {
+    let mut merged = default_switch_config();
+    for key in ["copy_sessions_by_default", "pin_current_account"] {
+        if let Some(value) = input.get(key).and_then(Value::as_bool) {
+            merged[key] = json!(value);
+        }
+    }
+    merged
+}
+
+/// 读取账号切换配置（缺失/损坏时回落默认值）。
+pub fn load_switch_config() -> Value {
+    let f = switch_config_file();
+    if f.exists() {
+        if let Ok(text) = std::fs::read_to_string(&f) {
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                return normalize_switch_config(&value);
+            }
+        }
+    }
+    default_switch_config()
+}
+
+/// 保存账号切换配置（只保留已知字段）。
+pub fn save_switch_config(cfg: &Value) -> std::io::Result<()> {
+    let merged = normalize_switch_config(cfg);
+    std::fs::create_dir_all(store_dir())?;
+    let content = serde_json::to_string_pretty(&merged).unwrap_or_default();
+    atomic_write(&switch_config_file(), &content)
 }
 
 /// 读取自动轮换日志。

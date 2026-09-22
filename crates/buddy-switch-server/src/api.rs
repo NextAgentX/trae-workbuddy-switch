@@ -83,6 +83,11 @@ fn api_routes() -> Router {
         .route("/api/codebuddy-cn-ide/switch", post(api_codebuddy_cn_ide_switch))
         .route("/api/codebuddy-cn-ide/detect", post(api_codebuddy_cn_ide_detect))
         .route("/api/delete", post(api_delete))
+        .route("/api/account/remark", post(api_set_account_remark))
+        .route(
+            "/api/switch/config",
+            get(api_switch_config).post(api_save_switch_config),
+        )
         .route("/api/oauth/start", post(api_oauth_start))
         .route("/api/oauth/status", post(api_oauth_status))
         .route("/api/import-local", post(api_import_local))
@@ -446,6 +451,37 @@ async fn api_import_local(Json(body): Json<Value>) -> Response {
     match account::import_local_for(region) {
         Ok(acc) => json_ok(json!({ "ok": true, "account": acc })),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/account/remark —— 设置账号备注（**字段级更新**）。
+///
+/// 只改 `remark` 一个键：请求体里带的是脱敏 meta，整条写回会抹掉 token。
+/// `remark` 缺失或为空串都表示**清空**（core 侧统一 trim 后删键）。
+async fn api_set_account_remark(Json(body): Json<Value>) -> Response {
+    let region = parse_region(body.get("region").and_then(Value::as_str));
+    let id = body.get("accountId").and_then(Value::as_str).unwrap_or("");
+    if id.trim().is_empty() {
+        return json_err("缺少 accountId".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let remark = body.get("remark").and_then(Value::as_str);
+    match account::set_account_remark_for(region, id, remark) {
+        Ok(meta) => json_ok(meta),
+        Err(e) => json_err(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/switch/config —— 账号切换与账号列表展示配置。
+async fn api_switch_config() -> Response {
+    json_ok(config::load_switch_config())
+}
+
+/// POST /api/switch/config —— 保存账号切换配置。
+async fn api_save_switch_config(Json(body): Json<Value>) -> Response {
+    let submitted = body.get("config").unwrap_or(&body);
+    match config::save_switch_config(submitted) {
+        Ok(()) => json_ok(config::load_switch_config()),
+        Err(e) => json_err(e.to_string(), StatusCode::BAD_REQUEST),
     }
 }
 

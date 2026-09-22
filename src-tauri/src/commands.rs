@@ -219,6 +219,22 @@ pub fn delete_account(account_id: String, region: Option<String>) -> Result<Valu
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/account/remark —— 设置账号备注（**字段级更新**，不触碰 token）。
+///
+/// 同步 command 即可：只读一个小 JSON、改一个键、原子写回。
+#[tauri::command(rename_all = "camelCase")]
+pub fn set_account_remark(
+    account_id: String,
+    remark: Option<String>,
+    region: Option<String>,
+) -> Result<Value, String> {
+    if account_id.trim().is_empty() {
+        return Err("缺少 accountId".to_string());
+    }
+    let region = parse_region(region.as_deref());
+    account::set_account_remark_for(region, &account_id, remark.as_deref())
+}
+
 /// POST /api/oauth/start —— 发起 OAuth 扫码登录（按 region）。
 #[tauri::command]
 pub async fn oauth_start(region: Option<String>) -> Result<Value, String> {
@@ -666,6 +682,23 @@ pub fn save_auto_travel_config(config: Value) -> Result<Value, String> {
         });
     }
     Ok(saved)
+}
+
+// ---------------------------------------------------------------------------
+// 账号切换 / 账号列表展示（全局单份，无需 region）
+// ---------------------------------------------------------------------------
+
+/// GET /api/switch/config —— 账号切换与账号列表展示配置。
+#[tauri::command]
+pub fn get_switch_config() -> Value {
+    crate::modules::config::load_switch_config()
+}
+
+/// POST /api/switch/config —— 保存账号切换配置。
+#[tauri::command]
+pub fn save_switch_config(config: Value) -> Result<Value, String> {
+    crate::modules::config::save_switch_config(&config).map_err(|e| e.to_string())?;
+    Ok(crate::modules::config::load_switch_config())
 }
 
 // ---------------------------------------------------------------------------

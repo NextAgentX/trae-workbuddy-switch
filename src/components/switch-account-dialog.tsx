@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, ExternalLink, Folder, Loader2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
@@ -30,10 +30,31 @@ interface Props {
   onDone?: () => void;
   /** 目标版本；缺省为国内版。 */
   region?: Region;
+  /**
+   * 「复制会话常开」（设置页 → 账号切换）。
+   *
+   * 由调用方注入而不是本组件自己读配置：调用方已经为了置顶读过一次，
+   * 再读一次会出现两个页面各自缓存的配置互相打架。
+   */
+  copySessionsByDefault?: boolean;
+}
+
+/**
+ * 「复制会话常开」的一次性初始化状态。
+ *
+ * 会话加载 effect 同时被 `sourceRegion` 变化触发，因此必须把「打开时套用默认值」
+ * 与「每次重取会话都重来」区分开：否则用户手动取消勾选之后，只要切一下
+ * 数据来源版本，勾选就会被悄悄恢复成全选。
+ */
+interface SwitchDefaults {
+  /** 本次打开是否已经套用过默认值。 */
+  applied: boolean;
+  /** 会话回来后是否还要补一次「全选」（消费后置 false）。 */
+  selectAll: boolean;
 }
 
 /** 切换账号弹窗：可勾选当前账号的会话复制到目标账号（路径 B）。 */
-export function SwitchAccountDialog({ open, onOpenChange, account, onDone, region }: Props) {
+export function SwitchAccountDialog({ open, onOpenChange, account, onDone, region, copySessionsByDefault = false }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [copySessions, setCopySessions] = useState(false);
@@ -59,6 +80,12 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
    * 缺省等于目标 `region` —— 即同版本内切换，行为与改造前完全一致。
    */
   const [sourceRegion, setSourceRegion] = useState<Region>(region ?? "cn");
+  const defaultsRef = useRef<SwitchDefaults>({ applied: false, selectAll: false });
+
+  // 关闭时清掉本次打开的一次性状态，下次打开重新按配置初始化。
+  useEffect(() => {
+    if (!open) defaultsRef.current = { applied: false, selectAll: false };
+  }, [open]);
 
   // 监听后端切换进度：桌面端走 Tauri 事件，webui 走 HTTP 轮询
   useEffect(() => {
@@ -84,7 +111,11 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
   // 打开时加载当前账号会话
   useEffect(() => {
     if (open && account) {
-      setCopySessions(false);
+      if (!defaultsRef.current.applied) {
+        defaultsRef.current.applied = true;
+        defaultsRef.current.selectAll = copySessionsByDefault;
+        setCopySessions(copySessionsByDefault);
+      }
       setMigrateMemory(false);
       setMigrateConnectors(false);
       setSelected(new Set());
@@ -101,6 +132,11 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
           if (cancelled) return;
           setSessions(res.sessions);
           setCurrentUid(res.current);
+          // 「复制会话常开」：默认全选，用户仍可逐条取消。
+          if (defaultsRef.current.selectAll) {
+            defaultsRef.current.selectAll = false;
+            setSelected(new Set(res.sessions.map((session) => session.id)));
+          }
         })
         .catch((e) => {
           if (!cancelled) setError(api.asError(e));
@@ -112,6 +148,9 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
         cancelled = true;
       };
     }
+    // 刻意**不**把 `copySessionsByDefault` 放进依赖：它决定的是「打开瞬间的初值」，
+    // 任何在弹窗开着时发生的值变化都不该反过来改动用户当前的选择。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, account, region, sourceRegion]);
 
   function toggleSession(id: string) {
