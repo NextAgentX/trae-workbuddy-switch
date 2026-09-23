@@ -138,4 +138,11 @@ export const en = {
   "shared.demo.updateTitle": "Update prompt demo",
   "shared.demo.error.accountMissing": "Account not found",
   "shared.demo.error.missingReadOnly": "Demo mode is missing read-only data: {command}",
+  // ---- Punctuation & separators used for string concatenation ----
+  "shared.punct.colon": ": ",
+  "shared.punct.comma": ", ",
+  "shared.punct.semicolon": "; ",
+  "shared.punct.period": ". ",
+  "shared.punct.openParen": " (",
+  "shared.punct.closeParen": ")",
 };

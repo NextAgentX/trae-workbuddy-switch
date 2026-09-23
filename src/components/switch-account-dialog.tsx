@@ -233,7 +233,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
       if (warnings.length) {
         // 部分迁移失败但未阻断切换：明确降级为警告，避免用户误以为全部成功。
         toast.warning(t("wbAccounts.dialog.switchedWarn", { name: nickname }), {
-          description: `${warnings.join(t("wbAccounts.dialog.listSeparator"))}。${description}`,
+          description: `${warnings.join(t("wbAccounts.dialog.listSeparator"))}${t("shared.punct.period")}${description}`,
         });
       } else {
         toast.success(t("wbAccounts.dialog.switchedOk", { name: nickname }), { description });

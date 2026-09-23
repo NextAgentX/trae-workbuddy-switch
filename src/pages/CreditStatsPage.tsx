@@ -592,7 +592,7 @@ function TrendChart({
                 <span>{officialAvailable ? t("wbStats.credit.dataUpdated", { time: formatDateTime(official?.collectedAt ?? stats.generatedAt) }) : t("wbStats.credit.coverage", { date: formatDate(stats.generatedAt) })}</span>
               </div>
               <p className="sr-only">
-                {chartData.map((point) => t("wbStats.credit.srSummary", { date: point.date, amount: formatCredits(point.total) })).join("；")}
+                {chartData.map((point) => t("wbStats.credit.srSummary", { date: point.date, amount: formatCredits(point.total) })).join(t("shared.punct.semicolon"))}
               </p>
           </>
         )}
@@ -1454,7 +1454,7 @@ export default function CreditStatsPage() {
                   : t("wbStats.credit.localFallbackNote")}
                 {officialUsage.errors.length > 0 && (
                   <span className="text-xs text-amber-900/75">
-                    {officialUsage.errors.map((item) => `${item.accountName}: ${item.error}`).join("；")}
+                    {officialUsage.errors.map((item) => `${item.accountName}${t("shared.punct.colon")}${item.error}`).join(t("shared.punct.semicolon"))}
                   </span>
                 )}
               </AlertDescription>

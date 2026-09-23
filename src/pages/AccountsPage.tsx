@@ -531,7 +531,7 @@ function RegionPanel({ region }: { region: Region }) {
           : res.result === "already"
             ? t("wbAccounts.toast.checkedInToday")
             : t("wbAccounts.toast.checkinFail");
-      const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}`;
+      const description = `${a.nickname || a.email || a.id}${res.error ? `${t("shared.punct.colon")}${res.error}` : ""}`;
       if (res.result === "error") toast.error(label, { description });
       else toast.success(label, { description });
       // 刷新该账号的今日签到状态
@@ -554,7 +554,7 @@ function RegionPanel({ region }: { region: Region }) {
       const res = await api.refreshAccountToken(a.id, region);
       const label = a.nickname || a.email || a.id;
       if (res.needsRelogin) {
-        toast.error(t("wbAccounts.toast.tokenRefreshFail"), { description: `${label}：${t("wbAccounts.toast.needRelogin")}${res.needsReloginReason ? `（${res.needsReloginReason}）` : ""}` });
+        toast.error(t("wbAccounts.toast.tokenRefreshFail"), { description: `${label}${t("shared.punct.colon")}${t("wbAccounts.toast.needRelogin")}${res.needsReloginReason ? `${t("shared.punct.openParen")}${res.needsReloginReason}${t("shared.punct.closeParen")}` : ""}` });
       } else {
         toast.success(t("wbAccounts.toast.tokenRefreshed"), { description: label });
       }
@@ -579,7 +579,7 @@ function RegionPanel({ region }: { region: Region }) {
         if (success > 0) parts.push(t("wbAccounts.toast.checkinBatchSuccess", { n: success }));
         if (already > 0) parts.push(t("wbAccounts.toast.checkinBatchAlready", { n: already }));
         if (failed > 0) parts.push(t("wbAccounts.toast.checkinBatchFailed", { n: failed }));
-        const summary = parts.length > 0 ? parts.join("，") : t("wbAccounts.toast.checkinNone");
+        const summary = parts.length > 0 ? parts.join(t("shared.punct.comma")) : t("wbAccounts.toast.checkinNone");
         if (entries.length > 0 && failed === entries.length) {
           toast.error(t("wbAccounts.toast.checkinFailBatch"), { description: summary });
         } else {
@@ -612,7 +612,7 @@ function RegionPanel({ region }: { region: Region }) {
       await refreshCodebuddyCliStatus();
       toast.success(t("wbAccounts.toast.switchCliUpdated"), {
         id: toastId,
-        description: `${account.nickname || account.email || account.id}：${result.message || t("wbAccounts.toast.configUpdated")}`,
+        description: `${account.nickname || account.email || account.id}${t("shared.punct.colon")}${result.message || t("wbAccounts.toast.configUpdated")}`,
       });
     } catch (error) {
       toast.error(t("wbAccounts.toast.switchCliFail"), {

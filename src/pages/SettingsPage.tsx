@@ -124,8 +124,8 @@ function AutoCheckinCard() {
       const err = res.accounts.filter((a) => a.result === "error").length;
       const detail = res.accounts
         .filter((a) => a.result === "error")
-        .map((a) => `${a.email}（${a.error}）`)
-        .join("；");
+        .map((a) => `${a.email}${t("shared.punct.openParen")}${a.error}${t("shared.punct.closeParen")}`)
+        .join(t("shared.punct.semicolon"));
       setMsg({
         type: err > 0 ? "err" : "ok",
         text: detail
@@ -571,7 +571,7 @@ function PermissionCheckCard() {
         ok: res.ok,
         text: res.ok
           ? res.message ?? t("wbSettings.permission.okMsg")
-          : `${res.error}（${res.dir ?? ""}）`,
+          : `${res.error}${t("shared.punct.openParen")}${res.dir ?? ""}${t("shared.punct.closeParen")}`,
       });
     } catch (e) {
       setResult({ ok: false, text: api.asError(e) });

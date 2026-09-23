@@ -154,4 +154,14 @@ export const zh = {
   "shared.demo.updateTitle": "更新提示演示",
   "shared.demo.error.accountMissing": "账号不存在",
   "shared.demo.error.missingReadOnly": "演示模式缺少只读数据: {command}",
+  // ---- 拼接用的标点与分隔符 ----
+  // ⚠️ 这些是「语言相关」的排版符号，不能硬编码：中文用全角（：，；（））、
+  // 英文用半角（: , ; ( )）。硬编码的症状是「英文界面里冒出中文标点」，
+  // 例如 "Primary：已登录"，且不会被「残留中文」扫描抓到（只占一两个字符）。
+  "shared.punct.colon": "：",
+  "shared.punct.comma": "，",
+  "shared.punct.semicolon": "；",
+  "shared.punct.period": "。",
+  "shared.punct.openParen": "（",
+  "shared.punct.closeParen": "）",
 } as const;

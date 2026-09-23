@@ -356,7 +356,7 @@ function CompactComposition({ value }: { value: TokenStatsTotals }) {
           role="img"
           aria-label={rows
             .map((row) => `${t(row.labelKey)} ${percentage(row.value, total)}`)
-            .join("，")}
+            .join(t("shared.punct.comma"))}
         >
           {rows.map((row) => (
             <span
@@ -364,7 +364,7 @@ function CompactComposition({ value }: { value: TokenStatsTotals }) {
               className={`h-full min-w-0 ${row.color}`}
               style={{ width: total > 0 ? `${(row.value / total) * 100}%` : "0%" }}
               title={`${t(row.labelKey)} ${formatTokenCompact(row.value)} · ${percentage(row.value, total)}`}
-              aria-label={`${t(row.labelKey)} ${formatTokenExact(row.value)} Token，${percentage(row.value, total)}`}
+              aria-label={`${t(row.labelKey)} ${formatTokenExact(row.value)} Token${t("shared.punct.comma")}${percentage(row.value, total)}`}
             />
           ))}
         </div>
@@ -797,7 +797,7 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
                     (point) =>
                       t("wbStats.token.srSummary", { date: point.date, total: formatTokenCompact(tokenTotal(point)), calls: exact.format(point.records) }),
                   )
-                  .join("；")}
+                  .join(t("shared.punct.semicolon"))}
               </p>
             </>
           )}
