@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { TraeVariantMark } from "@/components/product-marks";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { TRAE_VARIANT_FALLBACK } from "@/lib/trae-variant-status";
 import type { TraeRegionId, TraeVariantStatus } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
@@ -39,6 +40,7 @@ export function TraeVariantSwitch({
   statuses?: TraeVariantStatus[];
   className?: string;
 }) {
+  const t = useT();
   const [variant, setVariant] = useTraeVariant();
   const [local, setLocal] = useState<TraeVariantStatus[] | null>(null);
 
@@ -92,11 +94,22 @@ export function TraeVariantSwitch({
         className,
       )}
       role="tablist"
-      aria-label="选择 Trae 版本"
+      aria-label={t("trae.variant.switch.aria")}
     >
       {items.map((item) => {
         const active = item.variant === variant;
-        const state = item.running ? "运行中" : item.installed ? "已安装" : "未检测到";
+        const state = item.running
+          ? t("trae.variant.switch.running")
+          : item.installed
+            ? t("trae.variant.switch.installed")
+            : t("trae.variant.switch.notDetected");
+        const title = item.version
+          ? t("trae.variant.switch.tipVersion", {
+              label: item.variantLabel,
+              state,
+              version: item.version,
+            })
+          : t("trae.variant.switch.tip", { label: item.variantLabel, state });
         return (
           <button
             key={item.variant}
@@ -104,7 +117,7 @@ export function TraeVariantSwitch({
             role="tab"
             aria-selected={active}
             onClick={() => setVariant(item.variant as TraeRegionId)}
-            title={`${item.variantLabel}：${state}${item.version ? ` · v${item.version}` : ""}`}
+            title={title}
             className={cn(
               "inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs outline-none transition-colors",
               "focus-visible:ring-2 focus-visible:ring-ring/50",

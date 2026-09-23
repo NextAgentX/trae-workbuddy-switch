@@ -54,6 +54,7 @@ import type {
 import { cn } from "@/lib/utils";
 import { useCompactMode } from "@/lib/use-compact-mode";
 import { useAccountsStore } from "@/stores/accounts";
+import { useT, type Translate } from "@/lib/i18n";
 
 function expiringSoonAmount(credit?: CreditExpiry): number {
   return credit?.ok ? credit.expiringSoonRemaining ?? 0 : 0;
@@ -155,13 +156,13 @@ function regionPresence(status: AppStatus | null, accounts: AccountMeta[]): Regi
   return "absent";
 }
 
-function presenceText(presence: RegionPresence, status: AppStatus | null): string {
+function presenceText(presence: RegionPresence, status: AppStatus | null, t: Translate): string {
   if (presence === "logged-in") {
-    const name = status?.current?.nickname || status?.current?.email || status?.current?.uid || "未知账号";
-    return `已登录: ${name}`;
+    const name = status?.current?.nickname || status?.current?.email || status?.current?.uid || t("wbAccounts.common.unknownAccount");
+    return t("wbAccounts.page.statusLoggedIn", { name });
   }
-  if (presence === "installed") return "未登录";
-  return "未检测到";
+  if (presence === "installed") return t("wbAccounts.common.notLoggedIn");
+  return t("wbAccounts.common.notDetected");
 }
 
 function RegionTab({ region, active }: { region: Region; active: boolean }) {
@@ -169,6 +170,7 @@ function RegionTab({ region, active }: { region: Region; active: boolean }) {
   const accounts = useAccountsStore((s) => (region === "cn" ? s.accounts : s.global.accounts));
   const descriptor = regionDescriptor(region);
   const presence = regionPresence(status, accounts);
+  const t = useT();
 
   return (
     <TabsTrigger
@@ -189,7 +191,7 @@ function RegionTab({ region, active }: { region: Region; active: boolean }) {
         {descriptor.versionLabel}
         <span className="text-muted-foreground/70">{descriptor.displayName}</span>
       </span>
-      <span className="pl-3.5 text-[11px] font-normal text-muted-foreground">{presenceText(presence, status)}</span>
+      <span className="pl-3.5 text-[11px] font-normal text-muted-foreground">{presenceText(presence, status, t)}</span>
     </TabsTrigger>
   );
 }
@@ -197,6 +199,7 @@ function RegionTab({ region, active }: { region: Region; active: boolean }) {
 export default function AccountsPage() {
   const [activeRegion, setActiveRegion] = useState<Region>("cn");
   const fetchAllRegions = useAccountsStore((s) => s.fetchAllRegions);
+  const t = useT();
 
   useEffect(() => {
     void fetchAllRegions();
@@ -205,9 +208,9 @@ export default function AccountsPage() {
   return (
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
       <header className="mb-6">
-        <h1 className="text-[28px] font-semibold tracking-tight">账号管理</h1>
+        <h1 className="text-[28px] font-semibold tracking-tight">{t("wbAccounts.page.title")}</h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          分别管理国内版与国际版 WorkBuddy 账号、积分和签到状态，两版账号库互相隔离。
+          {t("wbAccounts.page.subtitle", { product: "WorkBuddy" })}
         </p>
       </header>
 
@@ -283,6 +286,7 @@ function RegionPanel({ region }: { region: Region }) {
   const [mismatchDetailOpen, setMismatchDetailOpen] = useState(false);
   /** 紧凑模式：卡片更小、同屏更多列；默认开启，偏好由 `useCompactMode` 统一持久化 */
   const [compact, toggleCompact] = useCompactMode();
+  const t = useT();
 
   useEffect(() => {
     let cancelled = false;
@@ -293,7 +297,7 @@ function RegionPanel({ region }: { region: Region }) {
       })
       .catch((e) => {
         if (!cancelled) {
-          toast.error("自动签到配置加载失败", { description: api.asError(e) });
+          toast.error(t("wbAccounts.toast.autoCheckinLoadFail"), { description: api.asError(e) });
         }
       });
     return () => {
@@ -310,7 +314,7 @@ function RegionPanel({ region }: { region: Region }) {
       })
       .catch((e) => {
         if (!cancelled) {
-          toast.error("自动旅行配置加载失败", { description: api.asError(e) });
+          toast.error(t("wbAccounts.toast.autoTravelLoadFail"), { description: api.asError(e) });
         }
       });
     return () => {
@@ -441,9 +445,9 @@ function RegionPanel({ region }: { region: Region }) {
     setImporting(true);
     try {
       const acc = await importLocalStore(region);
-      toast.success("账号已导入", { description: acc.nickname || acc.email || acc.id });
+      toast.success(t("wbAccounts.toast.imported"), { description: acc.nickname || acc.email || acc.id });
     } catch (e) {
-      toast.error("导入失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.importFail"), { description: api.asError(e) });
     } finally {
       setImporting(false);
     }
@@ -459,7 +463,7 @@ function RegionPanel({ region }: { region: Region }) {
       setAutoCheckinConfig(await api.saveAutoCheckinConfig(next));
     } catch (e) {
       setAutoCheckinConfig(previous);
-      toast.error("自动签到设置保存失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.autoCheckinSaveFail"), { description: api.asError(e) });
     } finally {
       setAutoCheckinSaving(false);
     }
@@ -474,14 +478,14 @@ function RegionPanel({ region }: { region: Region }) {
     try {
       setAutoTravelConfig(await api.saveAutoTravelConfig(next));
       if (enabled) {
-        toast.success("自动旅行已开启", { description: "正在按官方状态派发或领取" });
+        toast.success(t("wbAccounts.toast.autoTravelOn"), { description: t("wbAccounts.toast.autoTravelDispatching") });
         window.setTimeout(() => {
           void loadTravelMap(accounts.map((account) => account.id));
         }, 2500);
       }
     } catch (e) {
       setAutoTravelConfig(previous);
-      toast.error("自动旅行设置保存失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.autoTravelSaveFail"), { description: api.asError(e) });
     } finally {
       setAutoTravelSaving(false);
     }
@@ -489,16 +493,16 @@ function RegionPanel({ region }: { region: Region }) {
 
   /** 导出完成提示（含安全提醒）。 */
   function onExported(count: number) {
-    const text = `已导出 ${count} 个账号。文件含登录 token，等同密码，请勿上传网盘或发送给他人。`;
-    toast.success("导出成功", { description: text });
+    const text = t("wbAccounts.toast.exportDetail", { count });
+    toast.success(t("wbAccounts.toast.exportSuccess"), { description: text });
   }
 
   /** 导入完成提示：计数 + token 可能过期提醒，并刷新列表。 */
   function onImported(result: { imported: number; skipped: number; overwritten: number }) {
     void reconcileAccounts(region);
-    const overwriteText = result.overwritten > 0 ? `（覆盖 ${result.overwritten} 个）` : "";
-    const text = `已导入 ${result.imported} 个${overwriteText}，跳过 ${result.skipped} 个。token 可能已过期，切换后可能需要重新登录。`;
-    toast.success("导入成功", { description: text });
+    const overwriteText = result.overwritten > 0 ? t("wbAccounts.toast.importOverwrite", { n: result.overwritten }) : "";
+    const text = t("wbAccounts.toast.importDetail", { imported: result.imported, overwrite: overwriteText, skipped: result.skipped });
+    toast.success(t("wbAccounts.toast.importSuccess"), { description: text });
   }
 
   function onDelete(a: AccountMeta) {
@@ -512,9 +516,9 @@ function RegionPanel({ region }: { region: Region }) {
     setDeleteTarget(null);
     try {
       await deleteAccountStore(a.id, region);
-      toast.success("账号已删除");
+      toast.success(t("wbAccounts.toast.deleted"));
     } catch (e) {
-      toast.error("删除失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.deleteFail"), { description: api.asError(e) });
     }
   }
 
@@ -523,10 +527,10 @@ function RegionPanel({ region }: { region: Region }) {
       const res = await api.checkin(a.id, region);
       const label =
         res.result === "success"
-          ? "签到成功"
+          ? t("wbAccounts.toast.checkinSuccess")
           : res.result === "already"
-            ? "今天已签到"
-            : "签到失败";
+            ? t("wbAccounts.toast.checkedInToday")
+            : t("wbAccounts.toast.checkinFail");
       const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}`;
       if (res.result === "error") toast.error(label, { description });
       else toast.success(label, { description });
@@ -541,7 +545,7 @@ function RegionPanel({ region }: { region: Region }) {
       // 签到成功/已签到会带来积分变动，force 刷新该账号积分
       if (res.result !== "error") void refreshCredits([a.id], { region });
     } catch (e) {
-      toast.error("签到失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.checkinFail"), { description: api.asError(e) });
     }
   }
 
@@ -550,13 +554,13 @@ function RegionPanel({ region }: { region: Region }) {
       const res = await api.refreshAccountToken(a.id, region);
       const label = a.nickname || a.email || a.id;
       if (res.needsRelogin) {
-        toast.error("Token 刷新失败", { description: `${label}：需重新登录${res.needsReloginReason ? `（${res.needsReloginReason}）` : ""}` });
+        toast.error(t("wbAccounts.toast.tokenRefreshFail"), { description: `${label}：${t("wbAccounts.toast.needRelogin")}${res.needsReloginReason ? `（${res.needsReloginReason}）` : ""}` });
       } else {
-        toast.success("Token 已刷新", { description: label });
+        toast.success(t("wbAccounts.toast.tokenRefreshed"), { description: label });
       }
       void reconcileAccounts(region);
     } catch (e) {
-      toast.error("Token 刷新失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.tokenRefreshFail"), { description: api.asError(e) });
     }
   }
 
@@ -572,14 +576,14 @@ function RegionPanel({ region }: { region: Region }) {
         const already = entries.filter((e) => e.result === "already").length;
         const failed = entries.filter((e) => e.result === "error").length;
         const parts: string[] = [];
-        if (success > 0) parts.push(`${success} 个签到成功`);
-        if (already > 0) parts.push(`${already} 个已签到`);
-        if (failed > 0) parts.push(`${failed} 个失败`);
-        const summary = parts.length > 0 ? parts.join("，") : "无账号需要签到";
+        if (success > 0) parts.push(t("wbAccounts.toast.checkinBatchSuccess", { n: success }));
+        if (already > 0) parts.push(t("wbAccounts.toast.checkinBatchAlready", { n: already }));
+        if (failed > 0) parts.push(t("wbAccounts.toast.checkinBatchFailed", { n: failed }));
+        const summary = parts.length > 0 ? parts.join("，") : t("wbAccounts.toast.checkinNone");
         if (entries.length > 0 && failed === entries.length) {
-          toast.error("签到失败", { description: summary });
+          toast.error(t("wbAccounts.toast.checkinFailBatch"), { description: summary });
         } else {
-          toast.success("签到完成", { description: summary });
+          toast.success(t("wbAccounts.toast.checkinDone"), { description: summary });
         }
         // 批量签到后重查全部账号的今日签到状态，无需切换页面即反映最新结果
         const next = await fetchTodayCheckinMap(accounts.map((account) => account.id), region);
@@ -587,11 +591,11 @@ function RegionPanel({ region }: { region: Region }) {
           setCheckinMap((prev) => ({ ...prev, ...next }));
         }
       } catch (e) {
-        toast.error("批量签到失败", { description: api.asError(e) });
+        toast.error(t("wbAccounts.toast.batchCheckinFail"), { description: api.asError(e) });
       }
       await refreshCredits(accounts.map((account) => account.id), { region });
       await loadTravelMap(accounts.map((account) => account.id));
-      toast.success("积分到期情况已刷新");
+      toast.success(t("wbAccounts.toast.creditsRefreshed"));
     } finally {
       setCheckinAllRunning(false);
     }
@@ -600,18 +604,18 @@ function RegionPanel({ region }: { region: Region }) {
   async function onSwitchCodebuddyCli(account: AccountMeta) {
     if (codebuddyCliSwitchingId !== null) return;
     setCodebuddyCliSwitchingId(account.id);
-    const toastId = toast.loading("正在切换 CodeBuddy CLI…", {
-      description: `正在将默认账号设为 ${account.nickname || account.email || account.id}`,
+    const toastId = toast.loading(t("wbAccounts.toast.switchCliLoading"), {
+      description: t("wbAccounts.toast.switchCliLoadingDesc", { name: account.nickname || account.email || account.id }),
     });
     try {
       const result = await api.switchCodebuddyCliAccount(account.id);
       await refreshCodebuddyCliStatus();
-      toast.success("CodeBuddy CLI 默认账号已更新", {
+      toast.success(t("wbAccounts.toast.switchCliUpdated"), {
         id: toastId,
-        description: `${account.nickname || account.email || account.id}：${result.message || "配置已更新"}`,
+        description: `${account.nickname || account.email || account.id}：${result.message || t("wbAccounts.toast.configUpdated")}`,
       });
     } catch (error) {
-      toast.error("CodeBuddy CLI 切换失败", {
+      toast.error(t("wbAccounts.toast.switchCliFail"), {
         id: toastId,
         description: api.asError(error),
       });
@@ -623,18 +627,18 @@ function RegionPanel({ region }: { region: Region }) {
   async function onSwitchCodebuddyCnIde(account: AccountMeta) {
     if (codebuddyCnIdeSwitchingId !== null) return;
     setCodebuddyCnIdeSwitchingId(account.id);
-    const toastId = toast.loading("正在切换 CodeBuddy IDE…", {
-      description: "将注入凭证并重启 CodeBuddy IDE",
+    const toastId = toast.loading(t("wbAccounts.toast.switchIdeLoading"), {
+      description: t("wbAccounts.toast.switchIdeLoadingDesc"),
     });
     try {
       const result = await api.switchCodebuddyCnIdeAccount(account.id, true);
       await refreshCodebuddyCnIdeStatus();
-      toast.success("CodeBuddy IDE 已切换", {
+      toast.success(t("wbAccounts.toast.switchIdeUpdated"), {
         id: toastId,
         description: result.message || result.account,
       });
     } catch (error) {
-      toast.error("CodeBuddy IDE 切换失败", {
+      toast.error(t("wbAccounts.toast.switchIdeFail"), {
         id: toastId,
         description: api.asError(error),
       });
@@ -653,10 +657,10 @@ function RegionPanel({ region }: { region: Region }) {
     setInstallingCodebuddyCli(true);
     try {
       const result = await api.installCodebuddyCliHelper();
-      toast.success("CodeBuddy CLI 接入已更新", { description: result.message });
+      toast.success(t("wbAccounts.toast.cliIntegrationUpdated"), { description: result.message });
       await refreshCodebuddyCliStatus();
     } catch (error) {
-      toast.error("CodeBuddy CLI 接入失败", { description: api.asError(error) });
+      toast.error(t("wbAccounts.toast.cliIntegrationFail"), { description: api.asError(error) });
     } finally {
       setInstallingCodebuddyCli(false);
     }
@@ -678,10 +682,10 @@ function RegionPanel({ region }: { region: Region }) {
     try {
       await api.setAccountRemark(account.id, remark, region);
       await reconcileAccounts(region);
-      toast.success(remark.trim() ? "备注已保存" : "备注已清除");
+      toast.success(remark.trim() ? t("wbAccounts.toast.remarkSaved") : t("wbAccounts.toast.remarkCleared"));
       return true;
     } catch (e) {
-      toast.error("备注保存失败", { description: api.asError(e) });
+      toast.error(t("wbAccounts.toast.remarkSaveFail"), { description: api.asError(e) });
       return false;
     }
   }
@@ -731,15 +735,15 @@ function RegionPanel({ region }: { region: Region }) {
     : undefined;
   const cliCurrentAccountId = codebuddyCli?.activeAccountId;
   const workbuddyCurrentName = current
-    ? current.nickname || current.email || current.uid || "未知账号"
-    : "未登录";
+    ? current.nickname || current.email || current.uid || t("wbAccounts.common.unknownAccount")
+    : t("wbAccounts.common.notLoggedIn");
   const codebuddyCurrentName = codebuddyCli?.configured
-    ? codebuddyCli.activeAccountName || "未检测到"
-    : "尚未接入";
+    ? codebuddyCli.activeAccountName || t("wbAccounts.common.notDetected")
+    : t("wbAccounts.common.notConnected");
   const cnIdeCurrentAccountId = codebuddyCnIde?.activeAccountId;
   const cnIdeCurrentName = codebuddyCnIde?.installed
-    ? codebuddyCnIde.activeAccountName || "未检测到"
-    : "未安装";
+    ? codebuddyCnIde.activeAccountName || t("wbAccounts.common.notDetected")
+    : t("wbAccounts.common.notInstalled");
   const codebuddyUsesSettingsEnv = codebuddyCli?.authMode === "settings-env";
 
   const presence = regionPresence(status, accounts);
@@ -763,7 +767,7 @@ function RegionPanel({ region }: { region: Region }) {
               <WorkBuddyMark size={28} />
             </span>
             <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-              {descriptor.displayName}：{status?.running ? "运行中" : "未运行"} · 当前账号：{workbuddyCurrentName}
+              {descriptor.displayName}：{status?.running ? t("wbAccounts.common.running") : t("wbAccounts.common.notRunning")} · {t("wbAccounts.common.currentAccount", { name: workbuddyCurrentName })}
             </span>
           </span>
           <span className="group relative inline-flex cursor-default">
@@ -777,7 +781,7 @@ function RegionPanel({ region }: { region: Region }) {
               <CodeBuddyCnIdeMark size={28} />
             </span>
             <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-              CodeBuddy IDE：{codebuddyCnIde?.installed ? (codebuddyCnIde.running ? "运行中" : "已接入") : "未接入"} · 当前账号：{cnIdeCurrentName}
+              CodeBuddy IDE：{codebuddyCnIde?.installed ? (codebuddyCnIde.running ? t("wbAccounts.common.running") : t("wbAccounts.common.connected")) : t("wbAccounts.common.notConnected")} · {t("wbAccounts.common.currentAccount", { name: cnIdeCurrentName })}
             </span>
           </span>
           <span className="group relative inline-flex cursor-default">
@@ -791,7 +795,7 @@ function RegionPanel({ region }: { region: Region }) {
               <CodeBuddyMark size={28} />
             </span>
             <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-              CodeBuddy CLI：{codebuddyCli?.migrationRequired ? "需升级" : codebuddyCli?.configured ? "已接入" : "未接入"} · 当前账号：{codebuddyCurrentName}
+              CodeBuddy CLI：{codebuddyCli?.migrationRequired ? t("wbAccounts.common.needsUpgrade") : codebuddyCli?.configured ? t("wbAccounts.common.connected") : t("wbAccounts.common.notConnected")} · {t("wbAccounts.common.currentAccount", { name: codebuddyCurrentName })}
             </span>
           </span>
         </div>
@@ -801,17 +805,16 @@ function RegionPanel({ region }: { region: Region }) {
       {mismatch && (
         <Alert variant="warning" className="mb-4">
           <AlertTriangle />
-          <AlertTitle>检测到凭据版本不匹配</AlertTitle>
+          <AlertTitle>{t("wbAccounts.page.mismatchTitle")}</AlertTitle>
           <AlertDescription>
             <p>
-              检测到 {regionDescriptor(mismatch.actualRegion ?? "global").displayName} 的登录凭据出现在
-              {descriptor.versionLabel}的认证文件位置（domain: {mismatch.actualDomain}）。已拒绝使用该凭据。
+              {t("wbAccounts.page.mismatchBody1", { region: regionDescriptor(mismatch.actualRegion ?? "global").displayName, version: descriptor.versionLabel, domain: mismatch.actualDomain })}
             </p>
             <p className="mt-1">
-              请把 {mismatch.envVar || descriptor.authEnv} 指向{descriptor.versionLabel}登录态，或移除该文件。
+              {t("wbAccounts.page.mismatchBody2", { env: mismatch.envVar || descriptor.authEnv, version: descriptor.versionLabel })}
             </p>
             <Button className="mt-2" size="sm" variant="outline" onClick={() => setMismatchDetailOpen(true)}>
-              查看详情
+              {t("wbAccounts.page.mismatchDetail")}
             </Button>
           </AlertDescription>
         </Alert>
@@ -821,7 +824,7 @@ function RegionPanel({ region }: { region: Region }) {
       {loading && accounts.length === 0 ? (
         <div className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
           <Loader2 className="animate-spin" />
-          加载账号…
+          {t("wbAccounts.page.loadingAccounts")}
         </div>
       ) : showEmpty ? (
         <EmptyRegionCard
@@ -840,8 +843,8 @@ function RegionPanel({ region }: { region: Region }) {
             </div>
             <div className="relative flex flex-wrap items-center gap-x-5 gap-y-4">
               <div className="min-w-[190px] flex-1">
-                <h2 className="text-sm font-semibold text-foreground">添加与迁移账号</h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">快速接入新账号，或从已有环境恢复</p>
+                <h2 className="text-sm font-semibold text-foreground">{t("wbAccounts.page.addTitle")}</h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("wbAccounts.page.addSubtitle")}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2.5">
                 <DemoAction>
@@ -849,24 +852,24 @@ function RegionPanel({ region }: { region: Region }) {
                     className="h-10 bg-primary px-4 text-primary-foreground shadow-sm hover:bg-primary/90"
                     onClick={() => setOauthOpen(true)}
                   >
-                    <QrCode />OAuth 扫码添加
+                    <QrCode />{t("wbAccounts.page.oauthAdd")}
                   </Button>
                 </DemoAction>
                 <DemoAction>
                   <Button className="h-10 px-4" onClick={onImport} disabled={importing} variant="outline">
-                    {importing ? <Loader2 className="animate-spin" /> : <Download />}导入本机账号
+                    {importing ? <Loader2 className="animate-spin" /> : <Download />}{t("wbAccounts.page.importLocal")}
                   </Button>
                 </DemoAction>
               </div>
               <div className="flex items-center gap-1">
                 <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setImportOpen(true)} title="从备份文件导入账号">
-                    <FileUp />导入备份
+                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setImportOpen(true)} title={t("wbAccounts.page.importBackupTitle")}>
+                    <FileUp />{t("wbAccounts.page.importBackup")}
                   </Button>
                 </DemoAction>
                 <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setExportOpen(true)} disabled={accounts.length === 0} title="导出账号备份">
-                    <FileDown />导出
+                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setExportOpen(true)} disabled={accounts.length === 0} title={t("wbAccounts.page.exportTitle")}>
+                    <FileDown />{t("wbAccounts.page.export")}
                   </Button>
                 </DemoAction>
               </div>
@@ -875,7 +878,7 @@ function RegionPanel({ region }: { region: Region }) {
 
           {error && (
             <Alert variant="destructive" className="mb-4">
-              <AlertTitle>加载失败</AlertTitle>
+              <AlertTitle>{t("wbAccounts.page.loadFailed")}</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -887,22 +890,22 @@ function RegionPanel({ region }: { region: Region }) {
               codebuddyCli.syncPending) && (
               <Alert className="mb-4">
                 <Terminal />
-                <AlertTitle>CodeBuddy CLI 接入</AlertTitle>
+                <AlertTitle>{t("wbAccounts.page.cliTitle")}</AlertTitle>
                 <AlertDescription>
                   <p>
                     {codebuddyUsesSettingsEnv
                       ? codebuddyCli.environmentOverride
-                        ? "检测到进程环境变量 CODEBUDDY_AUTH_TOKEN。它会覆盖 settings.json；请先从 Windows 用户或系统环境变量中删除它，再重启本应用与 CodeBuddy CLI。"
+                        ? t("wbAccounts.page.cliDescEnvOverride")
                         : codebuddyCli.syncPending
-                          ? "Windows CLI 认证配置与当前账号 Token 已脱节。点击更新认证后写入最新 Token；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"
+                          ? t("wbAccounts.page.cliDescEnvSyncPending")
                           : codebuddyCli.migrationRequired
-                            ? "检测到旧版 Windows helper 配置。接入后会改用 settings.json 的 env.CODEBUDDY_AUTH_TOKEN，不再执行 helper。"
-                            : "Windows 使用 CodeBuddy settings.json 中的认证 Token；切换或保活刷新后会自动更新。当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"
+                            ? t("wbAccounts.page.cliDescEnvMigration")
+                            : t("wbAccounts.page.cliDescEnvDefault")
                       : codebuddyCli.migrationRequired
-                        ? "检测到旧版 helper，请先升级；升级前不会将 CLI 切换显示为已验证。"
+                        ? t("wbAccounts.page.cliDescHelperMigration")
                         : codebuddyCli.configured
-                          ? "当前 helper 仍按旧索引读取账号；升级后将按账号 ID 独立切换，账号增删也不会错位。"
-                          : "WorkBuddy 账号与积分功能可正常使用；如需从这里切换 CodeBuddy CLI 账号，点击下方按钮一键接入。"}
+                          ? t("wbAccounts.page.cliDescHelperConfigured")
+                          : t("wbAccounts.page.cliDescDefault")}
                   </p>
                   <DemoAction>
                     <Button
@@ -914,8 +917,8 @@ function RegionPanel({ region }: { region: Region }) {
                     >
                       {installingCodebuddyCli && <Loader2 className="animate-spin" />}
                       {codebuddyUsesSettingsEnv
-                        ? codebuddyCli.configured ? "更新 CLI 认证" : "接入 CLI"
-                        : codebuddyCli.configured || codebuddyCli.migrationRequired ? "升级 CLI helper" : "接入 CLI"}
+                        ? codebuddyCli.configured ? t("wbAccounts.page.cliBtnUpdateAuth") : t("wbAccounts.page.cliBtnConnect")
+                        : codebuddyCli.configured || codebuddyCli.migrationRequired ? t("wbAccounts.page.cliBtnUpgradeHelper") : t("wbAccounts.page.cliBtnConnect")}
                     </Button>
                   </DemoAction>
                 </AlertDescription>
@@ -926,12 +929,12 @@ function RegionPanel({ region }: { region: Region }) {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <h2 id={`accounts-list-title-${region}`} className="text-base font-semibold tracking-tight">
-                  账号
+                  {t("wbAccounts.page.accounts")}
                 </h2>
                 <Badge
                   variant="secondary"
                   className="h-6 min-w-6 rounded-full border-0 px-1.5 text-[11px] tabular-nums text-muted-foreground shadow-none"
-                  aria-label={`${accounts.length} 个账号`}
+                  aria-label={t("wbAccounts.page.accountsAria", { count: accounts.length })}
                 >
                   {accounts.length}
                 </Badge>
@@ -940,7 +943,7 @@ function RegionPanel({ region }: { region: Region }) {
                 <div className="ml-auto flex items-center gap-1">
                   <div className="mr-1 flex items-center gap-2.5">
                     <label htmlFor={`accounts-auto-checkin-${region}`} className="cursor-pointer text-xs font-medium text-muted-foreground">
-                      自动签到
+                      {t("wbAccounts.page.autoCheckin")}
                     </label>
                     <DemoAction>
                       <Switch
@@ -948,14 +951,14 @@ function RegionPanel({ region }: { region: Region }) {
                         checked={autoCheckinConfig?.enabled ?? false}
                         disabled={!autoCheckinConfig || autoCheckinSaving}
                         onCheckedChange={(enabled) => void onAutoCheckinChange(enabled)}
-                        aria-label="自动签到"
+                        aria-label={t("wbAccounts.page.autoCheckin")}
                       />
                     </DemoAction>
-                    {autoCheckinSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="正在保存自动签到设置" />}
+                    {autoCheckinSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("wbAccounts.page.autoCheckinSaving")} />}
                   </div>
                   <div className="mr-1 flex items-center gap-2.5">
                     <label htmlFor={`accounts-auto-travel-${region}`} className="cursor-pointer text-xs font-medium text-muted-foreground">
-                      自动旅行
+                      {t("wbAccounts.page.autoTravel")}
                     </label>
                     <DemoAction>
                       <Switch
@@ -963,10 +966,10 @@ function RegionPanel({ region }: { region: Region }) {
                         checked={autoTravelConfig?.enabled ?? false}
                         disabled={!autoTravelConfig || autoTravelSaving}
                         onCheckedChange={(enabled) => void onAutoTravelChange(enabled)}
-                        aria-label="自动旅行"
+                        aria-label={t("wbAccounts.page.autoTravel")}
                       />
                     </DemoAction>
-                    {autoTravelSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="正在保存自动旅行设置" />}
+                    {autoTravelSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("wbAccounts.page.autoTravelSaving")} />}
                   </div>
                   <Separator orientation="vertical" className="mx-2 h-5" />
                   <Tooltip>
@@ -976,12 +979,12 @@ function RegionPanel({ region }: { region: Region }) {
                         size="icon"
                         className={cn("size-9 rounded-lg", compact && "bg-accent text-accent-foreground")}
                         onClick={toggleCompact}
-                        aria-label={compact ? "切换为宽松模式" : "切换为紧凑模式"}
+                        aria-label={compact ? t("wbAccounts.page.compactToLoose") : t("wbAccounts.page.compactToCompact")}
                       >
                         {compact ? <Rows3 /> : <Columns3 />}
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">{compact ? "切换为宽松模式" : "切换为紧凑模式"}</TooltipContent>
+                    <TooltipContent side="top">{compact ? t("wbAccounts.page.compactToLoose") : t("wbAccounts.page.compactToCompact")}</TooltipContent>
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -993,14 +996,14 @@ function RegionPanel({ region }: { region: Region }) {
                             className="size-9 rounded-lg"
                             disabled={refreshingCredits || checkinAllRunning || accounts.length === 0}
                             onClick={() => void onRefreshCredits()}
-                            aria-label="签到并刷新全部账号积分"
+                            aria-label={t("wbAccounts.page.refreshCredits")}
                           >
                             <RefreshCw className={refreshingCredits || checkinAllRunning ? "animate-spin" : undefined} />
                           </Button>
                         </DemoAction>
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent side="top">{api.isDemoMode() ? "演示模式下不可操作" : "签到并刷新全部账号积分"}</TooltipContent>
+                    <TooltipContent side="top">{api.isDemoMode() ? t("wbAccounts.page.demoDisabled") : t("wbAccounts.page.refreshCredits")}</TooltipContent>
                   </Tooltip>
                 </div>
               </TooltipProvider>
@@ -1079,35 +1082,30 @@ function RegionPanel({ region }: { region: Region }) {
           <DialogHeader>
             <DialogTitle>
               {codebuddyUsesSettingsEnv
-                ? "更新 CodeBuddy CLI 认证"
+                ? t("wbAccounts.dialog.installTitleUpdate")
                 : codebuddyCli?.configured || codebuddyCli?.migrationRequired
-                  ? "升级 CodeBuddy CLI helper"
-                  : "接入 CodeBuddy CLI"}
+                  ? t("wbAccounts.dialog.installTitleUpgrade")
+                  : t("wbAccounts.dialog.installTitleConnect")}
             </DialogTitle>
             <DialogDescription>
               {codebuddyUsesSettingsEnv ? (
                 <>
-                  将把当前账号的认证 Token 写入
+                  {t("wbAccounts.dialog.installDescSettingsA")}
                   <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
-                  的 <code className="mx-1 rounded bg-muted px-1">env.CODEBUDDY_AUTH_TOKEN</code>。
-                  其他配置会保留；更新只影响后续加载的会话，当前运行会话不会切换。是否继续？
+                  {t("wbAccounts.dialog.installDescSettingsB")}
                 </>
               ) : (
                 <>
-                  {codebuddyCli?.configured || codebuddyCli?.migrationRequired ? "升级" : "接入"}会自动写入
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy-rotate/helper.cjs</code>
-                  并更新
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
-                  的 apiKeyHelper 配置，是否继续？
+                  {t("wbAccounts.dialog.installDescOtherA", { verb: codebuddyCli?.configured || codebuddyCli?.migrationRequired ? t("wbAccounts.dialog.installVerbUpgrade") : t("wbAccounts.dialog.installVerbConnect") })}
                 </>
               )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setInstallConfirmOpen(false)}>
-              取消
+              {t("wbAccounts.dialog.cancel")}
             </Button>
-            <Button onClick={() => void confirmInstallCodebuddyCli()}>继续</Button>
+            <Button onClick={() => void confirmInstallCodebuddyCli()}>{t("wbAccounts.dialog.continue")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1116,18 +1114,23 @@ function RegionPanel({ region }: { region: Region }) {
       <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>删除账号</DialogTitle>
+            <DialogTitle>{t("wbAccounts.dialog.deleteTitle")}</DialogTitle>
             <DialogDescription>
-              确定删除账号「{deleteTarget?.nickname || deleteTarget?.email || deleteTarget?.id}」？
-              此操作不可撤销。
+              {t("wbAccounts.dialog.deleteDesc", {
+                name:
+                  deleteTarget?.nickname ||
+                  deleteTarget?.email ||
+                  deleteTarget?.id ||
+                  t("wbAccounts.common.unknownAccount"),
+              })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              取消
+              {t("wbAccounts.dialog.cancel")}
             </Button>
             <Button variant="destructive" onClick={() => void confirmDelete()}>
-              删除
+              {t("wbAccounts.dialog.deleteConfirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1137,27 +1140,27 @@ function RegionPanel({ region }: { region: Region }) {
       <Dialog open={mismatchDetailOpen} onOpenChange={setMismatchDetailOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>凭据版本不匹配</DialogTitle>
+            <DialogTitle>{t("wbAccounts.page.mismatchDetailTitle")}</DialogTitle>
             <DialogDescription>
-              为保证安全，该凭据不会被使用，也不会向任何上游端点发送。
+              {t("wbAccounts.page.mismatchDetailDesc")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5 text-sm">
             <div className="flex justify-between gap-4">
-              <span className="text-muted-foreground">实际 domain</span>
+              <span className="text-muted-foreground">{t("wbAccounts.page.mismatchActualDomain")}</span>
               <code className="font-mono">{mismatch?.actualDomain || "—"}</code>
             </div>
             <div className="flex justify-between gap-4">
-              <span className="text-muted-foreground">期望认证文件</span>
+              <span className="text-muted-foreground">{t("wbAccounts.page.mismatchExpectedFile")}</span>
               <code className="font-mono">{mismatch?.expectedFile || descriptor.authFilename}</code>
             </div>
             <div className="flex justify-between gap-4">
-              <span className="text-muted-foreground">环境变量</span>
+              <span className="text-muted-foreground">{t("wbAccounts.page.mismatchEnvVar")}</span>
               <code className="font-mono">{mismatch?.envVar || descriptor.authEnv}</code>
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={() => setMismatchDetailOpen(false)}>关闭</Button>
+            <Button onClick={() => setMismatchDetailOpen(false)}>{t("wbAccounts.dialog.oauthClose")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1182,30 +1185,31 @@ function EmptyRegionCard({
   importing: boolean;
 }) {
   const descriptor = regionDescriptor(region);
+  const t = useT();
   return (
     <Card className="gap-0 py-0">
       <div className="flex items-start gap-3 px-5 py-5">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-medium">未检测到 WorkBuddy {descriptor.versionLabel}</h2>
+          <h2 className="text-sm font-medium">{t("wbAccounts.empty.notDetected", { version: descriptor.versionLabel })}</h2>
 
           <div className="mt-3 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground/80">可能原因：</p>
+            <p className="font-medium text-foreground/80">{t("wbAccounts.empty.possibleReasons")}</p>
             <ul className="mt-1 list-disc space-y-1 pl-5">
-              <li>未安装{descriptor.versionLabel} WorkBuddy 桌面客户端</li>
-              <li>已安装但从未登录过（未生成认证文件）</li>
-              {installed && <li>客户端已安装，但当前无可用登录态</li>}
+              <li>{t("wbAccounts.empty.reasonNotInstalled", { version: descriptor.versionLabel })}</li>
+              <li>{t("wbAccounts.empty.reasonNoLogin")}</li>
+              {installed && <li>{t("wbAccounts.empty.reasonNoSession")}</li>}
             </ul>
           </div>
 
           <div className="mt-4">
-            <p className="text-sm font-medium text-foreground/80">期望认证文件：</p>
+            <p className="text-sm font-medium text-foreground/80">{t("wbAccounts.empty.expectedAuthFile")}</p>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <code className="min-w-0 break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
                 {expectedAuthFile}
               </code>
-              <Button variant="ghost" size="sm" onClick={() => void copyText(expectedAuthFile, "路径已复制")}>
-                复制路径
+              <Button variant="ghost" size="sm" onClick={() => void copyText(expectedAuthFile, t("wbAccounts.empty.copyPathToast"))}>
+                {t("wbAccounts.empty.copyPath")}
               </Button>
             </div>
           </div>
@@ -1213,11 +1217,11 @@ function EmptyRegionCard({
           <div className="mt-4 flex flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={onRecheck}>
               <RefreshCw />
-              重新检测
+              {t("wbAccounts.empty.recheck")}
             </Button>
             <Button size="sm" onClick={onImport} disabled={importing}>
               {importing ? <Loader2 className="animate-spin" /> : <Download />}
-              从本机导入
+              {t("wbAccounts.empty.importLocal")}
             </Button>
           </div>
         </div>

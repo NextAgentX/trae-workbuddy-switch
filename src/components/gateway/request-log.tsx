@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
 import type { GatewayLogEntry } from "@/lib/types";
@@ -30,6 +31,7 @@ function statusTone(status: number): string {
 
 /** 最近 N 条请求日志（仅元数据）+ 清空（P1-1）。 */
 export function RequestLog({ className }: { className?: string }) {
+  const t = useT();
   const logs = useGatewayStore((s) => s.logs);
   const clearLogs = useGatewayStore((s) => s.clearLogs);
   const loadLogs = useGatewayStore((s) => s.loadLogs);
@@ -40,9 +42,9 @@ export function RequestLog({ className }: { className?: string }) {
     try {
       await clearLogs();
       await loadLogs();
-      toast.success("日志已清空");
+      toast.success(t("wbStats.gateway.cleared"));
     } catch (e) {
-      toast.error("清空失败", { description: api.asError(e) });
+      toast.error(t("wbStats.gateway.clearFail"), { description: api.asError(e) });
     } finally {
       setClearing(false);
     }
@@ -51,18 +53,18 @@ export function RequestLog({ className }: { className?: string }) {
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">请求日志（最近 50 条）</span>
+        <span className="text-sm font-semibold">{t("wbStats.gateway.requestLog")}</span>
         <DemoAction>
           <Button variant="ghost" size="sm" onClick={() => void onClear()} disabled={clearing || logs.length === 0}>
             {clearing ? <Loader2 className="animate-spin" /> : <Eraser />}
-            清空
+            {t("wbStats.gateway.clear")}
           </Button>
         </DemoAction>
       </div>
 
       <div className="px-5 py-3">
         {logs.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">暂无请求记录</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{t("wbStats.gateway.noRequestsLog")}</p>
         ) : (
           <div className="max-h-80 overflow-y-auto pr-1">
             {logs.slice(0, 50).map((entry, index) => (

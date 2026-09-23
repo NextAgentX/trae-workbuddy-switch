@@ -51,6 +51,8 @@ import type {
   Region,
   RegionFilter,
 } from "@/lib/types";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import { useAccountsStore } from "@/stores/accounts";
 
 type RangeKey = "30d" | "today" | "7d" | "month";
@@ -94,11 +96,11 @@ function AccountRegionBadge({ region, className }: { region?: Region; className?
   );
 }
 
-const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
-  { key: "30d", label: "近 30 天" },
-  { key: "today", label: "今天" },
-  { key: "7d", label: "近 7 天" },
-  { key: "month", label: "本月" },
+const RANGE_OPTIONS: { key: RangeKey; label: TranslationKey }[] = [
+  { key: "30d", label: "wbStats.token.range.30d" },
+  { key: "today", label: "wbStats.token.range.today" },
+  { key: "7d", label: "wbStats.token.range.7d" },
+  { key: "month", label: "wbStats.token.range.month" },
 ];
 
 function dateKey(date: Date): string {
@@ -159,6 +161,7 @@ function AccountFilterMenu({
   /** false 时隐藏「所有账号」选项，仅允许选择具体账号 */
   allowAll?: boolean;
 }) {
+  const t = useT();
   const activeFilterAccount =
     accountFilter && accounts.some((account) => account.accountId === accountFilter)
       ? accounts.find((account) => account.accountId === accountFilter)
@@ -179,10 +182,10 @@ function AccountFilterMenu({
             {activeFilterAccount
               ? accountLabel(activeFilterAccount)
               : allowAll
-                ? "所有账号"
+                ? t("wbStats.credit.allAccounts")
                 : accounts[0]
                   ? accountLabel(accounts[0])
-                  : "无账号"}
+                  : t("wbStats.credit.noAccount")}
           </span>
         </Button>
       </DropdownMenuTrigger>
@@ -191,7 +194,7 @@ function AccountFilterMenu({
           <>
             <DropdownMenuItem onSelect={() => onAccountFilterChange(null)}>
               <Users className="size-3.5 shrink-0" />
-              所有账号
+              {t("wbStats.credit.allAccounts")}
               {!effectiveFilter && <Check className="ml-auto size-3.5 shrink-0" />}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -281,8 +284,9 @@ function checkinBadgeVariant(
 }
 */
 
-function resourceName(resource: CreditResource): string {
-  return resource.packageName || resource.packageCode || "未命名资源包";
+/** 资源包名取后端下发的名称；缺失时返回 null，由渲染处回落到词表。 */
+function resourceName(resource: CreditResource): string | null {
+  return resource.packageName || resource.packageCode || null;
 }
 
 function StatMetric({
@@ -325,7 +329,7 @@ const MODEL_COLORS = [
   "var(--data-series-lime)",
 ];
 const MAX_MODELS = 5;
-const OTHER_MODEL = "其他";
+const OTHER_MODEL = "wbStats.credit.otherModel";
 
 interface ModelChartPoint {
   date: string;
@@ -418,6 +422,7 @@ function TrendChart({
   stats: CreditStatistics;
   officialUsage?: CreditOfficialUsage;
 }) {
+  const t = useT();
   /** null = 所有账号汇总；本卡片独立，不影响其他卡片 */
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
   /** 本卡片独立的时间范围，不影响其他卡片 */
@@ -468,7 +473,7 @@ function TrendChart({
   const chartConfig: ChartConfig = {};
   for (const model of series) {
     chartConfig[model] = {
-      label: model === "total" ? "总消耗" : model,
+      label: model === "total" ? t("wbStats.credit.totalUsage") : model === OTHER_MODEL ? t("wbStats.credit.otherModel") : model,
       ...(stacked
         ? { color: MODEL_COLORS[series.indexOf(model) % MODEL_COLORS.length] }
         : { color: "var(--data-series-emerald)" }),
@@ -480,7 +485,7 @@ function TrendChart({
     <section className="min-w-0 space-y-2.5" aria-labelledby="trend-chart-title">
       <div className="px-1">
         <h2 id="trend-chart-title" className="text-[13px] font-medium leading-5">
-          {officialAvailable ? "官方积分消耗" : "本地观察积分消耗"}
+          {officialAvailable ? t("wbStats.credit.officialTitle") : t("wbStats.credit.localTitle")}
         </h2>
       </div>
       <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
@@ -488,17 +493,17 @@ function TrendChart({
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
             <CardDescription className="min-w-0 text-xs">
               {officialAvailable
-                ? `来自 WorkBuddy 官方请求用量 · ${official?.rangeStart} 至 ${official?.rangeEnd}`
-                : "只统计连续快照中余额下降的正差值；官方用量暂不可用时保留此口径。"}
+                ? t("wbStats.credit.officialDesc", { start: official?.rangeStart ?? "", end: official?.rangeEnd ?? "" })
+                : t("wbStats.credit.localDesc")}
             </CardDescription>
             <div className="flex max-w-full flex-wrap items-center gap-1.5">
               <AccountFilterMenu
                 accounts={filterAccounts}
                 accountFilter={effectiveFilter}
                 onAccountFilterChange={setAccountFilter}
-                ariaLabel="按账号筛选趋势"
+                ariaLabel={t("wbStats.credit.filterByTrend")}
               />
-              <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label="趋势范围">
+              <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label={t("wbStats.credit.trendRangeAria")}>
                 {RANGE_OPTIONS.map((option) => (
                   <button
                     key={option.key}
@@ -511,7 +516,7 @@ function TrendChart({
                     onClick={() => setRange(option.key)}
                     aria-pressed={range === option.key}
                   >
-                    {option.label}
+                    {t(option.label)}
                   </button>
                 ))}
               </div>
@@ -521,11 +526,11 @@ function TrendChart({
         <CardContent className="min-w-0 px-4 pt-3 pb-4 sm:px-5">
         {!hasDataSource ? (
           <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-            尚无积分快照。首次成功采集后，统计会从该时刻开始累计。
+            {t("wbStats.credit.emptySnapshot")}
           </div>
         ) : chartData.length === 0 ? (
           <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-            当前口径暂无可展示的观察数据。
+            {t("wbStats.credit.emptyObserved")}
           </div>
         ) : (
           <>
@@ -546,7 +551,7 @@ function TrendChart({
                     <ChartTooltipContent
                       labelFormatter={(_, payload) => {
                         const item = Array.isArray(payload) ? payload[0] : payload;
-                        return `${formatChartDate(String(item?.payload?.date ?? ""))} 消耗`;
+                        return t("wbStats.credit.trendUsageLabel", { date: formatChartDate(String(item?.payload?.date ?? "")) });
                       }}
                     />
                   }
@@ -571,24 +576,24 @@ function TrendChart({
                 {stacked.models.map((model, index) => (
                   <span key={model} className="inline-flex items-center gap-1.5">
                     <span className="h-2 w-2 shrink-0 rounded-[2px]" style={{ backgroundColor: MODEL_COLORS[index % MODEL_COLORS.length] }} aria-hidden="true" />
-                    {model}
+                    {model === OTHER_MODEL ? t("wbStats.credit.otherModel") : model}
                   </span>
                 ))}
               </div>
             )}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>
-                {hasObservedUsage
-                  ? `当前口径合计 ${formatCredits(rangeUsage(summary, daily, range))} 积分`
-                  : officialAvailable
-                    ? "官方已返回明细，当前范围暂无积分消耗"
-                    : "已采集快照，暂未观察到余额下降"}
-              </span>
-              <span>{officialAvailable ? `数据更新于 ${formatDateTime(official?.collectedAt ?? stats.generatedAt)}` : `数据覆盖至 ${formatDate(stats.generatedAt)}`}</span>
-            </div>
-            <p className="sr-only">
-              {chartData.map((point) => `${point.date} 消耗 ${formatCredits(point.total)} 积分`).join("；")}
-            </p>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>
+                  {hasObservedUsage
+                    ? t("wbStats.credit.summaryTotal", { amount: formatCredits(rangeUsage(summary, daily, range)) })
+                    : officialAvailable
+                      ? t("wbStats.credit.officialNoUsage")
+                      : t("wbStats.credit.collectedFallback")}
+                </span>
+                <span>{officialAvailable ? t("wbStats.credit.dataUpdated", { time: formatDateTime(official?.collectedAt ?? stats.generatedAt) }) : t("wbStats.credit.coverage", { date: formatDate(stats.generatedAt) })}</span>
+              </div>
+              <p className="sr-only">
+                {chartData.map((point) => t("wbStats.credit.srSummary", { date: point.date, amount: formatCredits(point.total) })).join("；")}
+              </p>
           </>
         )}
         </CardContent>
@@ -701,28 +706,29 @@ function AccountTable({
 */
 
 function ResourceBreakdown({ credit, loading }: { credit?: CreditExpiry; loading?: boolean }) {
+  const t = useT();
   if (loading) {
     return (
       <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground sm:px-5">
         <Loader2 className="size-4 animate-spin" />
-        正在加载资源包…
+        {t("wbStats.credit.loadingResources")}
       </div>
     );
   }
   if (!credit) {
-    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">尚未采集当前资源包。</div>;
+    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">{t("wbStats.credit.noCurrentResource")}</div>;
   }
   if (!credit.ok) {
     return (
       <div className="flex items-start gap-2 px-4 py-8 text-sm text-destructive sm:px-5">
         <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{credit.error || "积分资源查询失败"}</span>
+        <span>{credit.error || t("wbStats.credit.resourceQueryFail")}</span>
       </div>
     );
   }
   const resources = credit.resources ?? [];
   if (resources.length === 0) {
-    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">当前没有可展示的资源包。</div>;
+    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">{t("wbStats.credit.noResources")}</div>;
   }
 
   return (
@@ -732,11 +738,13 @@ function ResourceBreakdown({ credit, loading }: { credit?: CreditExpiry; loading
         return (
           <div key={`${resource.packageCode || resource.packageName || "resource"}-${index}`} className="min-w-0 px-4 py-1.5 sm:px-5">
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <div className="min-w-0 truncate text-[13px] font-medium">{resourceName(resource)}</div>
+              <div className="min-w-0 truncate text-[13px] font-medium">
+                {resourceName(resource) ?? t("wbStats.credit.unnamedResource")}
+              </div>
               <div className="flex shrink-0 items-center gap-2.5">
                 <span className="text-[11px] text-muted-foreground">
-                  {resource.expired ? "已到期" : resource.expiringSoon ? "7 天内到期" : `到期 ${formatDate(resource.expireAt)}`}
-                  {resource.used > 0 ? ` · 已用 ${formatCredits(resource.used)}` : ""}
+                  {resource.expired ? t("wbStats.credit.expired") : resource.expiringSoon ? t("wbStats.credit.expiringSoon") : t("wbStats.credit.expireAt", { date: formatDate(resource.expireAt) })}
+                  {resource.used > 0 ? ` · ${t("wbStats.credit.used", { amount: formatCredits(resource.used) })}` : ""}
                 </span>
                 <span className="text-xs font-medium">{formatCredits(resource.remaining)} / {formatCredits(resource.total)}</span>
               </div>
@@ -752,6 +760,7 @@ function ResourceBreakdown({ credit, loading }: { credit?: CreditExpiry; loading
 }
 
 function ModelBreakdownRows({ models }: { models: CreditOfficialUsageModel[] }) {
+  const t = useT();
   const totalCredit = models.reduce((sum, model) => sum + model.credit, 0);
   const totalRequests = models.reduce((sum, model) => sum + model.requestCount, 0);
 
@@ -760,7 +769,7 @@ function ModelBreakdownRows({ models }: { models: CreditOfficialUsageModel[] }) 
       {models.slice(0, 8).map((model) => {
         const ratio = totalCredit > 0 ? model.credit / totalCredit : totalRequests > 0 ? model.requestCount / totalRequests : 0;
         const percent = ratio * 100;
-        const label = model.model === "—" ? "未知模型" : model.model;
+        const label = model.model === "—" ? t("wbStats.credit.unknownModel") : model.model;
         return (
           <div key={model.model} className="min-w-0">
             <div className="flex min-w-0 items-center justify-between gap-3 text-xs">
@@ -768,7 +777,7 @@ function ModelBreakdownRows({ models }: { models: CreditOfficialUsageModel[] }) 
                 {label}
               </span>
               <span className="shrink-0 text-muted-foreground">
-                {formatCredits(model.credit)} 积分 · {formatCredits(model.requestCount)} 次
+                {t("wbStats.credit.modelCredit", { credit: formatCredits(model.credit), requests: formatCredits(model.requestCount) })}
                 <span className="ml-1.5 font-medium text-foreground">
                   {percent < 0.05 ? "<0.1%" : `${percent.toFixed(1)}%`}
                 </span>
@@ -789,6 +798,7 @@ function ModelBreakdown({
 }: {
   officialUsage: CreditOfficialUsage;
 }) {
+  const t = useT();
   /** null = 所有账号汇总；本卡片独立，不影响其他卡片 */
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
   /** 本卡片独立的时间范围，不影响其他卡片 */
@@ -827,22 +837,22 @@ function ModelBreakdown({
   return (
     <section className="min-w-0 space-y-2.5" aria-labelledby="model-breakdown-title">
       <div className="px-1">
-        <h2 id="model-breakdown-title" className="text-[13px] font-medium leading-5">按模型分类</h2>
+        <h2 id="model-breakdown-title" className="text-[13px] font-medium leading-5">{t("wbStats.credit.byModelTitle")}</h2>
       </div>
       <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
         <CardHeader className="gap-0 px-4 pt-3 pb-0 sm:px-5">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <Badge variant="outline" className="shrink-0">
-              {models.length} 个模型
+              {t("wbStats.credit.modelsCount", { n: models.length })}
             </Badge>
             <div className="flex flex-wrap items-center justify-end gap-1.5">
               <AccountFilterMenu
                 accounts={filterAccounts}
                 accountFilter={effectiveFilter}
                 onAccountFilterChange={setAccountFilter}
-                ariaLabel="按账号筛选模型分类"
+                ariaLabel={t("wbStats.credit.filterByModel")}
               />
-              <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label="模型分类时间范围">
+              <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label={t("wbStats.credit.modelRangeAria")}>
                 {RANGE_OPTIONS.map((option) => (
                   <button
                     key={option.key}
@@ -864,16 +874,16 @@ function ModelBreakdown({
         </CardHeader>
         {models.length === 0 ? (
         <CardContent className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">
-          {activeFilterAccount && !activeFilterAccount.ok ? "该账号官方用量暂不可用。" : "官方暂无可用的模型消耗明细。"}
+          {activeFilterAccount && !activeFilterAccount.ok ? t("wbStats.credit.accountUnavailable") : t("wbStats.credit.noModelDetail")}
         </CardContent>
       ) : (
         <CardContent className="px-4 pt-3 pb-4 sm:px-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>共 {formatCredits(totalRequests)} 次请求</span>
-            <span className="font-medium text-foreground">合计 {formatCredits(totalCredit)} 积分</span>
+            <span>{t("wbStats.credit.totalRequests", { n: formatCredits(totalRequests) })}</span>
+            <span className="font-medium text-foreground">{t("wbStats.credit.totalCredit", { amount: formatCredits(totalCredit) })}</span>
           </div>
           <ModelBreakdownRows models={models} />
-          {models.length > 8 && <p className="mt-3 text-[11px] text-muted-foreground">已展示消耗最高的 8 个模型，其余模型仍计入上方合计。</p>}
+          {models.length > 8 && <p className="mt-3 text-[11px] text-muted-foreground">{t("wbStats.credit.topModels")}</p>}
         </CardContent>
       )}
       </Card>
@@ -919,6 +929,7 @@ function OfficialUsageBreakdown({
   officialUsage?: CreditOfficialUsage;
   accountId: string | null;
 }) {
+  const t = useT();
   const officialAvailable = isOfficialUsageAvailable(officialUsage);
   const account = accountId ? officialAccountFor(officialUsage, accountId) : undefined;
 
@@ -926,20 +937,20 @@ function OfficialUsageBreakdown({
     return (
       <div className="flex items-start gap-2 px-4 py-8 text-sm text-muted-foreground sm:px-5">
         <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>官方请求用量暂不可用；总览已回退到本地观察数据，请稍后刷新重试。</span>
+        <span>{t("wbStats.credit.officialUnavailable")}</span>
       </div>
     );
   }
 
   if (accountId && !account) {
-    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">该账号暂无官方用量记录。</div>;
+    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">{t("wbStats.credit.noAccountRecords")}</div>;
   }
 
   if (account && !account.ok) {
     return (
       <div className="flex items-start gap-2 px-4 py-8 text-sm text-destructive sm:px-5">
         <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{account.error || "该账号的官方请求用量查询失败"}</span>
+        <span>{account.error || t("wbStats.credit.accountQueryFail")}</span>
       </div>
     );
   }
@@ -961,25 +972,25 @@ function OfficialUsageBreakdown({
         <div className="flex items-start gap-2 border-b bg-amber-500/[0.06] px-4 py-2.5 text-xs text-amber-800 sm:px-5">
           <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            仅展示最近 {officialUsage.detailLimitPerAccount} 条请求明细；合计使用官方返回的全部 {formatCredits(totalRequests)} 条请求。
+            {t("wbStats.credit.detailTruncated", { n: officialUsage.detailLimitPerAccount, total: formatCredits(totalRequests) })}
           </span>
         </div>
       )}
       {requests.length === 0 ? (
         <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">
-          {totalRequests > 0 ? "官方返回了请求总数，但明细未通过格式校验。" : "官方暂无请求用量。"}
+          {totalRequests > 0 ? t("wbStats.credit.formatFail") : t("wbStats.credit.noRequests")}
         </div>
       ) : (
         <div className="min-w-0 overflow-x-auto">
           <table className="w-full min-w-[700px] text-left text-[11px]">
             <thead className="sticky top-0 bg-muted/95 text-muted-foreground">
               <tr>
-                <th className="px-3 py-2.5 font-medium">请求时间</th>
-                {showAccount && <th className="px-3 py-2.5 font-medium">账号</th>}
-                <th className="px-3 py-2.5 text-right font-medium">消耗</th>
-                <th className="px-3 py-2.5 font-medium">模型</th>
-                <th className="px-3 py-2.5 font-medium">客户端</th>
-                <th className="px-3 py-2.5 font-medium">请求 ID</th>
+                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colTime")}</th>
+                {showAccount && <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colAccount")}</th>}
+                <th className="px-3 py-2.5 text-right font-medium">{t("wbStats.credit.colUsage")}</th>
+                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colModel")}</th>
+                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colClient")}</th>
+                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colRequestId")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1053,8 +1064,9 @@ function ResourcesByAccount({
   creditMap: Record<string, CreditExpiry>;
   creditLoadingMap: Record<string, boolean>;
 }) {
+  const t = useT();
   if (accounts.length === 0) {
-    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">暂无账号统计。</div>;
+    return <div className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">{t("wbStats.credit.noAccountStats")}</div>;
   }
   if (accounts.length === 1) {
     const account = accounts[0];
@@ -1084,6 +1096,7 @@ function SelectedAccountDetails({
   creditMap: Record<string, CreditExpiry>;
   creditLoadingMap: Record<string, boolean>;
 }) {
+  const t = useT();
   const [detailTab, setDetailTab] = useState<"credits" | "requests">("credits");
   const official = isOfficialUsageAvailable(officialUsage) ? officialUsage : undefined;
   // 账号选项集合随 region 变化；卡片内的时间范围与账号筛选控件本身不变。
@@ -1123,13 +1136,13 @@ function SelectedAccountDetails({
     <div className="flex min-w-0 flex-col gap-12">
       <section className="min-w-0 space-y-2.5" aria-labelledby="credit-detail-title">
         <div className="px-1">
-          <h2 id="credit-detail-title" className="text-[13px] font-medium leading-5">积分明细</h2>
+          <h2 id="credit-detail-title" className="text-[13px] font-medium leading-5">{t("wbStats.credit.creditDetailTitle")}</h2>
         </div>
         <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
           <CardHeader className="gap-0 border-b px-4 pt-3 pb-3 sm:px-5">
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
               <CardDescription className="min-w-0 truncate text-xs">
-                {latestSnapshotAt ? `最近采集 ${formatDateTime(latestSnapshotAt)}` : "暂无账号资源包。"}
+                {latestSnapshotAt ? t("wbStats.credit.latestSnapshot", { time: formatDateTime(latestSnapshotAt) }) : t("wbStats.credit.noResourcePack")}
                 {visibleAccounts[0]?.region && (
                   <span className="ml-1.5 text-muted-foreground/80">
                     · {regionLabel(visibleAccounts[0].region)}
@@ -1140,15 +1153,15 @@ function SelectedAccountDetails({
                 accounts={filterAccounts}
                 accountFilter={effectiveFilter}
                 onAccountFilterChange={setAccountFilter}
-                ariaLabel="按账号筛选积分明细"
+                ariaLabel={t("wbStats.credit.filterByDetail")}
                 allowAll={false}
               />
             </div>
-            <div className="mt-3 flex max-w-full gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="积分详情类型">
+            <div className="mt-3 flex max-w-full gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label={t("wbStats.credit.detailTypeAria")}>
               {(
                 [
-                  ["credits", "积分明细"],
-                  ["requests", "请求用量"],
+                  ["credits", t("wbStats.credit.tabCredits")],
+                  ["requests", t("wbStats.credit.tabRequests")],
                 ] as const
               ).map(([value, label]) => (
                 <button
@@ -1352,15 +1365,16 @@ export default function CreditStatsPage() {
 
   const officialUsage = stats?.officialUsage;
   const official = isOfficialUsageAvailable(officialUsage) ? officialUsage : undefined;
+  const t = useT();
 
   return (
     <div className="mx-auto w-full max-w-[1180px] min-w-0 px-4 py-6 sm:px-8 sm:py-9">
       <header className="mb-4 flex min-w-0 flex-wrap items-start justify-between gap-4 sm:mb-5">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">积分统计</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">{t("wbStats.credit.pageTitle")}</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            当前数据更新于 {stats ? formatDateTime(official?.collectedAt ?? stats.generatedAt) : "—"}
-            {region === "all" && "（国内版 + 国际版）"}
+            {t("wbStats.credit.updatedPrefix")} {stats ? formatDateTime(official?.collectedAt ?? stats.generatedAt) : "—"}
+            {region === "all" && t("wbStats.credit.bothRegions")}
           </p>
         </div>
         <DemoAction>
@@ -1372,7 +1386,7 @@ export default function CreditStatsPage() {
             disabled={loading}
           >
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            刷新统计
+            {t("wbStats.credit.refresh")}
           </Button>
         </DemoAction>
       </header>
@@ -1383,18 +1397,18 @@ export default function CreditStatsPage() {
           value={region}
           onChange={setRegion}
           disabled={loading}
-          ariaLabel="积分统计范围"
+          ariaLabel={t("wbStats.credit.scopeAria")}
         />
       </div>
 
       {error && (
         <Alert variant="destructive" className="mb-5">
           <CircleAlert />
-          <AlertTitle>统计加载失败</AlertTitle>
+          <AlertTitle>{t("wbStats.credit.loadFailed")}</AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-3">
             <span>{error}</span>
             <Button size="sm" variant="outline" onClick={() => void load(region)}>
-              重试
+              {t("wbStats.credit.retry")}
             </Button>
           </AlertDescription>
         </Alert>
@@ -1403,7 +1417,7 @@ export default function CreditStatsPage() {
       {loading && !stats ? (
         <div className="flex items-center gap-2 py-20 text-sm text-muted-foreground">
           <Loader2 className="animate-spin" />
-          {`正在采集${regionFilterLabel(region)}账号积分并加载统计…`}
+          {t("wbStats.credit.collecting", { scope: regionFilterLabel(region) })}
         </div>
       ) : stats ? (
         <div className="min-w-0 space-y-12">
@@ -1411,12 +1425,14 @@ export default function CreditStatsPage() {
             <Alert>
               <CircleAlert />
               <AlertTitle>
-                {region === "all" ? "暂无账号" : `暂无${regionFilterLabel(region)}账号`}
+                {region === "all"
+                  ? t("wbStats.credit.noAccountsAll")
+                  : t("wbStats.credit.noAccountsScoped", { scope: regionFilterLabel(region) })}
               </AlertTitle>
               <AlertDescription>
                 {region === "all"
-                  ? "可以先去账号管理导入或登录账号；历史事件仍会保留在下方最近事件中。"
-                  : `可以先去账号管理导入或登录${regionFilterLabel(region)}账号；该版本以外的账号不会计入上方统计。`}
+                  ? t("wbStats.credit.noAccountsDescAll")
+                  : t("wbStats.credit.noAccountsDescScoped", { scope: regionFilterLabel(region) })}
               </AlertDescription>
             </Alert>
           )}
@@ -1425,12 +1441,17 @@ export default function CreditStatsPage() {
             <Alert variant="warning">
               <CircleAlert />
               <AlertTitle>
-                {officialUsage.status === "partial" ? "部分账号官方用量未同步" : "官方用量暂不可用"}
+                {officialUsage.status === "partial"
+                  ? t("wbStats.credit.partialSync")
+                  : t("wbStats.credit.officialUnavailableTitle")}
               </AlertTitle>
               <AlertDescription>
                 {officialUsage.status === "partial"
-                  ? `已同步 ${officialUsage.accounts.filter((account) => account.ok).length}/${officialUsage.accounts.length} 个当前账号；失败账号的官方数值显示为“—”。`
-                  : "今日、近 7 天和本月消耗将使用本地观察口径；官方接口恢复后刷新即可重新同步。"}
+                  ? t("wbStats.credit.partialSynced", {
+                      ok: officialUsage.accounts.filter((account) => account.ok).length,
+                      total: officialUsage.accounts.length,
+                    })
+                  : t("wbStats.credit.localFallbackNote")}
                 {officialUsage.errors.length > 0 && (
                   <span className="text-xs text-amber-900/75">
                     {officialUsage.errors.map((item) => `${item.accountName}: ${item.error}`).join("；")}
@@ -1440,28 +1461,28 @@ export default function CreditStatsPage() {
             </Alert>
           )}
 
-          <Card className="min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none" aria-label="积分总览">
+          <Card className="min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none" aria-label={t("wbStats.credit.overviewAria")}>
             <CardContent className="grid min-w-0 grid-cols-1 divide-y divide-border/60 p-0 sm:grid-cols-4 sm:divide-y-0 sm:py-5">
               <StatMetric
                 icon={Sparkles}
-                label="剩余积分"
+                label={t("wbStats.credit.metricRemaining")}
                 value={formatCredits(stats.summary.currentRemaining)}
               />
               <StatMetric
                 icon={TrendingDown}
-                label="今日消耗"
+                label={t("wbStats.credit.metricToday")}
                 value={formatCredits(official ? official.summary.usageToday : stats.summary.usageToday)}
                 divided
               />
               <StatMetric
                 icon={CalendarDays}
-                label="近 7 天消耗"
+                label={t("wbStats.credit.metric7d")}
                 value={formatCredits(official ? official.summary.usage7Days : stats.summary.usage7Days)}
                 divided
               />
               <StatMetric
                 icon={CalendarRange}
-                label="本月消耗"
+                label={t("wbStats.credit.metricMonth")}
                 value={formatCredits(official ? official.summary.usageThisMonth : stats.summary.usageThisMonth)}
                 divided
               />
@@ -1471,8 +1492,8 @@ export default function CreditStatsPage() {
           {!official && !stats.coverageStartAt && stats.events.some((event) => event.kind === "checkin") && (
             <Alert>
               <CircleCheck />
-              <AlertTitle>目前只有签到记录</AlertTitle>
-              <AlertDescription>签到不会被计入积分消耗。首次成功采集积分资源后，趋势统计才会开始累计。</AlertDescription>
+              <AlertTitle>{t("wbStats.credit.onlyCheckin")}</AlertTitle>
+              <AlertDescription>{t("wbStats.credit.onlyCheckinDesc")}</AlertDescription>
             </Alert>
           )}
 
@@ -1500,7 +1521,7 @@ export default function CreditStatsPage() {
         </div>
       ) : (
         <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
-          暂无统计数据，请点击刷新重试。
+          {t("wbStats.credit.noStats")}
         </div>
       )}
     </div>

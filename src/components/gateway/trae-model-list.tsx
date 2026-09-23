@@ -1,6 +1,7 @@
 import { Cpu } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
+import { useT } from "@/lib/i18n";
 import type { TraeGatewayModel } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 
@@ -24,23 +25,23 @@ export function TraeModelList({
   defaultModel: string;
   className?: string;
 }) {
+  const t = useT();
+
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Cpu className="size-4 stroke-[1.75]" />
-          模型清单
+          {t("trae.gateway.models.title")}
         </div>
         <span className="text-xs text-muted-foreground">
-          共 {models.length} 个 · 默认 {defaultModel}
+          {t("trae.gateway.models.summary", { count: models.length, model: defaultModel })}
         </span>
       </div>
       <div className="px-5 py-4">
-        <p className="mb-3 text-xs text-muted-foreground">
-          Trae 模型为客户端常量，不随上游刷新；下方清单即对外暴露的全部模型。
-        </p>
+        <p className="mb-3 text-xs text-muted-foreground">{t("trae.gateway.models.note")}</p>
         {models.length === 0 ? (
-          <p className="py-4 text-sm text-muted-foreground">暂无模型数据。</p>
+          <p className="py-4 text-sm text-muted-foreground">{t("trae.gateway.models.empty")}</p>
         ) : (
           <div className="flex flex-wrap gap-2">
             {models.map((model) => (

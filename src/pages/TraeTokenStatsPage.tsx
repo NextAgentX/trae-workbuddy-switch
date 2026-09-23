@@ -31,6 +31,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import type {
   TraeModelDailyPoint,
   TraeTokenScope,
@@ -42,10 +44,10 @@ import { useCachedResource } from "@/lib/use-cached-resource";
 
 /** 统计窗口选项。`0` 表示全部历史（后端把 `<= 0` 视为不限）。 */
 const RANGES = [
-  { value: "7", label: "近 7 天" },
-  { value: "30", label: "近 30 天" },
-  { value: "90", label: "近 90 天" },
-  { value: "0", label: "全部" },
+  { value: "7", labelKey: "trae.stats.token.range.7d" },
+  { value: "30", labelKey: "trae.stats.token.range.30d" },
+  { value: "90", labelKey: "trae.stats.token.range.90d" },
+  { value: "0", labelKey: "trae.stats.token.range.all" },
 ] as const;
 
 /**
@@ -53,27 +55,34 @@ const RANGES = [
  *
  * `unlabeled` 是升级前的旧日志（没有 `variant` 键），不是第三种产品线；
  * 切勿把它并进 `TraeVariantId`。
+ *
+ * 文案只存**键**：表在模块加载时定型，存中文会让语言切换整条失效。
  */
-const SCOPE_OPTIONS: { value: TraeTokenScope; label: string; hint: string }[] = [
-  { value: "unlabeled", label: "本机未标注", hint: "升级前未带产品线归属的旧日志" },
-  { value: "cn", label: "国内版", hint: "归属国内区域的调用（两条程序位合计）" },
-  { value: "global", label: "国际版", hint: "归属国际版区域的调用" },
-  { value: "all", label: "全部", hint: "所有产品线的调用" },
+const SCOPE_OPTIONS: { value: TraeTokenScope; labelKey: TranslationKey; hintKey: TranslationKey }[] = [
+  {
+    value: "unlabeled",
+    labelKey: "trae.stats.token.scope.unlabeled",
+    hintKey: "trae.stats.token.scope.unlabeledHint",
+  },
+  { value: "cn", labelKey: "trae.stats.token.scope.cn", hintKey: "trae.stats.token.scope.cnHint" },
+  {
+    value: "global",
+    labelKey: "trae.stats.token.scope.global",
+    hintKey: "trae.stats.token.scope.globalHint",
+  },
+  { value: "all", labelKey: "trae.stats.token.scope.all", hintKey: "trae.stats.token.scope.allHint" },
 ];
 
 const TREND_SERIES = [
-  { key: "total", label: "总 Token", color: "var(--data-series-indigo)" },
-  { key: "input", label: "输入", color: "var(--data-series-sky)" },
-  { key: "output", label: "输出", color: "var(--data-series-emerald)" },
+  { key: "total", labelKey: "trae.stats.token.series.total", color: "var(--data-series-indigo)" },
+  { key: "input", labelKey: "trae.stats.token.series.input", color: "var(--data-series-sky)" },
+  { key: "output", labelKey: "trae.stats.token.series.output", color: "var(--data-series-emerald)" },
 ] as const;
 
-const TREND_CONFIG: ChartConfig = Object.fromEntries(
-  TREND_SERIES.map((series) => [series.key, { label: series.label, color: series.color }]),
-);
-
-const MODEL_CONFIG: ChartConfig = {
-  total: { label: "总 Token", color: "var(--data-series-violet)" },
-};
+/** 模型分布柱的单系列（文案在渲染处 `t()`，故只存键）。 */
+const MODEL_SERIES = [
+  { key: "total", labelKey: "trae.stats.token.series.total", color: "var(--data-series-violet)" },
+] as const;
 
 /** 堆叠柱各模型配色的固定循环（用既有 CSS 变量，不新增裸色值）。 */
 const MODEL_COLORS = [
@@ -163,6 +172,7 @@ function StatMetric({
  * 按模型 × 按天的堆叠柱 + 调用次数折线（源 `modelDaily`）、`unsupported` 置灰卡。
  */
 export default function TraeTokenStatsPage() {
+  const t = useT();
   const [days, setDays] = useState<string>("30");
   const [scope, setScope] = useState<TraeTokenScope>("all");
 
@@ -198,6 +208,22 @@ export default function TraeTokenStatsPage() {
   const unsupported = stats?.unsupported ?? [];
   const counts = stats?.variantCounts;
 
+  /** 图表系列文案在渲染处取：模块级常量只存键，否则语言切换后图例仍是旧语言。 */
+  const trendConfig = useMemo(
+    () =>
+      Object.fromEntries(
+        TREND_SERIES.map((series) => [series.key, { label: t(series.labelKey), color: series.color }]),
+      ) as ChartConfig,
+    [t],
+  );
+  const modelConfig = useMemo(
+    () =>
+      Object.fromEntries(
+        MODEL_SERIES.map((series) => [series.key, { label: t(series.labelKey), color: series.color }]),
+      ) as ChartConfig,
+    [t],
+  );
+
   if (loading && !stats) {
     return (
       <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
@@ -212,20 +238,20 @@ export default function TraeTokenStatsPage() {
     return (
       <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
         <header className="mb-6">
-          <h1 className="text-[28px] font-semibold tracking-tight">Token 统计</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.stats.token.title")}</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            汇总经过本机 Trae 网关的调用用量。
+            {t("trae.stats.token.subtitle")}
           </p>
         </header>
         <Alert variant="destructive">
           <AlertTriangle />
-          <AlertTitle>无法读取 Token 统计</AlertTitle>
+          <AlertTitle>{t("trae.stats.token.loadFailed")}</AlertTitle>
           <AlertDescription className="flex flex-col gap-3">
             <span>{error}</span>
             <div>
               <Button variant="outline" size="sm" onClick={() => void refresh()}>
                 <RefreshCw />
-                重试
+                {t("trae.stats.token.retry")}
               </Button>
             </div>
           </AlertDescription>
@@ -240,9 +266,9 @@ export default function TraeTokenStatsPage() {
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
       <header className="mb-6 flex min-w-0 flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">Token 统计</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.stats.token.title")}</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            汇总经过本机 Trae 网关的调用用量。
+            {t("trae.stats.token.subtitle")}
           </p>
         </div>
         <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
@@ -251,7 +277,7 @@ export default function TraeTokenStatsPage() {
           <DemoAction>
             <Button variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}>
               {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              刷新
+              {t("trae.stats.token.refresh")}
             </Button>
           </DemoAction>
         </div>
@@ -260,10 +286,10 @@ export default function TraeTokenStatsPage() {
       {/* 数据源边界：不写清楚，用户会把「数字小」当成 bug。**必须保留。** */}
       <Alert className="mb-6">
         <Info />
-        <AlertTitle>数据来源</AlertTitle>
+        <AlertTitle>{t("trae.stats.token.sourceTitle")}</AlertTitle>
         <AlertDescription>
           <span className="break-all">
-            {stats?.note ?? "只统计经过本机 Trae 网关的调用。"}
+            {stats?.note ?? t("trae.stats.token.sourceFallback")}
           </span>
           {stats?.logFile && (
             <span className="mt-1 block break-all font-mono text-xs text-muted-foreground">
@@ -277,8 +303,8 @@ export default function TraeTokenStatsPage() {
               计数来自 variantCounts（只受时间窗口影响） ---- */}
       <Card className="mb-6 gap-0 py-0">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-          <span className="text-[13px] font-medium">版本范围</span>
-          <span className="text-xs text-muted-foreground">仅筛选下方统计口径，不改变时间窗口</span>
+          <span className="text-[13px] font-medium">{t("trae.stats.token.scopeTitle")}</span>
+          <span className="text-xs text-muted-foreground">{t("trae.stats.token.scopeNote")}</span>
         </div>
         <div className="px-5 py-3">
           <Tabs
@@ -288,11 +314,11 @@ export default function TraeTokenStatsPage() {
           >
             <TabsList
               className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:w-fit sm:flex-wrap"
-              aria-label="版本范围"
+              aria-label={t("trae.stats.token.scopeTitle")}
             >
               {SCOPE_OPTIONS.map((option) => (
                 <TabsTrigger key={option.value} value={option.value} className="gap-1.5 px-3">
-                  {option.label}
+                  {t(option.labelKey)}
                   <span className="rounded-full bg-muted px-1.5 text-[11px] tabular-nums text-muted-foreground">
                     {counts ? counts[option.value] : "—"}
                   </span>
@@ -305,20 +331,18 @@ export default function TraeTokenStatsPage() {
 
       {empty ? (
         <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
-          <div className="font-medium text-foreground">当前窗口内没有任何网关调用</div>
-          <p className="mt-2 text-xs">
-            到「API 服务」页启用网关，再把客户端的 Base URL 指过来，调用就会记在这里。
-          </p>
+          <div className="font-medium text-foreground">{t("trae.stats.token.emptyTitle")}</div>
+          <p className="mt-2 text-xs">{t("trae.stats.token.emptyBody")}</p>
         </div>
       ) : (
         <>
           {/* ---- 汇总 ---- */}
           <Card
             className="mb-6 min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none"
-            aria-label="用量汇总"
+            aria-label={t("trae.stats.token.summaryTitle")}
           >
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-              <span className="text-[13px] font-medium">用量汇总</span>
+              <span className="text-[13px] font-medium">{t("trae.stats.token.summaryTitle")}</span>
               <Tabs
                 className="min-w-0 shrink-0 gap-0"
                 value={days}
@@ -326,11 +350,11 @@ export default function TraeTokenStatsPage() {
               >
                 <TabsList
                   className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:w-fit sm:flex-wrap"
-                  aria-label="统计范围"
+                  aria-label={t("trae.stats.token.rangeAria")}
                 >
                   {RANGES.map((range) => (
                     <TabsTrigger key={range.value} value={range.value} className="px-2">
-                      {range.label}
+                      {t(range.labelKey)}
                     </TabsTrigger>
                   ))}
                 </TabsList>
@@ -339,51 +363,56 @@ export default function TraeTokenStatsPage() {
             <div className="grid min-w-0 grid-cols-1 divide-y divide-border/60 p-0 sm:grid-cols-4 sm:divide-y-0 sm:py-5">
               <StatMetric
                 icon={Coins}
-                label="总 Token"
+                label={t("trae.stats.token.series.total")}
                 value={formatTokens(summary?.total)}
-                hint={`输入 ${formatTokens(summary?.input)} · 输出 ${formatTokens(summary?.output)}`}
+                hint={t("trae.stats.token.summary.inputOutputHint", {
+                  input: formatTokens(summary?.input),
+                  output: formatTokens(summary?.output),
+                })}
               />
               <StatMetric
                 icon={ArrowDownToLine}
-                label="输入"
+                label={t("trae.stats.token.series.input")}
                 value={formatTokens(summary?.input)}
                 divided
               />
               <StatMetric
                 icon={ArrowUpFromLine}
-                label="输出"
+                label={t("trae.stats.token.series.output")}
                 value={formatTokens(summary?.output)}
                 divided
               />
               <StatMetric
                 icon={Server}
-                label="请求数"
+                label={t("trae.stats.token.summary.records")}
                 value={formatExact(summary?.records)}
-                hint={`其中失败 ${formatExact(summary?.errors)}`}
+                hint={t("trae.stats.token.summary.errorsHint", {
+                  count: formatExact(summary?.errors),
+                })}
                 divided
               />
             </div>
             <div className="grid min-w-0 grid-cols-1 divide-y divide-border/60 border-t border-border/60 p-0 sm:grid-cols-4 sm:divide-y-0 sm:py-5">
               <StatMetric
                 icon={Timer}
-                label="平均耗时"
+                label={t("trae.stats.token.summary.avgLatency")}
                 value={`${formatExact(summary?.avgLatencyMs)}ms`}
               />
               <StatMetric
                 icon={Gauge}
-                label="P95 耗时"
+                label={t("trae.stats.token.summary.p95Latency")}
                 value={`${formatExact(summary?.p95LatencyMs)}ms`}
                 divided
               />
               <StatMetric
                 icon={ArrowUpFromLine}
-                label="流式请求"
+                label={t("trae.stats.token.summary.streamRequests")}
                 value={formatExact(summary?.streamRequests)}
                 divided
               />
               <StatMetric
                 icon={Users}
-                label="活跃账号"
+                label={t("trae.stats.token.summary.activeAccounts")}
                 value={formatExact(accounts.length)}
                 divided
               />
@@ -397,10 +426,10 @@ export default function TraeTokenStatsPage() {
           {daily.length > 1 && (
             <Card className="mb-6 gap-0 py-0">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-                <span className="text-[13px] font-medium">每日用量趋势</span>
+                <span className="text-[13px] font-medium">{t("trae.stats.token.trendTitle")}</span>
               </div>
               <div className="px-3 py-4">
-                <ChartContainer config={TREND_CONFIG} className="h-[240px] w-full">
+                <ChartContainer config={trendConfig} className="h-[240px] w-full">
                   <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
                     <CartesianGrid vertical={false} strokeDasharray="3 3" />
                     <XAxis
@@ -434,14 +463,16 @@ export default function TraeTokenStatsPage() {
           {/* ---- 模型分布 ---- */}
           <Card className="mb-6 gap-0 py-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-              <span className="text-[13px] font-medium">按模型</span>
+              <span className="text-[13px] font-medium">{t("trae.stats.token.byModel")}</span>
             </div>
             {topModels.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-muted-foreground">暂无模型数据</p>
+              <p className="px-5 py-6 text-center text-sm text-muted-foreground">
+                {t("trae.stats.token.byModelEmpty")}
+              </p>
             ) : (
               <>
                 <div className="px-3 py-4">
-                  <ChartContainer config={MODEL_CONFIG} className="h-[200px] w-full">
+                  <ChartContainer config={modelConfig} className="h-[200px] w-full">
                     <ComposedChart data={topModels} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
                       <CartesianGrid vertical={false} strokeDasharray="3 3" />
                       <XAxis
@@ -465,11 +496,11 @@ export default function TraeTokenStatsPage() {
                     <div key={model.key} className="flex flex-wrap items-center gap-3 px-5 py-2.5">
                       <code className="min-w-0 flex-1 truncate font-mono text-xs">{model.key}</code>
                       <span className="text-xs text-muted-foreground tabular-nums">
-                        {formatExact(model.records)} 次
+                        {t("trae.stats.token.times", { count: formatExact(model.records) })}
                       </span>
                       {model.errors > 0 && (
                         <Badge variant="destructive" className="shrink-0">
-                          失败 {model.errors}
+                          {t("trae.stats.token.failed", { count: model.errors })}
                         </Badge>
                       )}
                       <span className="w-20 text-right text-xs font-medium tabular-nums">
@@ -485,10 +516,12 @@ export default function TraeTokenStatsPage() {
           {/* ---- 按账号 ---- */}
           <Card className="mb-6 gap-0 py-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-              <span className="text-[13px] font-medium">按账号</span>
+              <span className="text-[13px] font-medium">{t("trae.stats.token.byAccount")}</span>
             </div>
             {accounts.length === 0 ? (
-              <p className="px-5 py-6 text-center text-sm text-muted-foreground">暂无账号数据</p>
+              <p className="px-5 py-6 text-center text-sm text-muted-foreground">
+                {t("trae.stats.token.byAccountEmpty")}
+              </p>
             ) : (
               <div className="divide-y divide-border/60">
                 {accounts.map((account) => (
@@ -496,11 +529,11 @@ export default function TraeTokenStatsPage() {
                     <span className="min-w-0 flex-1 truncate text-sm font-medium">{account.name}</span>
                     <span className="font-mono text-xs text-muted-foreground">{account.shortId}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">
-                      {formatExact(account.records)} 次
+                      {t("trae.stats.token.times", { count: formatExact(account.records) })}
                     </span>
                     {account.errors > 0 && (
                       <Badge variant="destructive" className="shrink-0">
-                        失败 {account.errors}
+                        {t("trae.stats.token.failed", { count: account.errors })}
                       </Badge>
                     )}
                     <span className="w-20 text-right text-xs font-medium tabular-nums">
@@ -516,7 +549,7 @@ export default function TraeTokenStatsPage() {
           {(stats?.statuses.length ?? 0) > 0 && (
             <Card className="mb-6 gap-0 py-0">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-                <span className="text-[13px] font-medium">响应状态分布</span>
+                <span className="text-[13px] font-medium">{t("trae.stats.token.statusTitle")}</span>
               </div>
               <div className="flex flex-wrap gap-2 px-5 py-4">
                 {stats?.statuses.map((item) => {
@@ -548,7 +581,7 @@ export default function TraeTokenStatsPage() {
       {stats && stats.parseErrors > 0 && (
         <p className="flex items-center gap-1.5 px-1 text-xs text-amber-600">
           <CircleAlert className="size-3.5" aria-hidden="true" />
-          日志中有 {stats.parseErrors} 条记录无法解析（缺少时间戳），已跳过。
+          {t("trae.stats.token.parseErrors", { count: stats.parseErrors })}
         </p>
       )}
     </div>
@@ -562,6 +595,7 @@ export default function TraeTokenStatsPage() {
  * 空日由前端补 0，因此「整年」是画布语义，只有窗口内的日期有值。
  */
 function TokenHeatGrid({ daily }: { daily: TraeTokenStatistics["daily"] }) {
+  const t = useT();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const valueByDate = useMemo(() => new Map(daily.map((point) => [point.key ?? "", point.total])), [daily]);
   const recordByDate = useMemo(
@@ -612,15 +646,17 @@ function TokenHeatGrid({ daily }: { daily: TraeTokenStatistics["daily"] }) {
   return (
     <Card className="mb-6 min-w-0 gap-0 rounded-xl py-0 shadow-none">
       <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-[13px] font-medium">Token 活动（最近一年）</span>
-        <span className="shrink-0 text-xs text-muted-foreground">{activeDays} 个活跃日</span>
+        <span className="text-[13px] font-medium">{t("trae.stats.heatmap.title")}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {t("trae.stats.heatmap.activeDays", { count: activeDays })}
+        </span>
       </div>
       <div className="min-w-0 px-4 pt-4 pb-5 sm:px-5">
         <div ref={scrollerRef} className="overflow-x-auto pb-1">
           <div
             className="min-w-[760px]"
             role="img"
-            aria-label={`最近一年每日 Token 活动热力图，共 ${activeDays} 个活跃日`}
+            aria-label={t("trae.stats.heatmap.aria", { count: activeDays })}
           >
             <div
               className="grid gap-1"
@@ -637,7 +673,10 @@ function TokenHeatGrid({ daily }: { daily: TraeTokenStatistics["daily"] }) {
                         day.future ? "opacity-0" : HEATMAP_LEVEL_CLASS[level]
                       }`}
                       style={{ gridColumn: weekIndex + 1, gridRow: dayIndex + 1 }}
-                      aria-label={`${formatHeatmapDate(day.date)}使用了 ${formatExact(day.value)} 个 Token`}
+                      aria-label={t("trae.stats.heatmap.cellAria", {
+                        date: formatHeatmapDate(day.date),
+                        tokens: formatExact(day.value),
+                      })}
                     />
                   );
 
@@ -651,8 +690,13 @@ function TokenHeatGrid({ daily }: { daily: TraeTokenStatistics["daily"] }) {
                         sideOffset={7}
                         className="pointer-events-none rounded-lg bg-foreground px-2.5 py-1.5 text-xs leading-4 text-background shadow-md"
                       >
-                        {formatHeatmapDate(day.date)} 使用了 {formatTokens(day.value)} 个 Token
-                        {day.records > 0 ? ` · ${formatExact(day.records)} 次调用` : ""}
+                        {t("trae.stats.heatmap.tooltip", {
+                          date: formatHeatmapDate(day.date),
+                          tokens: formatTokens(day.value),
+                        })}
+                        {day.records > 0
+                          ? t("trae.stats.heatmap.tooltipCalls", { count: formatExact(day.records) })
+                          : ""}
                       </TooltipContent>
                     </Tooltip>
                   );
@@ -679,6 +723,7 @@ function TokenHeatGrid({ daily }: { daily: TraeTokenStatistics["daily"] }) {
 
 /** 按天 × 按模型的堆叠柱（Token）+ 调用次数折线（同一图，双 Y 轴）。 */
 function ModelDailyChart({ points }: { points: TraeModelDailyPoint[] }) {
+  const t = useT();
   const { rows, series } = useMemo(() => {
     const totals = new Map<string, number>();
     for (const point of points) {
@@ -719,21 +764,25 @@ function ModelDailyChart({ points }: { points: TraeModelDailyPoint[] }) {
   }, [points]);
 
   const config: ChartConfig = useMemo(() => {
-    const base: ChartConfig = { calls: { label: "调用次数", color: "var(--data-series-amber)" } };
+    const base: ChartConfig = {
+      calls: { label: t("trae.stats.token.modelDaily.calls"), color: "var(--data-series-amber)" },
+    };
     series.forEach((item) => {
       base[item.key] = { label: item.model, color: item.color };
     });
     return base;
-  }, [series]);
+  }, [series, t]);
 
   return (
     <Card className="mb-6 gap-0 py-0">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-[13px] font-medium">按模型 × 按天</span>
-        <span className="text-xs text-muted-foreground">堆叠柱＝每日 Token（按模型拆分）；折线＝当日调用次数</span>
+        <span className="text-[13px] font-medium">{t("trae.stats.token.modelDaily.title")}</span>
+        <span className="text-xs text-muted-foreground">{t("trae.stats.token.modelDaily.note")}</span>
       </div>
       {rows.length === 0 ? (
-        <p className="px-5 py-6 text-center text-sm text-muted-foreground">暂无可展示的按模型按天数据</p>
+        <p className="px-5 py-6 text-center text-sm text-muted-foreground">
+          {t("trae.stats.token.modelDaily.empty")}
+        </p>
       ) : (
         <>
           <div className="px-3 py-4">
@@ -787,7 +836,7 @@ function ModelDailyChart({ points }: { points: TraeModelDailyPoint[] }) {
             ))}
             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: "var(--data-series-amber)" }} aria-hidden="true" />
-              调用次数（右轴）
+              {t("trae.stats.token.modelDaily.callsAxis")}
             </span>
           </div>
         </>
@@ -798,16 +847,19 @@ function ModelDailyChart({ points }: { points: TraeModelDailyPoint[] }) {
 
 /** 平台做不到的维度：置灰卡，逐条带 `supportedOn` / `reason`。 */
 function UnsupportedSection({ items }: { items: TraeUnsupported[] }) {
+  const t = useT();
   return (
     <Card className="mb-6 gap-0 border-dashed py-0">
       <div className="border-b border-border/60 px-5 py-3">
-        <span className="text-[13px] font-medium">平台不支持的维度</span>
+        <span className="text-[13px] font-medium">{t("trae.stats.token.unsupportedTitle")}</span>
       </div>
       <div className="divide-y divide-border/60">
         {items.map((item) => (
           <div key={item.capability} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-5 py-3 opacity-70">
             <span className="text-sm font-medium text-muted-foreground">{item.label}</span>
-            <span className="text-xs text-muted-foreground">（仅 {item.supportedOn}）</span>
+            <span className="text-xs text-muted-foreground">
+              {t("trae.stats.token.unsupportedOnly", { on: item.supportedOn })}
+            </span>
             <span className="w-full text-xs leading-5 text-muted-foreground">{item.reason}</span>
           </div>
         ))}

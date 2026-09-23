@@ -1,17 +1,28 @@
 import * as api from "@/lib/api";
+import { t } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import type { TraeProgramStatus, TraeRegionId, TraeVariantId, TraeVariantStatus } from "@/lib/trae-types";
 
-/** 造一个「状态未知」的程序位占位。 */
+/**
+ * 造一个「状态未知」的程序位占位。
+ *
+ * `label` / `variant` 是**系统性标识**（前端比对与回传后端都用它，例如
+ * `program === "trae_code"`），因此始终保持英文；只有 `nameAlias` 是**面向用户
+ * 的展示名**，随语言切换。表在模块加载时定型 ⇒ 展示名由 `nameAliasKey` 延迟到
+ * 读取时现取（`programNameAlias`），否则切语言后整张表不会更新。
+ */
 function programStub(
   program: TraeProgramStatus["program"],
   label: string,
-  nameAlias: string,
+  nameAliasKey: TranslationKey,
   variant: TraeVariantId | null,
 ): TraeProgramStatus {
   return {
     program,
     label,
-    nameAlias,
+    get nameAlias() {
+      return t(nameAliasKey);
+    },
     variant,
     installed: false,
     running: false,
@@ -40,7 +51,10 @@ function programStub(
 export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
   {
     variant: "cn",
-    variantLabel: "国内版",
+    // 表在模块加载时就定型 ⇒ 只存文案键，展示名在**读取时**现取，语言切换才不会失效。
+    get variantLabel() {
+      return t("shared.region.version.cn");
+    },
     consoleBase: "https://www.trae.cn",
     installed: false,
     running: false,
@@ -49,13 +63,15 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     dataDir: null,
     dataDirExists: false,
     programs: [
-      programStub("trae_work", "TraeWork", "TraeWork CN", "trae_work"),
-      programStub("trae_code", "TraeCode", "TraeCode CN", "trae_cn"),
+      programStub("trae_work", "TraeWork", "trae.program.traeWork", "trae_work"),
+      programStub("trae_code", "TraeCode", "trae.program.traeCode", "trae_cn"),
     ],
   },
   {
     variant: "global",
-    variantLabel: "国际版",
+    get variantLabel() {
+      return t("shared.region.version.global");
+    },
     consoleBase: "https://www.trae.ai",
     installed: false,
     running: false,
@@ -64,14 +80,34 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     dataDir: null,
     dataDirExists: false,
     programs: [
-      programStub("trae_work", "TraeWork AI", "TraeWork", "global"),
-      programStub("trae_code", "Trae AI", "TraeCode（待实测）", null),
+      programStub("trae_work", "TraeWork AI", "trae.program.traeWorkGlobal", "global"),
+      programStub("trae_code", "Trae AI", "trae.program.traeCodePending", null),
     ],
   },
 ];
 
+/**
+ * 某个程序位当前登录的账号：**身份与展示名成对出现**。
+ *
+ * 两者同源于**同一次** `get_trae_profiles` 调用，因此结构上不可能出现
+ * 「名字已更新、身份还是旧的」这种半更新状态 —— 这正是把它们放进一个对象、
+ * 而不是两个平行的 Map 的理由（两个 Map 迟早漂移成两把不同的键）。
+ */
+export interface TraeVariantLogin {
+  /** 身份（uid）。卡片上「是不是当前账号」的相等比较用它；**不要**拿它渲染文本。 */
+  userId: string;
+  /**
+   * 给人看的名字：优先账号库里的 `name`，**查不到时回落 uid**。
+   *
+   * 回落只在这里写一次：状态条与设置页显示的是同一句话，两处各写一遍回落链
+   * 迟早出现「一处显示名字、一处显示数字」。回落而不是显示「未知账号」的理由见
+   * Rust 侧 `account::display_name_for` —— 那串数字仍能让用户去客户端里核对。
+   */
+  name: string;
+}
+
 /** 程序位标识 → 该程序当前登录账号（无 / 读不到时为 `null`）。 */
-export type TraeVariantLogins = Partial<Record<TraeVariantId, string | null>>;
+export type TraeVariantLogins = Partial<Record<TraeVariantId, TraeVariantLogin | null>>;
 
 /**
  * 「全部区域的环境状态」在快照缓存里的键。
@@ -100,7 +136,7 @@ export async function loadTraeVariantStatuses(): Promise<TraeVariantStatus[]> {
 }
 
 /**
- * 读取**每个程序位各自的**当前登录账号（`profiles.currentAccount`）。
+ * 读取**每个程序位各自的**当前登录账号（`profiles.currentAccount` + 展示名）。
  *
  * ## 为什么遍历的是**程序位**而不是区域
  *
@@ -110,6 +146,13 @@ export async function loadTraeVariantStatuses(): Promise<TraeVariantStatus[]> {
  *
  * `statuses` 由调用方传入而不是本函数自己探测：调用方（账号页）本来就要用
  * 同一份 `statuses` 去渲染控件，再探一次会得到第二个可能不一致的快照。
+ *
+ * ## 为什么同时返回身份与展示名
+ *
+ * 界面需要两个不同的事实：身份用于**相等比较**（卡片上谁是当前账号），
+ * 展示名用于**给人看**（「已登录: `<名字>`」）。改造前只返回 uid，
+ * 于是展示端只能把 uid 摆上去 —— 用户看到一串 16 位数字，认不出是谁。
+ * 两个都由后端同一次响应给出，前端只负责回落（见 {@link TraeVariantLogin.name}）。
  *
  * **单个程序位失败不影响其余**：读不到只记 `null`（视为「没有当前账号」），
  * 不抛错 —— 卡片上少一枚「当前账号」角标，远好过整页报错。
@@ -123,10 +166,14 @@ export async function loadTraeVariantLogins(
       .filter((variant): variant is TraeVariantId => variant !== null),
   );
   const pairs = await Promise.all(
-    targets.map(async (variant): Promise<[TraeVariantId, string | null]> => {
+    targets.map(async (variant): Promise<[TraeVariantId, TraeVariantLogin | null]> => {
       try {
         const profiles = await api.getTraeProfiles(variant);
-        return [variant, profiles.currentAccount ?? null];
+        const userId = profiles.currentAccount ?? null;
+        // 没有当前账号 ⇒ `null`（**不是** `{ userId: "" , name: "" }`）：
+        // 调用方靠它区分「未登录」与「已登录但名字读不到」。
+        if (userId === null) return [variant, null];
+        return [variant, { userId, name: profiles.currentAccountName || userId }];
       } catch {
         return [variant, null];
       }

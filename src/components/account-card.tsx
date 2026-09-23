@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/product-marks";
 import { cn } from "@/lib/utils";
 import { demoModeEnabled } from "@/lib/demo-mode";
+import { useT, type Translate } from "@/lib/i18n";
 import type { AccountMeta, CreditExpiry, CreditResource, TravelStatus } from "@/lib/types";
 
 const AVATAR_TONES = [
@@ -45,11 +46,11 @@ function formatCredits(value: number): string {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
 }
 
-function formatCreditExpiry(ts: number | null): string {
-  if (!ts) return "长期有效";
+function formatCreditExpiry(ts: number | null, t: Translate): string {
+  if (!ts) return t("wbAccounts.card.forever");
   const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return "长期有效";
-  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} 到期`;
+  if (Number.isNaN(date.getTime())) return t("wbAccounts.card.forever");
+  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function formatFullDate(ts: number | null): string {
@@ -116,51 +117,52 @@ function travelIconChip({
   );
 }
 
-function formatTravelRemaining(arriveAt: number | null | undefined): string | null {
+function formatTravelRemaining(arriveAt: number | null | undefined, t: Translate): string | null {
   if (!arriveAt || arriveAt <= 0) return null;
   const arriveMs = arriveAt > 1e12 ? arriveAt : arriveAt * 1000;
   const remainingMs = arriveMs - Date.now();
-  if (remainingMs <= 0) return "即将到达";
+  if (remainingMs <= 0) return t("wbAccounts.card.arrivingSoon");
   const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (hours > 0 && minutes > 0) return `剩余 ${hours} 小时 ${minutes} 分钟`;
-  if (hours > 0) return `剩余 ${hours} 小时`;
-  return `剩余 ${minutes} 分钟`;
+  if (hours > 0 && minutes > 0) return t("wbAccounts.card.remainingHM", { hours, minutes });
+  if (hours > 0) return t("wbAccounts.card.remainingH", { hours });
+  return t("wbAccounts.card.remainingM", { minutes });
 }
 
-function travelTooltip(status: TravelStatus): string {
+function travelTooltip(status: TravelStatus, t: Translate): string {
   const place = status.locationName?.trim();
   const credit = status.rewardCredit;
   const points = credit != null ? `+${credit}` : null;
-  const remaining = formatTravelRemaining(status.arriveAt);
+  const remaining = formatTravelRemaining(status.arriveAt, t);
   if (status.label === "traveling") {
-    const parts = [place, points ? `预计 ${points}` : "旅行中", remaining].filter(Boolean);
-    return parts.length > 0 ? parts.join(" · ") : "旅行中";
+    const parts = [place, points ? t("wbAccounts.card.travelEst", { points }) : t("wbAccounts.card.traveling"), remaining].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : t("wbAccounts.card.traveling");
   }
   if (status.label === "finished") {
     if (place && points) return `${place} · ${points}`;
-    if (place) return `${place} · 已结束`;
-    if (points) return `已结束 · ${points}`;
-    return "已结束";
+    if (place) return `${place} · ${t("wbAccounts.card.finished")}`;
+    if (points) return `${t("wbAccounts.card.finished")} · ${points}`;
+    return t("wbAccounts.card.finished");
   }
-  if (status.label === "no-buddy") return "无 Buddy";
-  return "未旅行";
+  if (status.label === "no-buddy") return t("wbAccounts.card.noBuddy");
+  return t("wbAccounts.card.notTraveled");
 }
 
 /** 按旅行状态渲染标签：无 Buddy / 未旅行 / 旅行中 / 已结束。 */
 function travelChip(status: TravelStatus | undefined) {
+  const t = useT();
   if (!status) return null;
   switch (status.label) {
     case "no-buddy":
-      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>无 Buddy</Badge>;
+      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>{t("wbAccounts.card.noBuddy")}</Badge>;
     case "traveling":
-      return travelIconChip({ label: travelTooltip(status), tooltip: travelTooltip(status), variant: "secondary" });
+      return travelIconChip({ label: travelTooltip(status, t), tooltip: travelTooltip(status, t), variant: "secondary" });
     case "finished":
-      return travelIconChip({ label: travelTooltip(status), tooltip: travelTooltip(status), variant: "success" });
+      return travelIconChip({ label: travelTooltip(status, t), tooltip: travelTooltip(status, t), variant: "success" });
     case "untraveled":
     default:
-      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>未旅行</Badge>;
+      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>{t("wbAccounts.card.notTraveled")}</Badge>;
   }
 }
 
@@ -206,12 +208,13 @@ interface Props {
 }
 
 function ProductCurrentState({ product, compact = false }: { product: "workbuddy" | "codebuddy" | "codebuddy-cn"; compact?: boolean }) {
+  const t = useT();
   const title =
     product === "workbuddy"
-      ? "WorkBuddy 当前账号"
+      ? t("wbAccounts.card.currentWorkbuddy")
       : product === "codebuddy-cn"
-        ? "CodeBuddy IDE 当前账号"
-        : "CodeBuddy CLI 当前账号";
+        ? t("wbAccounts.card.currentIde")
+        : t("wbAccounts.card.currentCli");
   return (
     <span
       role="status"
@@ -235,6 +238,7 @@ function ProductCurrentState({ product, compact = false }: { product: "workbuddy
 }
 
 export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, onSaveRemark, todayCheckedIn, travelStatus, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
+  const t = useT();
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [remarkEditing, setRemarkEditing] = useState(false);
   const [remarkDraft, setRemarkDraft] = useState("");
@@ -247,7 +251,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
    * 不拦的话「按 Esc 取消」会被那次 blur 反向提交成一次保存。
    */
   const skipCommitRef = useRef(false);
-  const name = account.nickname || account.uid || "未命名账号";
+  const name = account.nickname || account.uid || t("wbAccounts.card.unnamed");
   const expired = typeof account.expiresAt === "number" && account.expiresAt < Date.now();
   const remark = account.remark?.trim() || "";
 
@@ -308,21 +312,21 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
   const statusChips = (
     <>
       {todayCheckedIn !== undefined && (
-        <Badge variant={todayCheckedIn ? "success" : "secondary"} className={cn(chipClass, !todayCheckedIn && "text-muted-foreground")}><CircleCheck /> {todayCheckedIn ? "已签到" : "未签到"}</Badge>
+        <Badge variant={todayCheckedIn ? "success" : "secondary"} className={cn(chipClass, !todayCheckedIn && "text-muted-foreground")}><CircleCheck /> {todayCheckedIn ? t("wbAccounts.card.checkedIn") : t("wbAccounts.card.notCheckedIn")}</Badge>
       )}
       {travelChip(travelStatus)}
-      {(account.needsRelogin || expired) && <Badge variant="warning" className={chipClass}>{account.needsRelogin ? "需重新登录" : "Token 已过期"}</Badge>}
+      {(account.needsRelogin || expired) && <Badge variant="warning" className={chipClass}>{account.needsRelogin ? t("wbAccounts.card.needRelogin") : t("wbAccounts.card.tokenExpired")}</Badge>}
       {creditPriority && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Badge variant="warning" className={cn(chipClass, "px-1")} aria-label="建议优先">
+            <Badge variant="warning" className={cn(chipClass, "px-1")} aria-label={t("wbAccounts.card.priorityAria")}>
               <Star className="size-3.5" />
             </Badge>
           </TooltipTrigger>
-          <TooltipContent side="top">建议优先使用</TooltipContent>
+          <TooltipContent side="top">{t("wbAccounts.card.priorityTip")}</TooltipContent>
         </Tooltip>
       )}
-      {!compact && activeProductCount >= 2 && <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>{activeProductCount} 个工具正在使用</Badge>}
+      {!compact && activeProductCount >= 2 && <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>{t("wbAccounts.card.toolsInUse", { n: activeProductCount })}</Badge>}
     </>
   );
 
@@ -359,32 +363,32 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         <div className={cn("absolute z-20", compact ? "right-2.5 top-1/2 -translate-y-1/2" : "right-3.5 top-3.5")}>
           {demoModeEnabled ? (
             <DemoAction>
-              <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={`管理账号 ${name}`} title="更多账号操作">
+              <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={t("wbAccounts.card.manageAria", { name })} title={t("wbAccounts.card.moreActions")}>
                 <Ellipsis />
               </Button>
             </DemoAction>
           ) : (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={`管理账号 ${name}`} title="更多账号操作">
+                <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={t("wbAccounts.card.manageAria", { name })} title={t("wbAccounts.card.moreActions")}>
                   <Ellipsis />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-40">
                 <DropdownMenuItem disabled={featuresDisabled || !onRefresh} onSelect={() => onRefresh?.(account)}>
-                  <RefreshCw />刷新 Token
+                  <RefreshCw />{t("wbAccounts.card.refreshToken")}
                 </DropdownMenuItem>
                 {todayCheckedIn === false && (
                   <DropdownMenuItem disabled={featuresDisabled || !onCheckin} onSelect={() => onCheckin?.(account)}>
-                    <CircleCheck />手动签到
+                    <CircleCheck />{t("wbAccounts.card.manualCheckin")}
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem disabled={featuresDisabled || !onSaveRemark} onSelect={beginRemarkEdit}>
-                  <StickyNote />编辑备注
+                  <StickyNote />{t("wbAccounts.card.editRemark")}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive focus:bg-destructive/5 focus:text-destructive" onSelect={() => onDelete(account)}>
-                  <Trash2 />删除账号
+                  <Trash2 />{t("wbAccounts.card.deleteAccount")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -406,22 +410,22 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">WorkBuddy 当前账号</TooltipContent>
+                  <TooltipContent side="top">{t("wbAccounts.card.currentWorkbuddy")}</TooltipContent>
                 </Tooltip>
               ) : demoModeEnabled ? (
                 <DemoAction>
-                  <Button variant="outline" size="icon" className="size-7 rounded-lg" aria-label="设为 WorkBuddy 当前账号">
+                  <Button variant="outline" size="icon" className="size-7 rounded-lg" aria-label={t("wbAccounts.card.setCurrentWorkbuddy")}>
                     <WorkBuddyMark size={15} />
                   </Button>
                 </DemoAction>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 WorkBuddy 当前账号">
+                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label={t("wbAccounts.card.setCurrentWorkbuddy")}>
                       <WorkBuddyMark size={15} />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">设为 WorkBuddy 当前账号（会重启 WorkBuddy）</TooltipContent>
+                  <TooltipContent side="top">{t("wbAccounts.card.setCurrentWorkbuddyRestart")}</TooltipContent>
                 </Tooltip>
               )}
               {codebuddyCnIdeActive ? (
@@ -434,16 +438,16 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">CodeBuddy IDE 当前账号</TooltipContent>
+                  <TooltipContent side="top">{t("wbAccounts.card.currentIde")}</TooltipContent>
                 </Tooltip>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="relative size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? "正在切换 CodeBuddy IDE" : "切换到 CodeBuddy IDE"} aria-busy={codebuddyCnIdeLoading}>
+                    <Button variant="outline" size="icon" className="relative size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? t("wbAccounts.card.switchingIde") : t("wbAccounts.card.switchIde")} aria-busy={codebuddyCnIdeLoading}>
                       {codebuddyCnIdeLoading ? <Loader2 className="size-3.5 animate-spin" /> : <CodeBuddyCnIdeMark size={15} />}
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">{codebuddyCnIdeAvailable ? "切换到 CodeBuddy IDE（会重启 IDE）" : "未检测到 CodeBuddy IDE"}</TooltipContent>
+                  <TooltipContent side="top">{codebuddyCnIdeAvailable ? t("wbAccounts.card.switchIdeRestart") : t("wbAccounts.card.ideNotDetected")}</TooltipContent>
                 </Tooltip>
               )}
               {codebuddyCliActive ? (
@@ -456,16 +460,16 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">CodeBuddy CLI 当前账号</TooltipContent>
+                  <TooltipContent side="top">{t("wbAccounts.card.currentCli")}</TooltipContent>
                 </Tooltip>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? "正在切换 CodeBuddy CLI 当前账号" : "设为 CodeBuddy CLI 当前账号"} aria-busy={codebuddyCliLoading}>
+                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? t("wbAccounts.card.switchingCli") : t("wbAccounts.card.setCurrentCli")} aria-busy={codebuddyCliLoading}>
                       {codebuddyCliLoading ? <Loader2 className="size-3.5 animate-spin" /> : <CodeBuddyMark size={15} />}
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">{codebuddyCliConfigured ? "设为 CodeBuddy CLI 当前账号" : "请先接入 CodeBuddy CLI"}</TooltipContent>
+                  <TooltipContent side="top">{codebuddyCliConfigured ? t("wbAccounts.card.setCurrentCli") : t("wbAccounts.card.connectCliFirst")}</TooltipContent>
                 </Tooltip>
               )}
             </div>
@@ -505,10 +509,10 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             }}
             onBlur={() => void commitRemark()}
             maxLength={80}
-            placeholder="例如：DS4.1 额度 · 10/03 解禁"
+            placeholder={t("wbAccounts.card.remarkPlaceholder")}
             spellCheck={false}
             autoComplete="off"
-            aria-label={`${name} 的备注`}
+            aria-label={t("wbAccounts.card.remarkAria", { name })}
             className={cn("mb-3 h-7 w-full text-xs", compact && "mb-2")}
           />
         ) : remark ? (
@@ -517,7 +521,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             onClick={beginRemarkEdit}
             disabled={featuresDisabled || !onSaveRemark}
             title={remark}
-            aria-label={`编辑 ${name} 的备注`}
+            aria-label={t("wbAccounts.card.editRemarkAria", { name })}
             className={cn(
               "-mx-1 mb-3 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-1.5 rounded-md px-1 text-left text-[11px] leading-4 text-foreground/80 transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
               compact && "mb-2",
@@ -534,18 +538,18 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             className="-mx-1 mb-3 flex w-[calc(100%+0.5rem)] items-center gap-1.5 rounded-md px-1 text-left text-[11px] leading-4 text-muted-foreground/70 transition-colors hover:bg-foreground/[0.04] hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           >
             <Pencil className="size-3 shrink-0" aria-hidden="true" />
-            添加备注
+            {t("wbAccounts.card.addRemark")}
           </button>
         )}
 
         {creditLoading ? (
-          <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />积分查询中…</div>
+          <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t("wbAccounts.card.loadingCredits")}</div>
         ) : !credit ? (
-          <div className="py-3 text-sm text-muted-foreground">等待积分数据…</div>
+          <div className="py-3 text-sm text-muted-foreground">{t("wbAccounts.card.waitingCredits")}</div>
         ) : !credit.ok ? (
           <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-destructive" title={credit.error}>
             <Coins className="size-4 shrink-0" />
-            <span className="min-w-0 truncate">{credit.error || "积分查询失败"}</span>
+            <span className="min-w-0 truncate">{credit.error || t("wbAccounts.card.creditFailed")}</span>
           </div>
         ) : (
           <>
@@ -554,36 +558,36 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                 <Sparkles className="size-4 shrink-0 stroke-[1.75] text-muted-foreground" aria-hidden="true" />
                 <strong className={cn("font-semibold leading-none tabular-nums tracking-[-0.025em]", compact ? "text-[20px]" : "text-[22px]")} style={{ fontFamily: '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif' }}>{formatCredits(credit.totalRemaining ?? 0)}</strong>
               </span>
-              <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>{resources.length} 个积分包</span>
-              <div className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={expiringAmount > 0 ? `${formatCredits(expiringAmount)} 积分将在 7 天内到期` : resources[0]?.expireAt ? `最近到期 ${formatCreditExpiry(resources[0].expireAt).replace(" 到期", "")}` : "当前积分长期有效"}>
+              <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>{t("wbAccounts.card.creditPacks", { n: resources.length })}</span>
+              <div className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={expiringAmount > 0 ? t("wbAccounts.card.expireSoon", { amount: formatCredits(expiringAmount) }) : resources[0]?.expireAt ? t("wbAccounts.card.nextExpiry", { date: formatCreditExpiry(resources[0].expireAt, t) }) : t("wbAccounts.card.creditsForever")}>
                 <Clock3 className="size-3.5 shrink-0" />
-                <span className="whitespace-nowrap tabular-nums">{creditUpdatedAt ? `${formatCreditUpdatedAt(creditUpdatedAt)} 更新` : "—"}</span>
+                <span className="whitespace-nowrap tabular-nums">{creditUpdatedAt ? `${formatCreditUpdatedAt(creditUpdatedAt)} ${t("wbAccounts.card.updated")}` : "—"}</span>
               </div>
             </div>
 
-            <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>近期到期</div>
+            <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>{t("wbAccounts.card.expiringSoonTitle")}</div>
             <div className={cn(compact ? "mt-1.5 space-y-2" : "mt-2 space-y-2.5")}>
               {visibleResources.length > 0 ? visibleResources.map((resource, index) => {
-                const resourceName = resource.packageName || resource.packageCode || "积分包";
+                const resourceName = resource.packageName || resource.packageCode || t("wbAccounts.card.creditPackFallback");
                 const ratio = resource.total > 0 ? Math.min(100, Math.max(0, (resource.remaining / resource.total) * 100)) : 0;
                 return (
-                  <div key={`${resource.packageCode ?? "resource"}-${resource.expireAt ?? "none"}-${index}`} className="min-w-0" title={`${resourceName} · 剩余 ${formatCredits(resource.remaining)} / ${formatCredits(resource.total)} · ${formatCreditExpiry(resource.expireAt)}`}>
+                  <div key={`${resource.packageCode ?? "resource"}-${resource.expireAt ?? "none"}-${index}`} className="min-w-0" title={t("wbAccounts.card.resourceTitle", { name: resourceName, remaining: formatCredits(resource.remaining), total: formatCredits(resource.total), expiry: formatCreditExpiry(resource.expireAt, t) })}>
                     <div className={cn("grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3", compact ? "text-[11px]" : "text-xs")}>
-                      <span className={cn("rounded-lg bg-muted/80 font-medium tabular-nums text-foreground", compact ? "px-1.5 py-0.5" : "px-2 py-1")}>{formatCredits(resource.remaining)} 积分</span>
+                      <span className={cn("rounded-lg bg-muted/80 font-medium tabular-nums text-foreground", compact ? "px-1.5 py-0.5" : "px-2 py-1")}>{t("wbAccounts.card.creditsUnit", { n: formatCredits(resource.remaining) })}</span>
                       <span className="truncate text-muted-foreground">{resourceName}</span>
-                      <span className={cn("whitespace-nowrap tabular-nums", expiryClass(resource.expired, resource.expiringSoon))}>{formatCreditExpiry(resource.expireAt)}</span>
+                      <span className={cn("whitespace-nowrap tabular-nums", expiryClass(resource.expired, resource.expiringSoon))}>{formatCreditExpiry(resource.expireAt, t)}</span>
                     </div>
                     <div className={cn("h-1 overflow-hidden rounded-full bg-muted", compact ? "mt-1" : "mt-1.5")} aria-hidden="true">
                       <div className={cn("h-full rounded-full", resource.expiringSoon || resource.expired ? "bg-orange-500" : "bg-primary")} style={{ width: `${ratio}%` }} />
                     </div>
                   </div>
                 );
-              }) : <div className="py-1 text-[11px] text-muted-foreground">暂无可用积分</div>}
+              }) : <div className="py-1 text-[11px] text-muted-foreground">{t("wbAccounts.card.noCredits")}</div>}
             </div>
 
             {resources.length > 2 && (
               <button type="button" className={cn("inline-flex w-fit items-center gap-1.5 font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30", compact ? "mt-2 text-[11px]" : "mt-3 text-xs")} onClick={() => setResourcesOpen(true)}>
-                查看全部积分包
+                {t("wbAccounts.card.viewAllPacks")}
                 <ArrowRight className="size-3.5" />
               </button>
             )}
@@ -595,38 +599,38 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         <footer className="flex flex-wrap items-center gap-2.5 border-t px-5 py-2.5">
           {workbuddyActive ? <ProductCurrentState product="workbuddy" compact /> : demoModeEnabled ? (
             <DemoAction>
-              <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="设为 WorkBuddy 当前账号">
-                <WorkBuddyMark size={18} /><span>设为当前</span>
+              <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label={t("wbAccounts.card.setCurrentWorkbuddy")}>
+                <WorkBuddyMark size={18} /><span>{t("wbAccounts.card.setCurrent")}</span>
               </Button>
             </DemoAction>
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 WorkBuddy 当前账号">
-                  <WorkBuddyMark size={18} /><span>设为当前</span>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label={t("wbAccounts.card.setCurrentWorkbuddy")}>
+                  <WorkBuddyMark size={18} /><span>{t("wbAccounts.card.setCurrent")}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">设为 WorkBuddy 当前账号（会重启 WorkBuddy）</TooltipContent>
+              <TooltipContent side="top">{t("wbAccounts.card.setCurrentWorkbuddyRestart")}</TooltipContent>
             </Tooltip>
           )}
           {codebuddyCnIdeActive ? <ProductCurrentState product="codebuddy-cn" compact /> : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? "正在切换 CodeBuddy IDE" : "切换到 CodeBuddy IDE"} aria-busy={codebuddyCnIdeLoading}>
-                  {codebuddyCnIdeLoading ? <Loader2 className="size-4 animate-spin" /> : <CodeBuddyCnIdeMark size={18} />}<span>{codebuddyCnIdeLoading ? "切换中…" : "IDE"}</span>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? t("wbAccounts.card.switchingIde") : t("wbAccounts.card.switchIde")} aria-busy={codebuddyCnIdeLoading}>
+                  {codebuddyCnIdeLoading ? <Loader2 className="size-4 animate-spin" /> : <CodeBuddyCnIdeMark size={18} />}<span>{codebuddyCnIdeLoading ? t("wbAccounts.card.switching") : "IDE"}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">{codebuddyCnIdeAvailable ? "切换到 CodeBuddy IDE（会重启 IDE）" : "未检测到 CodeBuddy IDE"}</TooltipContent>
+              <TooltipContent side="top">{codebuddyCnIdeAvailable ? t("wbAccounts.card.switchIdeRestart") : t("wbAccounts.card.ideNotDetected")}</TooltipContent>
             </Tooltip>
           )}
           {codebuddyCliActive ? <ProductCurrentState product="codebuddy" compact /> : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? "正在切换 CodeBuddy CLI 当前账号" : "设为 CodeBuddy CLI 当前账号"} aria-busy={codebuddyCliLoading}>
-                  {codebuddyCliLoading ? <Loader2 className="size-4 animate-spin" /> : <CodeBuddyMark size={18} />}<span>{codebuddyCliLoading ? "切换中…" : "CLI 当前"}</span>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? t("wbAccounts.card.switchingCli") : t("wbAccounts.card.setCurrentCli")} aria-busy={codebuddyCliLoading}>
+                  {codebuddyCliLoading ? <Loader2 className="size-4 animate-spin" /> : <CodeBuddyMark size={18} />}<span>{codebuddyCliLoading ? t("wbAccounts.card.switching") : t("wbAccounts.card.cliCurrent")}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">{codebuddyCliConfigured ? "设为 CodeBuddy CLI 当前账号" : "请先接入 CodeBuddy CLI"}</TooltipContent>
+              <TooltipContent side="top">{codebuddyCliConfigured ? t("wbAccounts.card.setCurrentCli") : t("wbAccounts.card.connectCliFirst")}</TooltipContent>
             </Tooltip>
           )}
         </footer>
@@ -636,11 +640,11 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
       <Dialog open={resourcesOpen} onOpenChange={setResourcesOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>全部积分包</DialogTitle>
-            <DialogDescription>{name} · 共 {allResources.length} 个积分包</DialogDescription>
+            <DialogTitle>{t("wbAccounts.card.allPacksTitle")}</DialogTitle>
+            <DialogDescription>{t("wbAccounts.card.allPacksDesc", { name, n: allResources.length })}</DialogDescription>
           </DialogHeader>
           {allResources.length === 0 ? (
-            <div className="px-1 py-6 text-center text-sm text-muted-foreground">当前没有可展示的资源包。</div>
+            <div className="px-1 py-6 text-center text-sm text-muted-foreground">{t("wbAccounts.card.noResourcePacks")}</div>
           ) : (
             <div className="max-h-[60vh] min-w-0 overflow-y-auto divide-y divide-border/60">
               {allResources.map((resource, index) => {
@@ -649,14 +653,20 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                   <div key={`${resource.packageCode || resource.packageName || "resource"}-${index}`} className="min-w-0 py-3 first:pt-0 last:pb-0">
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{resource.packageName || resource.packageCode || "未命名资源包"}</div>
+                        <div className="truncate text-sm font-medium">{resource.packageName || resource.packageCode || t("wbAccounts.card.unnamedPack")}</div>
                         <div className="mt-1 text-[11px] text-muted-foreground">
-                          {resource.expired ? "已到期" : resource.expiringSoon ? "7 天内到期" : resource.expireAt ? `到期 ${formatFullDate(resource.expireAt)}` : "长期有效"}
+                          {resource.expired
+                            ? t("wbAccounts.card.expired")
+                            : resource.expiringSoon
+                              ? t("wbAccounts.card.expiresIn7")
+                              : resource.expireAt
+                                ? t("wbAccounts.card.expiresOn", { date: formatFullDate(resource.expireAt) })
+                                : t("wbAccounts.card.forever")}
                         </div>
                       </div>
                       <div className="shrink-0 text-right text-xs">
                         <div className="font-medium">{formatCredits(resource.remaining)} / {formatCredits(resource.total)}</div>
-                        <div className="mt-1 text-[11px] text-muted-foreground">已用 {formatCredits(resource.used)}</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">{t("wbAccounts.card.used", { n: formatCredits(resource.used) })}</div>
                       </div>
                     </div>
                     <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">

@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { useT, type Translate } from "@/lib/i18n";
 import type { TraeImportPreviewAccount, TraeVariantId } from "@/lib/trae-types";
 
 interface Props {
@@ -25,8 +26,8 @@ interface Props {
 }
 
 /** 导入预览账号展示名（脱敏展示：名字 / UID）。 */
-function previewLabel(a: TraeImportPreviewAccount): string {
-  return a.name || (a.userId ? `UID · ${a.userId}` : `第 ${a.index + 1} 项`);
+function previewLabel(a: TraeImportPreviewAccount, t: Translate): string {
+  return a.name || (a.userId ? t("trae.comp.import.uid", { uid: a.userId }) : t("trae.comp.import.item", { index: a.index + 1 }));
 }
 
 /**
@@ -37,6 +38,7 @@ function previewLabel(a: TraeImportPreviewAccount): string {
  * 前端拿不到也可能是刻意不拿。
  */
 export function TraeImportAccountsDialog({ open, onOpenChange, variant, onImported }: Props) {
+  const t = useT();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState("");
   const [fileText, setFileText] = useState("");
@@ -124,8 +126,8 @@ export function TraeImportAccountsDialog({ open, onOpenChange, variant, onImport
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="min-w-0 overflow-x-hidden">
         <DialogHeader>
-          <DialogTitle>导入账号</DialogTitle>
-          <DialogDescription>选择 Trae 账号备份 JSON，勾选要导入的账号。</DialogDescription>
+          <DialogTitle>{t("trae.comp.import.title")}</DialogTitle>
+          <DialogDescription>{t("trae.comp.import.desc")}</DialogDescription>
         </DialogHeader>
 
         <input
@@ -139,14 +141,14 @@ export function TraeImportAccountsDialog({ open, onOpenChange, variant, onImport
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={chooseFile} disabled={busy}>
             <FileUp />
-            选择文件
+            {t("trae.comp.import.chooseFile")}
           </Button>
           {fileName && <span className="truncate text-xs text-muted-foreground">{fileName}</span>}
         </div>
 
         {parsing && (
           <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-            <Loader2 className="animate-spin" /> 正在解析…
+            <Loader2 className="animate-spin" /> {t("trae.comp.import.parsing")}
           </div>
         )}
 
@@ -154,10 +156,10 @@ export function TraeImportAccountsDialog({ open, onOpenChange, variant, onImport
           <>
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
-                共 {preview.length} 个账号，已选 {selected.size} 个
+                {t("trae.comp.import.summary", { total: preview.length, count: selected.size })}
               </span>
               <button type="button" className="text-primary hover:underline" onClick={toggleAll}>
-                {allSelected ? "取消全选" : "全选"}
+                {allSelected ? t("trae.comp.import.deselectAll") : t("trae.comp.import.selectAll")}
               </button>
             </div>
             <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
@@ -172,8 +174,8 @@ export function TraeImportAccountsDialog({ open, onOpenChange, variant, onImport
                     checked={selected.has(a.index)}
                     onChange={() => toggle(a.index)}
                   />
-                  <span className="min-w-0 flex-1 truncate text-sm">{previewLabel(a)}</span>
-                  {!a.hasJwt && <Badge variant="outline">缺少 JWT</Badge>}
+                  <span className="min-w-0 flex-1 truncate text-sm">{previewLabel(a, t)}</span>
+                  {!a.hasJwt && <Badge variant="outline">{t("trae.comp.import.missingJwt")}</Badge>}
                 </label>
               ))}
             </div>
@@ -188,10 +190,10 @@ export function TraeImportAccountsDialog({ open, onOpenChange, variant, onImport
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            取消
+            {t("trae.comp.import.cancel")}
           </Button>
           <Button onClick={doImport} disabled={busy || parsing || selected.size === 0}>
-            {busy ? "导入中…" : "导入勾选账号"}
+            {busy ? t("trae.comp.import.busy") : t("trae.comp.import.submit")}
           </Button>
         </DialogFooter>
       </DialogContent>

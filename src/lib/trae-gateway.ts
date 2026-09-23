@@ -10,6 +10,7 @@
  * camelCase 只作防御性兜底。
  */
 
+import { t } from "@/lib/i18n";
 import type {
   TraeGatewayAccountStatus,
   TraeGatewayConfig,
@@ -198,9 +199,35 @@ export const TRAE_POOL_STATUS_LABELS: Record<
   TraeGatewayAccountStatus["status"],
   { label: string; tone: "ok" | "warn" | "danger" | "muted" }
 > = {
-  available: { label: "可用", tone: "ok" },
-  cooling: { label: "冷却中", tone: "warn" },
-  disabled: { label: "会话失效", tone: "danger" },
-  expired: { label: "积分过期", tone: "warn" },
-  no_credits: { label: "零积分", tone: "muted" },
+  // 表在模块加载时就定型 ⇒ 只存文案键，标签在**读取时**现取（调用方照旧读 `meta.label`）。
+  available: {
+    get label() {
+      return t("shared.trae.poolStatus.available");
+    },
+    tone: "ok",
+  },
+  cooling: {
+    get label() {
+      return t("shared.trae.poolStatus.cooling");
+    },
+    tone: "warn",
+  },
+  disabled: {
+    get label() {
+      return t("shared.trae.poolStatus.disabled");
+    },
+    tone: "danger",
+  },
+  expired: {
+    get label() {
+      return t("shared.trae.poolStatus.expired");
+    },
+    tone: "warn",
+  },
+  no_credits: {
+    get label() {
+      return t("shared.trae.poolStatus.noCredits");
+    },
+    tone: "muted",
+  },
 };

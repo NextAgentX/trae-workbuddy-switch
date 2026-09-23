@@ -150,6 +150,9 @@ export const zh = {
   "wbAccounts.dialog.switchTitle": "切换到「{name}」",
   "wbAccounts.dialog.switchDesc": "切换会关闭并重启 WorkBuddy，认证文件将写入目标账号。",
   "wbAccounts.dialog.switchProgress": "正在切换账号…",
+  "wbAccounts.dialog.migrateProgress": "正在迁移账号数据…",
+  /** 切换结果摘要里多条片段的分隔符（中文用全角分号，英文用逗号）。 */
+  "wbAccounts.dialog.listSeparator": "；",
   "wbAccounts.dialog.switchProcessing": "正在处理中，请勿关闭窗口",
   "wbAccounts.dialog.sourceVersion": "数据来源版本",
   "wbAccounts.dialog.sourceSame": "与目标一致（{region}），同版本内搬运",
@@ -210,6 +213,7 @@ export const zh = {
 
   // ---- 导入账号弹窗 ----
   "wbAccounts.dialog.importTitle": "导入账号",
+  "wbAccounts.dialog.importItemFallback": "第 {index} 项",
   "wbAccounts.dialog.importDesc": "选择 JSON 文件，勾选要导入的账号。",
   "wbAccounts.dialog.chooseFile": "选择文件",
   "wbAccounts.dialog.parsing": "正在解析…",
@@ -293,6 +297,7 @@ export const zh = {
   "wbAccounts.toast.switchCliLoading": "正在切换 CodeBuddy CLI…",
   "wbAccounts.toast.switchCliLoadingDesc": "正在将默认账号设为 {name}",
   "wbAccounts.toast.switchCliUpdated": "CodeBuddy CLI 默认账号已更新",
+  "wbAccounts.toast.configUpdated": "配置已更新",
   "wbAccounts.toast.switchCliFail": "CodeBuddy CLI 切换失败",
   "wbAccounts.toast.switchIdeLoading": "正在切换 CodeBuddy IDE…",
   "wbAccounts.toast.switchIdeLoadingDesc": "将注入凭证并重启 CodeBuddy IDE",

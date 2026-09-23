@@ -146,6 +146,8 @@ export const en = {
   "wbAccounts.dialog.switchTitle": "Switch to \"{name}\"",
   "wbAccounts.dialog.switchDesc": "Switching closes and restarts WorkBuddy; the auth file is written to the target account.",
   "wbAccounts.dialog.switchProgress": "Switching account…",
+  "wbAccounts.dialog.migrateProgress": "Migrating account data…",
+  "wbAccounts.dialog.listSeparator": "; ",
   "wbAccounts.dialog.switchProcessing": "Processing, please don't close this window",
   "wbAccounts.dialog.sourceVersion": "Data source version",
   "wbAccounts.dialog.sourceSame": "Same as target ({region}); moving within the same version",
@@ -206,6 +208,7 @@ export const en = {
 
   // ---- Import accounts dialog ----
   "wbAccounts.dialog.importTitle": "Import accounts",
+  "wbAccounts.dialog.importItemFallback": "Item {index}",
   "wbAccounts.dialog.importDesc": "Choose a JSON file and select the accounts to import.",
   "wbAccounts.dialog.chooseFile": "Choose file",
   "wbAccounts.dialog.parsing": "Parsing…",
@@ -289,6 +292,7 @@ export const en = {
   "wbAccounts.toast.switchCliLoading": "Switching CodeBuddy CLI…",
   "wbAccounts.toast.switchCliLoadingDesc": "Setting the default account to {name}",
   "wbAccounts.toast.switchCliUpdated": "CodeBuddy CLI default account updated",
+  "wbAccounts.toast.configUpdated": "Configuration updated",
   "wbAccounts.toast.switchCliFail": "Failed to switch CodeBuddy CLI",
   "wbAccounts.toast.switchIdeLoading": "Switching CodeBuddy IDE…",
   "wbAccounts.toast.switchIdeLoadingDesc": "Will inject credentials and restart CodeBuddy IDE",

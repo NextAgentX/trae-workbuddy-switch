@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { TraeVariantMark } from "@/components/product-marks";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useT } from "@/lib/i18n";
 import {
   TRAE_VARIANT_FALLBACK,
   loadTraeVariantLogins,
@@ -78,6 +79,7 @@ export function TraeVariantBar({
   refreshKey?: number;
   className?: string;
 }) {
+  const t = useT();
   const [variant, setVariant] = useTraeVariant();
   const [probed, setProbed] = useState<TraeVariantStatus[] | null>(null);
   const [fetchedLogins, setFetchedLogins] = useState<TraeVariantLogins>({});
@@ -122,7 +124,13 @@ export function TraeVariantBar({
           const login = resolvedLogins[mark] ?? null;
           const active = item.variant === variant;
           const presence = login ? "logged-in" : item.installed ? "installed" : "absent";
-          const presenceText = login ? `已登录: ${login}` : item.installed ? "未登录" : "未检测到";
+          // `login.name` 已经是「账号库里的名字，查不到则回落 uid」——
+          // 回落链刻意只写在 `loadTraeVariantLogins` 一处，见 `TraeVariantLogin.name`。
+          const presenceText = login
+            ? t("trae.variant.bar.loggedIn", { name: login.name })
+            : item.installed
+              ? t("trae.variant.bar.notLoggedIn")
+              : t("trae.variant.bar.notDetected");
           return (
             <TabsTrigger
               key={item.variant}

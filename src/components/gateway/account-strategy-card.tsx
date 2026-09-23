@@ -5,17 +5,20 @@ import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
+import type { TranslationKey } from "@/locales/zh";
 import type { AccountMeta, AccountStrategy, Region } from "@/lib/types";
 import { useAccountsStore } from "@/stores/accounts";
 import { useGatewayStore } from "@/stores/gateway";
 
-const STRATEGY_OPTIONS = [
-  { value: "current", label: "当前登录账号" },
-  { value: "pinned", label: "指定账号" },
-  { value: "max_credits", label: "积分最充裕" },
-] as const;
+/** 只存键不存文案：语言切换时整张表才会跟着变。 */
+const STRATEGY_OPTIONS: { value: string; labelKey: TranslationKey }[] = [
+  { value: "current", labelKey: "wbStats.gateway.strategyCurrent" },
+  { value: "pinned", labelKey: "wbStats.gateway.strategyPinned" },
+  { value: "max_credits", labelKey: "wbStats.gateway.strategyMaxCredits" },
+];
 
 function accountLabel(account: AccountMeta): string {
   return account.nickname || account.email || account.uid || account.id;
@@ -24,10 +27,11 @@ function accountLabel(account: AccountMeta): string {
 
 /** 账号策略选择 + 当前选用账号展示（P0-8）。按 region 各自独立配置。 */
 export function AccountStrategyCard({ className }: { className?: string }) {
+  const t = useT();
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">账号策略</span>
+        <span className="text-sm font-semibold">{t("wbStats.gateway.strategyTitle")}</span>
       </div>
       <div className="divide-y divide-border/60">
         {REGIONS.map((region) => (
@@ -35,15 +39,16 @@ export function AccountStrategyCard({ className }: { className?: string }) {
         ))}
       </div>
       <div className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
-        <p>当前登录账号：跟随 App 内切换，最省心（推荐）</p>
-        <p>指定账号：固定用某个号，适合无人值守</p>
-        <p>积分最充裕：自动挑剩余最多的有效账号</p>
+        <p>{t("wbStats.gateway.strategyHint1")}</p>
+        <p>{t("wbStats.gateway.strategyHint2")}</p>
+        <p>{t("wbStats.gateway.strategyHint3")}</p>
       </div>
     </Card>
   );
 }
 
 function RegionStrategyRow({ region }: { region: Region }) {
+  const t = useT();
   const view = useGatewayStore((s) => s.strategies[region]);
   const saveStrategy = useGatewayStore((s) => s.saveStrategy);
   const accounts = useAccountsStore((s) => (region === "cn" ? s.accounts : s.global.accounts));
@@ -55,9 +60,9 @@ function RegionStrategyRow({ region }: { region: Region }) {
     setSaving(true);
     try {
       await saveStrategy(region, next);
-      toast.success("策略已保存");
+      toast.success(t("wbStats.gateway.strategySaved"));
     } catch (e) {
-      toast.error("策略保存失败", { description: api.asError(e) });
+      toast.error(t("wbStats.gateway.strategySaveFail"), { description: api.asError(e) });
     } finally {
       setSaving(false);
     }
@@ -68,7 +73,7 @@ function RegionStrategyRow({ region }: { region: Region }) {
     if (next === "pinned") {
       const first = accounts[0]?.id;
       if (!first) {
-        toast.error(`${regionDescriptor(region).versionLabel}暂无可用账号`);
+        toast.error(t("wbStats.gateway.versionNoAccount", { version: regionDescriptor(region).versionLabel }));
         return;
       }
       const pinnedId = strategy.kind === "pinned" ? strategy.account_id : first;
@@ -85,19 +90,23 @@ function RegionStrategyRow({ region }: { region: Region }) {
   const selected = view.selected;
   const selectedText = selected
     ? selected.nickname || selected.email || selected.uid || selected.id
-    : view.note || "暂无可用账号";
+    : view.note || t("wbStats.gateway.noAvailableAccount");
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
       <span className="w-16 shrink-0 text-sm font-medium">{regionDescriptor(region).versionLabel}</span>
       <Select value={strategy.kind} onValueChange={onKindChange} disabled={saving}>
-        <SelectTrigger size="sm" className="w-40" aria-label={`${regionDescriptor(region).versionLabel}账号策略`}>
+        <SelectTrigger
+          size="sm"
+          className="w-40"
+          aria-label={t("wbStats.gateway.strategyAria", { version: regionDescriptor(region).versionLabel })}
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {STRATEGY_OPTIONS.map((option) => (
             <SelectItem key={option.value} value={option.value}>
-              {option.label}
+              {t(option.labelKey)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -109,8 +118,8 @@ function RegionStrategyRow({ region }: { region: Region }) {
           onValueChange={(accountId) => void persist({ kind: "pinned", account_id: accountId })}
           disabled={saving || accounts.length === 0}
         >
-          <SelectTrigger size="sm" className="w-44" aria-label="指定账号">
-            <SelectValue placeholder="选择账号" />
+          <SelectTrigger size="sm" className="w-44" aria-label={t("wbStats.gateway.pinnedAria")}>
+            <SelectValue placeholder={t("wbStats.gateway.selectAccount")} />
           </SelectTrigger>
           <SelectContent>
             {accounts.map((account) => (
@@ -124,7 +133,8 @@ function RegionStrategyRow({ region }: { region: Region }) {
 
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {saving && <Loader2 className="size-3.5 animate-spin" />}
-        当前：<span className="font-medium text-foreground">{selectedText}</span>
+        {t("wbStats.gateway.current")}
+        <span className="font-medium text-foreground">{selectedText}</span>
       </span>
     </div>
   );

@@ -25,6 +25,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import { TRAE_VARIANTS_KEY, loadTraeVariantStatuses } from "@/lib/trae-variant-status";
 import type { TraeVariantStatus } from "@/lib/trae-types";
 import { useCachedResource } from "@/lib/use-cached-resource";
@@ -59,7 +61,14 @@ type Product = "workbuddy" | "trae";
 
 interface NavItem {
   to: string;
-  label: string;
+  /**
+   * 文案**键**而非成品文案。
+   *
+   * 这张表是模块级常量，拿不到 `useT()`；把键留在这里、在渲染处翻译，是唯一能让
+   * 「表格仍是纯数据」与「语言可切换」同时成立的写法。写成成品中文会让语言切换
+   * 对整条侧栏失效（表格在模块加载时就已经定型）。
+   */
+  labelKey: TranslationKey;
   icon: ComponentType<{ className?: string }>;
   /** 仅在该路径完全匹配时高亮：用于产品首页，避免其子页面同时点亮两个条目。 */
   end?: boolean;
@@ -84,23 +93,26 @@ interface NavItem {
  */
 const PRODUCT_NAV: Record<Product, readonly NavItem[]> = {
   workbuddy: [
-    { to: "/", end: true, label: "账号管理", icon: User },
-    { to: "/token-stats", label: "Token 统计", icon: MessagesSquare },
-    { to: "/credit-stats", label: "积分统计", icon: Sparkles },
-    { to: "/api-service", label: "API 服务", icon: Server },
-    { to: "/settings", label: "设置", icon: Settings },
+    { to: "/", end: true, labelKey: "nav.accounts", icon: User },
+    { to: "/token-stats", labelKey: "nav.tokenStats", icon: MessagesSquare },
+    { to: "/credit-stats", labelKey: "nav.credits", icon: Sparkles },
+    { to: "/api-service", labelKey: "nav.apiService", icon: Server },
+    { to: "/settings", labelKey: "nav.settings", icon: Settings },
   ],
   trae: [
-    { to: "/trae/accounts", label: "账号管理", icon: User },
-    { to: "/trae/token-stats", label: "Token 统计", icon: MessagesSquare },
-    { to: "/trae/credits", label: "积分统计", icon: Sparkles },
-    { to: "/trae/api-service", label: "API 服务", icon: Server },
-    { to: "/trae/settings", label: "设置", icon: Settings },
+    { to: "/trae/accounts", labelKey: "nav.accounts", icon: User },
+    { to: "/trae/token-stats", labelKey: "nav.tokenStats", icon: MessagesSquare },
+    { to: "/trae/credits", labelKey: "nav.credits", icon: Sparkles },
+    { to: "/trae/api-service", labelKey: "nav.apiService", icon: Server },
+    { to: "/trae/settings", labelKey: "nav.settings", icon: Settings },
   ],
 };
 
 /**
- * 产品显示名（侧栏顶部产品切换器与导航无障碍标签的唯一来源）。
+ * 产品显示名对应的**文案键**（侧栏顶部产品切换器与导航无障碍标签的唯一来源）。
+ *
+ * 存键而不存成品文案：这是模块级常量，拿不到 `useT()`。渲染处 `t(PRODUCT_LABEL_KEY[…])`
+ * 一秒翻译一次，语言切换才会反映到侧栏 —— 存成中文会让侧栏永远停在启动时的语言。
  *
  * Trae 分区显示 **`TraeWork`**：它管的就是 TraeWork 这条产品线
  * （国内版 `TRAE SOLO CN` 与国际版 `TRAE SOLO`），名字与客户端
@@ -114,9 +126,12 @@ const PRODUCT_NAV: Record<Product, readonly NavItem[]> = {
  * 注意 `Product` 的**标识**仍是 `trae`（路由前缀 `/trae/...` 与 `PRODUCT_NAV` 的键都不动）：
  * 本次只改展示名，改标识会牵动路由表与全部 `/trae` 链接。
  */
-const PRODUCT_LABEL: Record<Product, string> = {
-  workbuddy: "WorkBuddy",
-  trae: "TraeWork",
+const PRODUCT_LABEL_KEY: Record<Product, TranslationKey> = {
+  // 产品名**刻意不翻译**：`WorkBuddy` / `TraeWork` 是商标，两种语言下写法相同，
+  // 因此这两个键的 zh/en 值一致。走词表而非硬编码，是为了让「语言切换后侧栏整体重渲染」
+  // 这件事在所有文案上保持一致行为，不给未来的改名留特例。
+  workbuddy: "product.workbuddy",
+  trae: "product.trae",
 };
 
 /** 产品首页：切到某产品时，若当前路由不属于它，就落到这里。 */
@@ -185,6 +200,8 @@ function ProductSwitch({
   product: Product;
   onChange: (next: Product) => void;
 }) {
+  const t = useT();
+
   /*
    * 两个产品 Tab：**图标 + 文字**。
    *
@@ -231,14 +248,14 @@ function ProductSwitch({
     >
       <TabsList
         className="grid h-9 w-full grid-cols-[auto_auto] justify-center gap-0.5 rounded-xl border border-sidebar-border bg-sidebar-accent/60 p-1"
-        aria-label="切换产品"
+        aria-label={t("product.switchAria")}
       >
         <TabsTrigger
           value="workbuddy"
           className="h-7 w-full min-w-0 gap-1.5 rounded-lg px-1.5 text-xs font-medium data-[state=active]:bg-primary/15 data-[state=active]:shadow-none"
         >
           <WorkBuddyMark size={15} />
-          <span className="truncate">{PRODUCT_LABEL.workbuddy}</span>
+          <span className="truncate">{t(PRODUCT_LABEL_KEY.workbuddy)}</span>
         </TabsTrigger>
         <TabsTrigger
           value="trae"
@@ -247,7 +264,7 @@ function ProductSwitch({
           {/* 两个产品的图标各自如实呈现；Trae 分区用 TraeWork 的图标
               （这里不区分区域与程序位，都在页面内部选）。 */}
           <TraeVariantMark variant="trae_work" size={15} />
-          <span className="truncate">{PRODUCT_LABEL.trae}</span>
+          <span className="truncate">{t(PRODUCT_LABEL_KEY.trae)}</span>
         </TabsTrigger>
       </TabsList>
     </Tabs>
@@ -274,6 +291,7 @@ function AppFooter({
   running: boolean;
   version: string | undefined;
 }) {
+  const t = useT();
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -298,7 +316,7 @@ function AppFooter({
   }, []);
 
   const hasUpdate = Boolean(info?.ok && info.hasUpdate && info.latest);
-  const label = PRODUCT_LABEL[product];
+  const productLabel = t(PRODUCT_LABEL_KEY[product]);
 
   return (
     <>
@@ -309,9 +327,11 @@ function AppFooter({
               <StatusDot on={running} />
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top">{running ? `${label} 运行中` : `${label} 未运行`}</TooltipContent>
+          <TooltipContent side="top">
+            {t(running ? "sidebar.running" : "sidebar.notRunning", { product: productLabel })}
+          </TooltipContent>
         </Tooltip>
-        <span className="min-w-0 flex-1 truncate">版本</span>
+        <span className="min-w-0 flex-1 truncate">{t("sidebar.version")}</span>
         <div className="flex shrink-0 items-center gap-1.5">
           {/* 这里固定显示「版本」二字而非产品名：产品名已在侧栏顶部 Tab 与标题栏出现，
               重复一遍反而挤占了版本号的位置。版本号用更小字号并保持 tabular-nums，
@@ -324,13 +344,13 @@ function AppFooter({
                   type="button"
                   size="icon"
                   className="size-5 rounded-full p-0"
-                  aria-label="更新"
+                  aria-label={t("sidebar.update")}
                   onClick={() => setDialogOpen(true)}
                 >
                   <ArrowUp className="size-3" strokeWidth={2.5} aria-hidden="true" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">更新</TooltipContent>
+              <TooltipContent side="top">{t("sidebar.update")}</TooltipContent>
             </Tooltip>
           )}
         </div>
@@ -345,6 +365,7 @@ function AppFooter({
 }
 
 function Layout() {
+  const t = useT();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -421,7 +442,7 @@ function Layout() {
             </div>
             {demoModeEnabled && (
               <Badge variant="secondary" className="mt-1 h-5 border-0 px-1.5 text-[10px] text-sidebar-foreground/60 shadow-none">
-                演示模式
+                {t("app.demoBadge")}
               </Badge>
             )}
           </div>
@@ -431,12 +452,12 @@ function Layout() {
 
         <nav
           className="flex min-h-0 flex-1 flex-col gap-0.5"
-          aria-label={`${PRODUCT_LABEL[product]} 导航`}
+          aria-label={t("product.navAria", { product: t(PRODUCT_LABEL_KEY[product]) })}
         >
           {PRODUCT_NAV[product].map((item) => (
             <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
               <item.icon className="size-4" />
-              {item.label}
+              {t(item.labelKey)}
             </NavLink>
           ))}
         </nav>

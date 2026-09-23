@@ -1,4 +1,5 @@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useT } from "@/lib/i18n";
 import { REGION_FILTERS, regionFilterLabel } from "@/lib/region";
 import type { RegionFilter } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,8 @@ function isRegionFilter(value: string): value is RegionFilter {
  * 页面级范围切换条（层级 1）：决定「数据源是什么」，全页共享。
  * 文案统一走 `regionFilterLabel`（cn→国内版 / global→国际版 / all→合并）。
  */
-export function RegionBar({ value, onChange, disabled, ariaLabel = "统计范围", className }: RegionBarProps) {
+export function RegionBar({ value, onChange, disabled, ariaLabel, className }: RegionBarProps) {
+  const t = useT();
   return (
     <Tabs
       className={cn("min-w-0 gap-0", className)}
@@ -32,7 +34,7 @@ export function RegionBar({ value, onChange, disabled, ariaLabel = "统计范围
         onChange(next);
       }}
     >
-      <TabsList className="h-auto max-w-full flex-wrap" aria-label={ariaLabel}>
+      <TabsList className="h-auto max-w-full flex-wrap" aria-label={ariaLabel ?? t("shared.region.scope.aria")}>
         {REGION_FILTERS.map((filter) => (
           <TabsTrigger
             key={filter}

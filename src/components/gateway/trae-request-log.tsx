@@ -3,6 +3,7 @@ import { Eraser, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DemoAction } from "@/components/demo-action";
+import { useT } from "@/lib/i18n";
 import type { TraeGatewayLogEntry } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 
@@ -43,33 +44,37 @@ export function TraeRequestLog({
   onClear: () => void;
   className?: string;
 }) {
+  const t = useT();
+
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">请求日志（最近 {logs.length} 条）</span>
+        <span className="text-sm font-semibold">
+          {t("trae.gateway.log.title", { count: logs.length })}
+        </span>
         <DemoAction>
           <Button variant="ghost" size="sm" disabled={clearing || logs.length === 0} onClick={onClear}>
             {clearing ? <Loader2 className="animate-spin" /> : <Eraser />}
-            清空
+            {t("trae.gateway.log.clear")}
           </Button>
         </DemoAction>
       </div>
 
       {logs.length === 0 ? (
         <p className="px-5 py-6 text-center text-sm text-muted-foreground">
-          暂无请求。网关启动后，客户端发来的每次调用都会记在这里（默认只记元数据，不记正文）。
+          {t("trae.gateway.log.empty")}
         </p>
       ) : (
         <div className="max-h-80 overflow-y-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-card text-xs text-muted-foreground">
               <tr className="border-b border-border/60">
-                <th className="px-5 py-2 text-left font-medium">时间</th>
-                <th className="px-3 py-2 text-left font-medium">账号</th>
-                <th className="px-3 py-2 text-left font-medium">模型</th>
-                <th className="px-3 py-2 text-right font-medium">状态</th>
-                <th className="px-3 py-2 text-right font-medium">耗时</th>
-                <th className="px-5 py-2 text-right font-medium">Token</th>
+                <th className="px-5 py-2 text-left font-medium">{t("trae.gateway.log.col.time")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("trae.gateway.log.col.account")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("trae.gateway.log.col.model")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("trae.gateway.log.col.status")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("trae.gateway.log.col.latency")}</th>
+                <th className="px-5 py-2 text-right font-medium">{t("trae.gateway.log.col.tokens")}</th>
               </tr>
             </thead>
             <tbody>

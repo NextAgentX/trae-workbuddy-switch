@@ -20,6 +20,7 @@ import {
 import { toast } from "sonner";
 
 import { DemoAction } from "@/components/demo-action";
+import { HoursEditor } from "@/components/schedule-hours-editor";
 import { TraeVariantSwitch } from "@/components/trae-variant-switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +41,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import {
+  loadScheduleConfig,
+  saveSchedulePatch,
+  SCHEDULE_CONFIG_KEY,
+} from "@/lib/schedule-config";
 import { normalizeTraeGatewayLogs } from "@/lib/trae-gateway";
 import { isAutoDetected, traeProductLabel } from "@/lib/trae-client";
 import { useTraeVariant } from "@/lib/use-trae-variant";
@@ -49,6 +55,7 @@ import {
   TRAE_VARIANT_FALLBACK,
   TRAE_VARIANTS_KEY,
 } from "@/lib/trae-variant-status";
+import type { ScheduleConfig } from "@/lib/types";
 import type {
   TraeCapabilities,
   TraeDeviceResetReport,
@@ -64,6 +71,8 @@ import type {
 } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 import { useCachedResource } from "@/lib/use-cached-resource";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 
 // ---------------------------------------------------------------------------
 // 板块骨架：与 WorkBuddy 的 SettingsPage 共用同一实现
@@ -71,11 +80,12 @@ import { useCachedResource } from "@/lib/use-cached-resource";
 // ---------------------------------------------------------------------------
 
 /** 能力徽章。 */
-function CapabilityBadge({ label, supported }: { label: string; supported: boolean }) {
+function CapabilityBadge({ labelKey, supported }: { labelKey: TranslationKey; supported: boolean }) {
+  const t = useT();
   return (
     <Badge variant={supported ? "secondary" : "outline"} className={cn(!supported && "text-muted-foreground")}>
-      {label}
-      {supported ? "" : "（不支持）"}
+      {t(labelKey)}
+      {supported ? "" : t("trae.page.settings.capabilityUnsupported")}
     </Badge>
   );
 }
@@ -84,12 +94,12 @@ function CapabilityBadge({ label, supported }: { label: string; supported: boole
 // 运行日志（原「系统日志」页的运行日志 Tab）
 // ---------------------------------------------------------------------------
 
-const KIND_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "app", label: "运行" },
-  { value: "checkin", label: "签到" },
-  { value: "switch", label: "切换" },
-] as const;
+const KIND_OPTIONS: { value: string; labelKey: TranslationKey }[] = [
+  { value: "all", labelKey: "trae.page.settings.kindAll" },
+  { value: "app", labelKey: "trae.page.settings.kindApp" },
+  { value: "checkin", labelKey: "trae.page.settings.kindCheckin" },
+  { value: "switch", labelKey: "trae.page.settings.kindSwitch" },
+];
 
 const KIND_TONE: Record<TraeLogKind, "default" | "success" | "warning"> = {
   app: "default",
@@ -97,10 +107,10 @@ const KIND_TONE: Record<TraeLogKind, "default" | "success" | "warning"> = {
   switch: "warning",
 };
 
-const KIND_LABEL: Record<TraeLogKind, string> = {
-  app: "运行",
-  checkin: "签到",
-  switch: "切换",
+const KIND_LABEL: Record<TraeLogKind, TranslationKey> = {
+  app: "trae.page.settings.kindApp",
+  checkin: "trae.page.settings.kindCheckin",
+  switch: "trae.page.settings.kindSwitch",
 };
 
 /**
@@ -111,6 +121,7 @@ const KIND_LABEL: Record<TraeLogKind, string> = {
  * （类型/日期/关键字筛选、自动刷新、复制、导出 CSV）。
  */
 function RuntimeLogsSection() {
+  const t = useT();
   // 运行日志按产品线分家（`checkin` / `switch` 两条来源各读各的，`app` 刻意共用）。
   // 变体取自侧栏分区，不由探测推导 —— 探测回答「本机哪条线最近活跃」，
   // 不回答「用户此刻想管哪条线」。
@@ -158,6 +169,12 @@ function RuntimeLogsSection() {
   const entries = data?.entries ?? [];
   const counts = data?.counts;
 
+  /** 未知 kind（后端新增的类型）仍回落到原始值，与改造前的表现一致。 */
+  const kindText = (kind: TraeLogKind): string => {
+    const key: TranslationKey | undefined = KIND_LABEL[kind];
+    return key ? t(key) : kind;
+  };
+
   const copyAll = async () => {
     if (entries.length === 0) return;
     await copyText(entries.map((entry) => `[${entry.time}] [${entry.kind}] ${entry.message}`).join("\n"));
@@ -165,9 +182,9 @@ function RuntimeLogsSection() {
 
   const exportCsv = () => {
     if (entries.length === 0) return;
-    const header = "时间\t类型\t内容\n";
+    const header = `${t("trae.page.settings.csvHeader")}\n`;
     const body = entries
-      .map((entry) => `${entry.time}\t${KIND_LABEL[entry.kind] ?? entry.kind}\t${entry.message}`)
+      .map((entry) => `${entry.time}\t${kindText(entry.kind)}\t${entry.message}`)
       .join("\n");
     // BOM 前缀：Excel 不带它会按本地代码页解读，中文全乱。
     const blob = new Blob([`\ufeff${header}${body}`], { type: "text/csv;charset=utf-8" });
@@ -180,7 +197,7 @@ function RuntimeLogsSection() {
   };
 
   return (
-    <SettingsGroup id="trae-settings-logs" title="运行日志">
+    <SettingsGroup id="trae-settings-logs" title={t("trae.page.settings.logsGroup")}>
       <CardContent className="space-y-0 p-0">
       <div className="p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
@@ -191,7 +208,7 @@ function RuntimeLogsSection() {
             <SelectContent>
               {KIND_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
-                  {option.label}
+                  {t(option.labelKey)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -202,7 +219,7 @@ function RuntimeLogsSection() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部日期</SelectItem>
+              <SelectItem value="all">{t("trae.page.settings.allDates")}</SelectItem>
               {(data?.dates ?? []).map((day) => (
                 <SelectItem key={day} value={day}>
                   {day}
@@ -219,14 +236,14 @@ function RuntimeLogsSection() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") setKeyword(keywordDraft.trim());
               }}
-              placeholder="搜索关键字…"
+              placeholder={t("trae.page.settings.searchPlaceholder")}
               className="h-8 pl-8"
             />
           </div>
 
           <Button variant="outline" size="sm" onClick={() => setKeyword(keywordDraft.trim())}>
             <Search />
-            查询
+            {t("trae.page.settings.search")}
           </Button>
           <Button
             variant="ghost"
@@ -239,37 +256,56 @@ function RuntimeLogsSection() {
             }}
           >
             <X />
-            重置
+            {t("trae.page.settings.logsReset")}
           </Button>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-3">
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
-              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="自动刷新日志" />
-              自动刷新
+              <Switch
+                checked={autoRefresh}
+                onCheckedChange={setAutoRefresh}
+                aria-label={t("trae.page.settings.autoRefreshAria")}
+              />
+              {t("trae.page.settings.autoRefresh")}
             </span>
             {counts && (
               <span className="flex flex-wrap items-center gap-1.5">
-                <span>共 {counts.all} 条</span>
-                <Badge variant="secondary">运行 {counts.app}</Badge>
-                <Badge variant="success">签到 {counts.checkin}</Badge>
-                <Badge variant="warning">切换 {counts.switch}</Badge>
+                <span>{t("trae.page.settings.totalCount", { count: counts.all })}</span>
+                <Badge variant="secondary">
+                  {t("trae.page.settings.kindCount", {
+                    label: t("trae.page.settings.kindApp"),
+                    count: counts.app,
+                  })}
+                </Badge>
+                <Badge variant="success">
+                  {t("trae.page.settings.kindCount", {
+                    label: t("trae.page.settings.kindCheckin"),
+                    count: counts.checkin,
+                  })}
+                </Badge>
+                <Badge variant="warning">
+                  {t("trae.page.settings.kindCount", {
+                    label: t("trae.page.settings.kindSwitch"),
+                    count: counts.switch,
+                  })}
+                </Badge>
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" disabled={entries.length === 0} onClick={() => void copyAll()}>
               <Copy />
-              复制
+              {t("trae.page.settings.copy")}
             </Button>
             <Button variant="ghost" size="sm" disabled={entries.length === 0} onClick={exportCsv}>
               <Download />
-              导出 CSV
+              {t("trae.page.settings.exportCsv")}
             </Button>
             <Button variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}>
               {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              刷新
+              {t("trae.page.settings.refresh")}
             </Button>
           </div>
         </div>
@@ -279,7 +315,7 @@ function RuntimeLogsSection() {
         <div className="px-4 pb-4 sm:px-5">
           <Alert variant="destructive">
             <AlertTriangle />
-            <AlertTitle>读取日志失败</AlertTitle>
+            <AlertTitle>{t("trae.page.settings.logsLoadFailed")}</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         </div>
@@ -289,10 +325,12 @@ function RuntimeLogsSection() {
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5 sm:px-5">
           <span className="flex items-center gap-2 text-[13px] font-medium">
             <FileText className="size-4 text-muted-foreground" />
-            日志明细
+            {t("trae.page.settings.detailLabel")}
           </span>
           <span className="text-xs text-muted-foreground">
-            {data ? `显示 ${entries.length} / ${data.total} 条` : "加载中…"}
+            {data
+              ? t("trae.page.settings.showing", { shown: entries.length, total: data.total })
+              : t("trae.page.settings.loading")}
           </span>
         </div>
 
@@ -306,10 +344,9 @@ function RuntimeLogsSection() {
           ) : entries.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
               <Trash2 className="size-7 text-muted-foreground/50" />
-              <p className="text-sm font-medium">暂无日志</p>
+              <p className="text-sm font-medium">{t("trae.page.settings.logsEmptyTitle")}</p>
               <p className="max-w-md text-xs text-muted-foreground">
-                日志文件还不存在或当前筛选条件下没有匹配行。运行一次签到或切换账号后，
-                这里会开始出现记录。
+                {t("trae.page.settings.logsEmptyBody")}
               </p>
             </div>
           ) : (
@@ -319,9 +356,11 @@ function RuntimeLogsSection() {
                   key={`${entry.time}-${index}`}
                   className="flex items-start gap-3 px-4 py-2 font-mono text-xs hover:bg-muted/40 sm:px-5"
                 >
-                  <span className="shrink-0 text-muted-foreground">{entry.time || "（无时间）"}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {entry.time || t("trae.page.settings.noTime")}
+                  </span>
                   <Badge variant={KIND_TONE[entry.kind] ?? "secondary"} className="shrink-0 font-sans">
-                    {KIND_LABEL[entry.kind] ?? entry.kind}
+                    {kindText(entry.kind)}
                   </Badge>
                   <span className="break-all leading-5">{entry.message}</span>
                 </li>
@@ -334,13 +373,13 @@ function RuntimeLogsSection() {
       {/* 边界说明与文件状态：不写清楚，用户会把「日志是空的」当成 bug。 */}
       <div className="border-t border-border/60 px-4 py-3 sm:px-5">
         <p className="text-xs leading-5 text-muted-foreground">
-          {data?.note ?? "只读取本机纯文本运行日志。"}
+          {data?.note ?? t("trae.page.settings.noteFallback")}
         </p>
         <ul className="mt-2 space-y-1">
           {(data?.sources ?? []).map((source) => (
             <li key={source.kind} className="flex flex-wrap items-center gap-2">
               <Badge variant={source.exists ? "success" : "outline"}>
-                {source.exists ? "存在" : "未生成"}
+                {source.exists ? t("trae.page.settings.sourceExists") : t("trae.page.settings.sourceMissing")}
               </Badge>
               <span className="break-all font-mono text-[11px] text-muted-foreground">{source.path}</span>
             </li>
@@ -348,7 +387,7 @@ function RuntimeLogsSection() {
         </ul>
         {data?.logDir && (
           <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">
-            日志目录：{data.logDir}
+            {t("trae.page.settings.logDir", { dir: data.logDir })}
           </p>
         )}
       </div>
@@ -361,12 +400,12 @@ function RuntimeLogsSection() {
 // 网关请求日志（原「系统日志」页的网关 Tab）
 // ---------------------------------------------------------------------------
 
-const STATUS_OPTIONS = [
-  { value: "all", label: "全部状态" },
-  { value: "ok", label: "成功 (2xx)" },
-  { value: "client", label: "客户端错误 (4xx)" },
-  { value: "server", label: "服务端错误 (5xx)" },
-] as const;
+const STATUS_OPTIONS: { value: string; labelKey: TranslationKey }[] = [
+  { value: "all", labelKey: "trae.page.settings.statusAll" },
+  { value: "ok", labelKey: "trae.page.settings.statusOk" },
+  { value: "client", labelKey: "trae.page.settings.statusClient" },
+  { value: "server", labelKey: "trae.page.settings.statusServer" },
+];
 
 function formatClock(ts: number): string {
   if (!ts) return "—";
@@ -395,6 +434,7 @@ function statusTone(status: number): string {
  * 提供状态码筛选、关键字搜索、逐条详情抽屉与清空。
  */
 function GatewayLogsSection() {
+  const t = useT();
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [keyword, setKeyword] = useState("");
   const [detail, setDetail] = useState<TraeGatewayLogEntry | null>(null);
@@ -426,7 +466,7 @@ function GatewayLogsSection() {
       await api.clearTraeGatewayLogs();
       setActionError(null);
       patch(() => []);
-      toast.success("日志已清空");
+      toast.success(t("trae.page.settings.gwCleared"));
     } catch (e) {
       setActionError(api.asError(e));
     } finally {
@@ -457,7 +497,7 @@ function GatewayLogsSection() {
   );
 
   return (
-    <SettingsGroup id="trae-settings-gateway-logs" title="网关请求日志">
+    <SettingsGroup id="trae-settings-gateway-logs" title={t("trae.page.settings.gatewayGroup")}>
       <CardContent className="space-y-0 p-0">
       <div className="p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
@@ -468,7 +508,7 @@ function GatewayLogsSection() {
             <SelectContent>
               {STATUS_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
-                  {option.label}
+                  {t(option.labelKey)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -478,13 +518,13 @@ function GatewayLogsSection() {
             <Input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索账号 / 模型 / 端点 / 错误…"
+              placeholder={t("trae.page.settings.gwSearchPlaceholder")}
               className="h-8 pl-8"
             />
           </div>
           <Button variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}>
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            刷新
+            {t("trae.page.settings.refresh")}
           </Button>
           <DemoAction>
             <Button
@@ -494,15 +534,20 @@ function GatewayLogsSection() {
               onClick={() => void clear()}
             >
               {clearing ? <Loader2 className="animate-spin" /> : <Eraser />}
-              清空
+              {t("trae.page.settings.gwClear")}
             </Button>
           </DemoAction>
         </div>
         <p className="mt-3 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-          共 {visible.length} 条
-          {visible.length !== logs.length && `（已从 ${logs.length} 条中筛选）`}
-          {totalTokens > 0 && ` · 合计 ${formatTokens(totalTokens)} Token`}
-          。网关未启用时这里是空的——请求日志只由网关写入。
+          {t("trae.page.settings.gwSummary", {
+            count: visible.length,
+            filtered:
+              visible.length !== logs.length
+                ? t("trae.page.settings.gwFiltered", { total: logs.length })
+                : "",
+            tokens:
+              totalTokens > 0 ? t("trae.page.settings.gwTokens", { tokens: formatTokens(totalTokens) }) : "",
+          })}
         </p>
       </div>
 
@@ -510,7 +555,7 @@ function GatewayLogsSection() {
         <div className="px-4 pb-4 sm:px-5">
           <Alert variant="destructive">
             <AlertTriangle />
-            <AlertTitle>读取网关日志失败</AlertTitle>
+            <AlertTitle>{t("trae.page.settings.gwLoadFailed")}</AlertTitle>
             <AlertDescription>{failure}</AlertDescription>
           </Alert>
         </div>
@@ -526,21 +571,21 @@ function GatewayLogsSection() {
         ) : visible.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
             <Trash2 className="size-7 text-muted-foreground/50" />
-            <p className="text-sm font-medium">暂无网关请求日志</p>
+            <p className="text-sm font-medium">{t("trae.page.settings.gwEmptyTitle")}</p>
             <p className="max-w-md text-xs text-muted-foreground">
-              在「API 服务」页启用 Trae 网关后，外部客户端发来的每一次请求都会记在这里。
+              {t("trae.page.settings.gwEmptyBody")}
             </p>
           </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-muted/60 text-xs text-muted-foreground backdrop-blur">
               <tr>
-                <th className="px-4 py-2 text-left font-medium">时间</th>
-                <th className="px-3 py-2 text-left font-medium">账号</th>
-                <th className="px-3 py-2 text-left font-medium">模型</th>
-                <th className="px-3 py-2 text-left font-medium">状态</th>
-                <th className="px-3 py-2 text-right font-medium">耗时</th>
-                <th className="px-3 py-2 text-right font-medium">Token</th>
+                <th className="px-4 py-2 text-left font-medium">{t("trae.page.settings.colTime")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("trae.page.settings.colAccount")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("trae.page.settings.colModel")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("trae.page.settings.colStatus")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("trae.page.settings.colLatency")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("trae.page.settings.colToken")}</th>
               </tr>
             </thead>
             <tbody>
@@ -574,16 +619,14 @@ function GatewayLogsSection() {
       </div>
 
       <div className="border-t border-border/60 px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
-        点击任意一行查看完整字段。网关默认只记元数据（模型、状态、耗时、token 数）。
+        {t("trae.page.settings.gwFooter")}
       </div>
 
       <Dialog open={detail !== null} onOpenChange={(open) => !open && setDetail(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>请求详情</DialogTitle>
-            <DialogDescription>
-              网关只记录元数据。若需要正文，请到「API 服务」页开启「记录请求正文」。
-            </DialogDescription>
+            <DialogTitle>{t("trae.page.settings.gwDetailTitle")}</DialogTitle>
+            <DialogDescription>{t("trae.page.settings.gwDetailDesc")}</DialogDescription>
           </DialogHeader>
           <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/50 p-3 font-mono text-xs">
             {detail ? JSON.stringify(detail, null, 2) : ""}
@@ -592,10 +635,12 @@ function GatewayLogsSection() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => detail && void copyText(JSON.stringify(detail, null, 2), "详情已复制")}
+              onClick={() =>
+                detail && void copyText(JSON.stringify(detail, null, 2), t("trae.page.settings.gwDetailCopied"))
+              }
             >
               <Copy />
-              复制
+              {t("trae.page.settings.copy")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -634,6 +679,7 @@ function ProfilesSection({
   onReload: () => void;
   onRun: (key: string, label: string, action: () => Promise<unknown>) => Promise<void>;
 }) {
+  const t = useT();
   const [backupSlot, setBackupSlot] = useState("");
   const [pendingDelete, setPendingDelete] = useState<TraeProfileInfo | null>(null);
   const [pendingRestore, setPendingRestore] = useState<TraeProfileInfo | null>(null);
@@ -641,16 +687,24 @@ function ProfilesSection({
   const profiles = data?.profiles ?? [];
 
   return (
-    <SettingsGroup id="trae-settings-profiles" title="登录态快照">
+    <SettingsGroup id="trae-settings-profiles" title={t("trae.page.settings.profilesGroup")}>
       <CardContent className="space-y-0 p-0">
       <SettingsRow className="flex-wrap gap-y-1">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
           <span className="text-muted-foreground">
-            当前账号
-            <span className="ml-2 font-medium text-foreground">{data?.currentAccount ?? "未知"}</span>
+            {t("trae.page.settings.currentAccount")}
+            {/* 主文本给**展示名**（账号库里的 `name`），uid 退到次要位置：
+                本页的槽位行（`profile.slot`）本身就是 uid，用户要对照的是它，
+                所以 uid 不能丢，但也不该占据「谁」这个位置。 */}
+            <span className="ml-2 font-medium text-foreground">
+              {data?.currentAccountName ?? data?.currentAccount ?? t("trae.page.settings.unknown")}
+            </span>
+            {data?.currentAccountName && data?.currentAccount && (
+              <span className="ml-1.5 text-xs text-muted-foreground/70">{data.currentAccount}</span>
+            )}
           </span>
           <span className="flex items-center gap-2">
-            客户端
+            {t("trae.page.settings.clientLabel")}
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 font-medium",
@@ -663,28 +717,29 @@ function ProfilesSection({
                   data?.clientRunning ? "bg-emerald-500" : "bg-muted-foreground/50",
                 )}
               />
-              {data?.clientRunning ? "运行中" : "未运行"}
+              {data?.clientRunning ? t("trae.page.settings.running") : t("trae.page.settings.notRunning")}
             </span>
           </span>
           <span className="text-muted-foreground">
-            快照 <span className="font-medium text-foreground">{profiles.length}</span> 份
+            {t("trae.page.settings.snapshotCount", { count: profiles.length })}
           </span>
         </div>
         <Button variant="ghost" size="sm" onClick={onReload} disabled={loading}>
           <RefreshCw className={cn(loading && "animate-spin")} />
-          刷新
+          {t("trae.page.settings.refresh")}
         </Button>
       </SettingsRow>
 
       {data?.dataDir && (
         <div className="border-b border-border/50 px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
-          客户端数据目录：<code className="font-mono">{data.dataDir}</code>
+          {t("trae.page.settings.dataDirLabel")}
+          <code className="font-mono">{data.dataDir}</code>
         </div>
       )}
 
       <SettingsFieldRow
-        label="备份当前登录态"
-        description={`把客户端此刻的登录态存到指定槽位；每个账号一份快照，精确复制 ${data?.coreEntryCount ?? 9} 类登录态核心文件。槽位名建议用账号 UID；last 是切换流程自动使用的兜底槽位。`}
+        label={t("trae.page.settings.backupLabel")}
+        description={t("trae.page.settings.backupDesc", { count: data?.coreEntryCount ?? 9 })}
         htmlFor="trae-backup-slot"
       >
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
@@ -693,7 +748,7 @@ function ProfilesSection({
             className="h-8 sm:w-56"
             value={backupSlot}
             onChange={(event) => setBackupSlot(event.target.value)}
-            placeholder="槽位名（账号 UID）"
+            placeholder={t("trae.page.settings.slotPlaceholder")}
           />
           <DemoAction>
             <Button
@@ -701,13 +756,13 @@ function ProfilesSection({
               variant="outline"
               disabled={!backupSlot.trim() || busy === "backup"}
               onClick={() =>
-                void onRun("backup", "备份", () => api.traeBackupProfile(backupSlot.trim(), variant)).then(() =>
-                  setBackupSlot(""),
-                )
+                void onRun("backup", t("trae.page.settings.backup"), () =>
+                  api.traeBackupProfile(backupSlot.trim(), variant),
+                ).then(() => setBackupSlot(""))
               }
             >
               {busy === "backup" ? <Loader2 className="animate-spin" /> : <HardDriveUpload />}
-              备份
+              {t("trae.page.settings.backup")}
             </Button>
           </DemoAction>
         </div>
@@ -720,7 +775,7 @@ function ProfilesSection({
         </div>
       ) : profiles.length === 0 ? (
         <p className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">
-          还没有快照。切换账号时会自动为当前账号保存一份。
+          {t("trae.page.settings.profilesEmpty")}
         </p>
       ) : (
         <div className="divide-y divide-border/50">
@@ -729,13 +784,17 @@ function ProfilesSection({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="truncate text-[13px] font-medium">{profile.slot}</span>
-                  {profile.slot === "last" && <Badge variant="outline">兜底槽位</Badge>}
-                  {profile.slot === data?.currentAccount && <Badge variant="secondary">当前账号</Badge>}
+                  {profile.slot === "last" && (
+                    <Badge variant="outline">{t("trae.page.settings.fallbackSlot")}</Badge>
+                  )}
+                  {profile.slot === data?.currentAccount && (
+                    <Badge variant="secondary">{t("trae.page.settings.currentAccount")}</Badge>
+                  )}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted-foreground">
                   <span>{profile.sizeText}</span>
-                  <span>{profile.fileCount} 个文件</span>
-                  <span>更新于 {profile.lastModified}</span>
+                  <span>{t("trae.page.settings.fileCount", { count: profile.fileCount })}</span>
+                  <span>{t("trae.page.settings.updatedAt", { time: profile.lastModified })}</span>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
@@ -751,7 +810,7 @@ function ProfilesSection({
                     ) : (
                       <HardDriveDownload />
                     )}
-                    恢复
+                    {t("trae.page.settings.restore")}
                   </Button>
                 </DemoAction>
                 <DemoAction>
@@ -763,7 +822,7 @@ function ProfilesSection({
                     onClick={() => setPendingDelete(profile)}
                   >
                     <Trash2 />
-                    删除
+                    {t("trae.page.settings.delete")}
                   </Button>
                 </DemoAction>
               </div>
@@ -773,33 +832,37 @@ function ProfilesSection({
       )}
 
       <div className="border-t border-border/60 px-4 py-3 text-xs leading-5 text-muted-foreground sm:px-5">
-        快照保存在 Buddy Switch 自己的数据目录下，与 Trae 客户端目录分离，因此删除快照不会影响正在使用的登录态。
+        {t("trae.page.settings.profilesFooter")}
       </div>
 
       {/* 恢复确认：明确告知会覆盖当前登录态 */}
       <Dialog open={pendingRestore !== null} onOpenChange={(open) => !open && setPendingRestore(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>恢复到该快照</DialogTitle>
+            <DialogTitle>{t("trae.page.settings.restoreTitle")}</DialogTitle>
             <DialogDescription>
-              将用「{pendingRestore?.slot}」的快照覆盖 Trae 客户端当前的登录态。
-              <strong className="font-medium text-foreground">当前登录态不会被自动保存</strong>
-              ，如需保留请先在上面备份。建议先关闭 Trae 客户端。
+              {t("trae.page.settings.restoreBodyLead", { slot: pendingRestore?.slot ?? "" })}
+              <strong className="font-medium text-foreground">
+                {t("trae.page.settings.restoreBodyStrong")}
+              </strong>
+              {t("trae.page.settings.restoreBodyTail")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPendingRestore(null)}>
-              取消
+              {t("trae.page.settings.cancel")}
             </Button>
             <Button
               onClick={() => {
                 const target = pendingRestore;
                 if (!target) return;
                 setPendingRestore(null);
-                void onRun(`restore-${target.slot}`, "恢复", () => api.traeRestoreProfile(target.slot, variant));
+                void onRun(`restore-${target.slot}`, t("trae.page.settings.restore"), () =>
+                  api.traeRestoreProfile(target.slot, variant),
+                );
               }}
             >
-              确认恢复
+              {t("trae.page.settings.restoreConfirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -809,15 +872,18 @@ function ProfilesSection({
       <Dialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除快照</DialogTitle>
+            <DialogTitle>{t("trae.page.settings.deleteTitle")}</DialogTitle>
             <DialogDescription>
-              将删除槽位「{pendingDelete?.slot}」的 {pendingDelete?.fileCount ?? 0} 个文件（
-              {pendingDelete?.sizeText}）。账号记录不受影响，但该槽位将无法再恢复。
+              {t("trae.page.settings.deleteBody", {
+                slot: pendingDelete?.slot ?? "",
+                count: pendingDelete?.fileCount ?? 0,
+                size: pendingDelete?.sizeText ?? "",
+              })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPendingDelete(null)}>
-              取消
+              {t("trae.page.settings.cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -825,10 +891,12 @@ function ProfilesSection({
                 const target = pendingDelete;
                 if (!target) return;
                 setPendingDelete(null);
-                void onRun(`delete-${target.slot}`, "删除", () => api.traeDeleteProfile(target.slot, variant));
+                void onRun(`delete-${target.slot}`, t("trae.page.settings.delete"), () =>
+                  api.traeDeleteProfile(target.slot, variant),
+                );
               }}
             >
-              删除
+              {t("trae.page.settings.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -862,9 +930,16 @@ interface SettingsPageSnapshot {
  * 能力完整保留——侧栏收敛的是入口数量，不是功能范围。
  */
 export default function TraeSettingsPage() {
+  const t = useT();
   // 快照按产品线分家（`paths::profiles_dir_for`），故这里也必须带上变体。
   const [variant] = useTraeVariant();
   const [saving, setSaving] = useState(false);
+  /**
+   * 排程（自动签到）的保存中标志，与上面的 `saving` **刻意分开**：
+   * 两者写的是两份不同的文件（`trae_settings.json` / `schedule_config.json`），
+   * 共用一个标志会让底部「保存」按钮在保存排程时转圈，把操作归因到错的地方。
+   */
+  const [scheduleSaving, setScheduleSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
@@ -918,6 +993,41 @@ export default function TraeSettingsPage() {
   const consoleBase =
     findRegionStatus(variantStatuses ?? TRAE_VARIANT_FALLBACK, variant)?.consoleBase ?? null;
 
+  /**
+   * 自动签到的**排程**（到点触发 / 启动补跑 / 小时表）。
+   *
+   * ⚠️ 它不在 `get_trae_settings` 里：排程是**全局单份**（`schedule_config.json`），
+   * 按**任务**分家而不是按产品/区域；WorkBuddy 的六类任务读写的是同一份文件。
+   * 键与 Trae 账号页的工具栏开关共用（`SCHEDULE_CONFIG_KEY`）⇒ 一处改完另一处
+   * 下次挂载即拿到新值，不会出现「设置页开着、账号页显示关着」。
+   */
+  const { data: schedule, patch: patchSchedule } = useCachedResource<ScheduleConfig>(
+    SCHEDULE_CONFIG_KEY,
+    loadScheduleConfig,
+  );
+
+  /**
+   * 保存排程：乐观落本地 → 整份提交 → 回读权威值；失败回滚并提示。
+   *
+   * 提交必须带**当前整份**配置（见 `saveSchedulePatch`）：后端按整份解析，
+   * 只发一个字段会让其余字段被默认值覆盖 —— 那是静默的配置丢失。
+   */
+  async function saveSchedule(next: Partial<ScheduleConfig>) {
+    if (!schedule || scheduleSaving) return;
+    const previous = schedule;
+    setScheduleSaving(true);
+    patchSchedule((prev) => ({ ...prev, ...next }));
+    try {
+      const saved = await saveSchedulePatch(previous, next);
+      patchSchedule(() => saved);
+    } catch (e) {
+      patchSchedule(() => previous);
+      toast.error(t("trae.page.settings.autoCheckinSaveFailed"), { description: api.asError(e) });
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
+
   async function patch(next: Partial<TraeSettings>) {
     if (!settings) return;
     setSaving(true);
@@ -927,7 +1037,7 @@ export default function TraeSettingsPage() {
       const saved = await api.saveTraeSettings(next);
       patchSettings(() => saved);
     } catch (e) {
-      toast.error("保存失败", { description: api.asError(e) });
+      toast.error(t("trae.page.settings.saveFailed"), { description: api.asError(e) });
       await load();
     } finally {
       setSaving(false);
@@ -939,10 +1049,10 @@ export default function TraeSettingsPage() {
     setBusy(key);
     try {
       await action();
-      toast.success(`${label}完成`);
+      toast.success(t("trae.page.settings.actionDone", { label }));
       await load();
     } catch (e) {
-      toast.error(`${label}失败`, { description: api.asError(e) });
+      toast.error(t("trae.page.settings.actionFailed", { label }), { description: api.asError(e) });
     } finally {
       setBusy(null);
     }
@@ -953,10 +1063,15 @@ export default function TraeSettingsPage() {
     try {
       const report = await api.traeResetDevice(variant);
       setResetReport(report);
-      toast.success("设备标识重置完成", { description: `${report.resetCount} / ${report.totalLayers} 项生效` });
+      toast.success(t("trae.page.settings.resetDone"), {
+        description: t("trae.page.settings.resetLayers", {
+          done: report.resetCount,
+          total: report.totalLayers,
+        }),
+      });
       await load();
     } catch (e) {
-      toast.error("重置失败", { description: api.asError(e) });
+      toast.error(t("trae.page.settings.resetFailed"), { description: api.asError(e) });
     } finally {
       setResetBusy(false);
     }
@@ -981,9 +1096,9 @@ export default function TraeSettingsPage() {
       <header className="mb-10 sm:mb-12">
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{t("trae.page.settings.title")}</h1>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              客户端定位、本地端口、签到策略，以及登录态快照与运行日志。Trae 的配置与 WorkBuddy 分开保存，互不影响。
+              {t("trae.page.settings.subtitle")}
             </p>
           </div>
           {/* 产品线切换器：设置项本身按产品线分家，切到这里改的就是对应那条线的配置。 */}
@@ -994,31 +1109,39 @@ export default function TraeSettingsPage() {
       {error && (
         <Alert variant="destructive" className="mb-6">
           <AlertTriangle />
-          <AlertTitle>无法读取 Trae 配置</AlertTitle>
+          <AlertTitle>{t("trae.page.settings.loadFailed")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
       <div className="min-w-0 space-y-12">
         {/* ---- 客户端 ---- */}
-        <SettingsGroup id="trae-settings-client" title="Trae 客户端">
+        <SettingsGroup id="trae-settings-client" title={t("trae.page.settings.clientGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsRow className="flex-wrap gap-y-2">
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
               <span className="flex items-center gap-2">
-                安装
+                {t("trae.page.settings.installLabel")}
                 <span className={cn("font-medium", env?.installed ? "text-emerald-600" : "text-muted-foreground")}>
-                  {env?.installed ? `已检测到${env.version ? ` v${env.version}` : ""}` : "未检测到"}
+                  {env?.installed
+                    ? env.version
+                      ? t("trae.page.settings.detectedVersion", { version: env.version })
+                      : t("trae.page.settings.detected")
+                    : t("trae.page.settings.notDetected")}
                 </span>
                 {env?.installed && productLabel && <Badge variant="secondary">{productLabel}</Badge>}
               </span>
               <span className="flex items-center gap-2">
-                运行
+                {t("trae.page.settings.runLabel")}
                 <span className={cn("font-medium", env?.running ? "text-emerald-600" : "text-muted-foreground")}>
-                  {env?.running ? "运行中" : "未运行"}
+                  {env?.running ? t("trae.page.settings.running") : t("trae.page.settings.notRunning")}
                 </span>
               </span>
-              <Badge variant="outline">平台 {capabilities?.platform ?? env?.platform ?? "未知"}</Badge>
+              <Badge variant="outline">
+                {t("trae.page.settings.platform", {
+                  name: capabilities?.platform ?? env?.platform ?? t("trae.page.settings.unknown"),
+                })}
+              </Badge>
             </div>
           </SettingsRow>
 
@@ -1027,25 +1150,34 @@ export default function TraeSettingsPage() {
             <div className="border-b border-border/50 px-4 py-3 sm:px-5">
               <div className="space-y-1.5 rounded-md border bg-muted/40 px-3 py-2.5">
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
-                  <span className="shrink-0 text-muted-foreground">自动探测到的安装</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {t("trae.page.settings.autoDetectPath")}
+                  </span>
                   <code className="break-all font-mono text-foreground">{env?.path ?? "—"}</code>
                 </div>
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
-                  <span className="shrink-0 text-muted-foreground">自动探测到的数据目录</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {t("trae.page.settings.autoDetectDataDir")}
+                  </span>
                   <code className="break-all font-mono text-foreground">{env?.dataDir ?? "—"}</code>
-                  {env?.dataDir && !env.dataDirExists && <Badge variant="destructive">目录不存在</Badge>}
+                  {env?.dataDir && !env.dataDirExists && (
+                    <Badge variant="destructive">{t("trae.page.settings.dirMissing")}</Badge>
+                  )}
                 </div>
                 <p className="text-xs leading-5 text-muted-foreground">
-                  同机装有多个 Trae 产品线（<code className="font-mono">TRAE SOLO CN</code>、
-                  <code className="font-mono">Trae CN</code> 等）时，按最近活跃的那个自动选定。
+                  {t("trae.page.settings.multiLead")}
+                  <code className="font-mono">TRAE SOLO CN</code>
+                  {t("trae.page.settings.multiSep")}
+                  <code className="font-mono">Trae CN</code>
+                  {t("trae.page.settings.multiTail")}
                 </p>
               </div>
             </div>
           )}
 
           <SettingsFieldRow
-            label="客户端可执行文件路径"
-            description="留空即自动探测，会覆盖系统盘与各非系统盘的常见安装目录，无需手动填写。仅在装在非常规位置时指定。"
+            label={t("trae.page.settings.pathLabel")}
+            description={t("trae.page.settings.pathDesc")}
             htmlFor="trae-path"
           >
             <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
@@ -1054,7 +1186,7 @@ export default function TraeSettingsPage() {
                 className="h-8 sm:w-80"
                 value={settings?.traePath ?? ""}
                 onChange={(event) => patchSettings((prev) => ({ ...prev, traePath: event.target.value }))}
-                placeholder={env?.path ?? "留空则自动探测常见安装位置"}
+                placeholder={env?.path ?? t("trae.page.settings.pathPlaceholder")}
               />
               <Button
                 size="sm"
@@ -1063,7 +1195,7 @@ export default function TraeSettingsPage() {
                 onClick={() => void patch({ traePath: settings?.traePath?.trim() ? settings.traePath.trim() : null })}
               >
                 {saving ? <Loader2 className="animate-spin" /> : <Save />}
-                保存
+                {t("trae.page.settings.save")}
               </Button>
             </div>
           </SettingsFieldRow>
@@ -1071,11 +1203,11 @@ export default function TraeSettingsPage() {
         </SettingsGroup>
 
         {/* ---- 端口与网络 ---- */}
-        <SettingsGroup id="trae-settings-network" title="端口与网络">
+        <SettingsGroup id="trae-settings-network" title={t("trae.page.settings.networkGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
-            label="本地代理端口"
-            description="本地 MITM 代理的监听端口；登录态捕获依赖它。"
+            label={t("trae.page.settings.proxyPortLabel")}
+            description={t("trae.page.settings.proxyPortDesc")}
             htmlFor="trae-proxy-port"
           >
             <Input
@@ -1090,8 +1222,8 @@ export default function TraeSettingsPage() {
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label="API 网关端口"
-            description="默认 7864，与 WorkBuddy 网关（57891）错开——两者都占用 /v1/chat/completions。"
+            label={t("trae.page.settings.apiPortLabel")}
+            description={t("trae.page.settings.apiPortDesc")}
             htmlFor="trae-api-port"
           >
             <Input
@@ -1106,8 +1238,8 @@ export default function TraeSettingsPage() {
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label="代理解密域名"
-            description="逗号分隔。只有这些域名会被本地代理解密以捕获登录态；其余流量走加密隧道直连。"
+            label={t("trae.page.settings.proxyDomainsLabel")}
+            description={t("trae.page.settings.proxyDomainsDesc")}
             htmlFor="trae-domains"
           >
             <Input
@@ -1123,34 +1255,63 @@ export default function TraeSettingsPage() {
           </CardContent>
         </SettingsGroup>
 
-        {/* ---- 签到策略 ---- */}
-        <SettingsGroup id="trae-settings-checkin" title="签到策略">
+        {/* ---- 自动签到（排程）---- */}
+        <SettingsGroup id="trae-settings-auto-checkin" title={t("trae.page.settings.autoCheckinGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
-            label="跳过今日已签到账号"
-            description="避免对同一账号重复请求 claim，减少配额浪费与风控暴露。"
+            label={t("trae.page.settings.autoCheckinEnable")}
+            description={t("trae.page.settings.autoCheckinDesc")}
+          >
+            <Switch
+              checked={schedule?.trae_checkin_enabled ?? false}
+              disabled={!schedule || scheduleSaving}
+              onCheckedChange={(checked) => void saveSchedule({ trae_checkin_enabled: checked })}
+              aria-label={t("trae.page.settings.autoCheckinEnable")}
+            />
+          </SettingsFieldRow>
+          <SettingsFieldRow
+            label={t("trae.page.settings.checkinHoursLabel")}
+            description={t("trae.page.settings.checkinHoursDesc")}
+            htmlFor="trae-checkin-hour"
+          >
+            <HoursEditor
+              id="trae-checkin-hour"
+              hours={schedule?.trae_checkin_hours ?? []}
+              disabled={!schedule || scheduleSaving}
+              onChange={(hours) => void saveSchedule({ trae_checkin_hours: hours })}
+            />
+          </SettingsFieldRow>
+          </CardContent>
+        </SettingsGroup>
+
+        {/* ---- 签到策略 ---- */}
+        <SettingsGroup id="trae-settings-checkin" title={t("trae.page.settings.checkinGroup")}>
+          <CardContent className="space-y-0 p-0">
+          <SettingsFieldRow
+            label={t("trae.page.settings.skipCheckedLabel")}
+            description={t("trae.page.settings.skipCheckedDesc")}
           >
             <Switch
               checked={settings?.checkinSkipChecked ?? true}
               disabled={saving}
               onCheckedChange={(checked) => void patch({ checkinSkipChecked: checked })}
-              aria-label="跳过今日已签到账号"
+              aria-label={t("trae.page.settings.skipCheckedLabel")}
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label="跳过 JWT 已过期账号"
-            description="失效凭据必然返回 401；跳过可避免把账号打入永久冷却。"
+            label={t("trae.page.settings.skipExpiredLabel")}
+            description={t("trae.page.settings.skipExpiredDesc")}
           >
             <Switch
               checked={settings?.checkinSkipExpired ?? true}
               disabled={saving}
               onCheckedChange={(checked) => void patch({ checkinSkipExpired: checked })}
-              aria-label="跳过 JWT 已过期账号"
+              aria-label={t("trae.page.settings.skipExpiredLabel")}
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label="网络失败重试次数"
-            description="仅对网络层异常重试；业务失败（如额度限制）不会重试。"
+            label={t("trae.page.settings.retryLabel")}
+            description={t("trae.page.settings.retryDesc")}
             htmlFor="trae-retry"
           >
             <Input
@@ -1165,8 +1326,8 @@ export default function TraeSettingsPage() {
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label="日志保留天数"
-            description="超期的日志行会在启动时裁剪；无日期前缀的外部输出一律保留。"
+            label={t("trae.page.settings.logRetentionLabel")}
+            description={t("trae.page.settings.logRetentionDesc")}
             htmlFor="trae-log-retention"
           >
             <Input
@@ -1194,11 +1355,11 @@ export default function TraeSettingsPage() {
         />
 
         {/* ---- 设备标识 ---- */}
-        <SettingsGroup id="trae-settings-device" title="设备标识">
+        <SettingsGroup id="trae-settings-device" title={t("trae.page.settings.deviceGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
-            label="重置设备标识"
-            description="依次处理 6 层客户端设备标识：machineid 文件、storage.json 遥测与设备 ID、aha/TinyStorage、注册表 MachineGuid（仅 Windows）、WebView 追踪数据。操作前请确保已保存登录态快照。"
+            label={t("trae.page.settings.resetLabel")}
+            description={t("trae.page.settings.resetDesc")}
             operational
           >
             <Button
@@ -1208,18 +1369,26 @@ export default function TraeSettingsPage() {
               onClick={() => setResetOpen(true)}
             >
               {resetBusy ? <Loader2 className="animate-spin" /> : <RotateCcw />}
-              重置
+              {t("trae.page.settings.reset")}
             </Button>
           </SettingsFieldRow>
           {resetReport && (
             <div className="space-y-1.5 px-4 py-3 sm:px-5">
               <div className="text-xs text-muted-foreground">
-                上次结果：{resetReport.resetCount} / {resetReport.totalLayers} 项生效
+                {t("trae.page.settings.resetResultPrefix")}
+                {t("trae.page.settings.resetLayers", {
+                  done: resetReport.resetCount,
+                  total: resetReport.totalLayers,
+                })}
               </div>
               {resetReport.steps.map((step) => (
                 <div key={step.layer} className="flex items-center gap-2 text-xs">
                   <Badge variant={step.status === "ok" ? "success" : "outline"}>
-                    {step.status === "ok" ? "已处理" : step.status === "unsupported" ? "平台不支持" : "已跳过"}
+                    {step.status === "ok"
+                      ? t("trae.page.settings.stepOk")
+                      : step.status === "unsupported"
+                        ? t("trae.page.settings.stepUnsupported")
+                        : t("trae.page.settings.stepSkipped")}
                   </Badge>
                   <span className="text-muted-foreground">
                     {step.label}
@@ -1233,26 +1402,41 @@ export default function TraeSettingsPage() {
         </SettingsGroup>
 
         {/* ---- 平台能力 ---- */}
-        <SettingsGroup id="trae-settings-capabilities" title="平台能力">
+        <SettingsGroup id="trae-settings-capabilities" title={t("trae.page.settings.capabilitiesGroup")}>
           <CardContent className="space-y-0 p-0">
           <div className="px-4 py-3.5 sm:px-5">
             <div className="flex flex-wrap gap-2">
-              <CapabilityBadge label="客户端检测" supported={capabilities?.clientDetection ?? false} />
-              <CapabilityBadge label="进程控制" supported={capabilities?.processControl ?? false} />
-              <CapabilityBadge label="定时任务" supported={capabilities?.scheduledTask ?? false} />
-              <CapabilityBadge label="MachineGuid 重置" supported={capabilities?.machineGuidReset ?? false} />
+              <CapabilityBadge
+                labelKey="trae.page.settings.capClientDetection"
+                supported={capabilities?.clientDetection ?? false}
+              />
+              <CapabilityBadge
+                labelKey="trae.page.settings.capProcessControl"
+                supported={capabilities?.processControl ?? false}
+              />
+              <CapabilityBadge
+                labelKey="trae.page.settings.capScheduledTask"
+                supported={capabilities?.scheduledTask ?? false}
+              />
+              <CapabilityBadge
+                labelKey="trae.page.settings.capMachineGuid"
+                supported={capabilities?.machineGuidReset ?? false}
+              />
             </div>
             <p className="mt-3 flex items-start gap-1.5 text-xs leading-5 text-muted-foreground">
               <Info className="mt-0.5 size-3.5 shrink-0" />
-              标记为「不支持」的能力会明确给出「在哪支持 + 为什么这里不行」，而不是伪装成功。
+              {t("trae.page.settings.capabilitiesNote")}
             </p>
           </div>
           {capabilities && capabilities.unsupported.length > 0 && (
             <div className="space-y-1.5 border-t border-border/50 px-4 py-3 sm:px-5">
               {capabilities.unsupported.map((item) => (
                 <div key={item.capability} className="text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{item.label}</span>
-                  （仅 {item.supportedOn}）：{item.reason}
+                  {t("trae.page.settings.capabilityRow", {
+                    label: item.label,
+                    on: item.supportedOn,
+                    reason: item.reason,
+                  })}
                 </div>
               ))}
             </div>
@@ -1267,13 +1451,13 @@ export default function TraeSettingsPage() {
         <GatewayLogsSection />
 
         {/* ---- 关于 ---- */}
-        <SettingsGroup id="trae-settings-about" title="关于">
+        <SettingsGroup id="trae-settings-about" title={t("trae.page.settings.aboutGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsRow className="flex-wrap gap-y-2">
             <div className="min-w-0">
-              <div className="text-[13px]">Trae 支持项目</div>
+              <div className="text-[13px]">{t("trae.page.settings.aboutTitle")}</div>
               <p className="mt-0.5 text-xs leading-4 text-muted-foreground/75">
-                账号切换、签到与设备标识能力参考开源实现，并按本工具的架构重写为原生 Rust。
+                {t("trae.page.settings.aboutDesc")}
               </p>
             </div>
             {consoleBase ? (
@@ -1285,7 +1469,9 @@ export default function TraeSettingsPage() {
               </Button>
             ) : (
               // 域未知时**不给死链**：宁可少一枚按钮，也不把用户导到可能错的站。
-              <span className="text-xs text-muted-foreground/75">站点地址未知</span>
+              <span className="text-xs text-muted-foreground/75">
+                {t("trae.page.settings.aboutUnknownSite")}
+              </span>
             )}
           </SettingsRow>
           </CardContent>
@@ -1296,15 +1482,12 @@ export default function TraeSettingsPage() {
       <Dialog open={resetOpen} onOpenChange={setResetOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>重置设备标识</DialogTitle>
-            <DialogDescription>
-              将改写 Trae 客户端的机器码与设备标识文件。建议先关闭 Trae，并确认已保存登录态快照。
-              在非 Windows 平台上，注册表 MachineGuid 一层会明确标记为「平台不支持」，不会伪装成功。
-            </DialogDescription>
+            <DialogTitle>{t("trae.page.settings.resetLabel")}</DialogTitle>
+            <DialogDescription>{t("trae.page.settings.resetDialogDesc")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setResetOpen(false)}>
-              取消
+              {t("trae.page.settings.cancel")}
             </Button>
             <Button
               onClick={() => {
@@ -1312,7 +1495,7 @@ export default function TraeSettingsPage() {
                 void runResetDevice();
               }}
             >
-              确认重置
+              {t("trae.page.settings.resetConfirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

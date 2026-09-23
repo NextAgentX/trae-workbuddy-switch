@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { useT } from "@/lib/i18n";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
 import type { ApiKeyRecord, Region } from "@/lib/types";
@@ -32,6 +33,7 @@ function formatDate(ts: number): string {
 
 /** API Key 列表 + 创建对话框 + 一次性明文展示 + 吊销 / 删除（P0-3）。 */
 export function ApiKeyTable({ className }: { className?: string }) {
+  const t = useT();
   const keys = useGatewayStore((s) => s.keys);
   const createKey = useGatewayStore((s) => s.createKey);
   const revokeKey = useGatewayStore((s) => s.revokeKey);
@@ -55,7 +57,7 @@ export function ApiKeyTable({ className }: { className?: string }) {
   async function onCreate() {
     const trimmed = name.trim();
     if (!trimmed) {
-      toast.error("请填写名称");
+      toast.error(t("wbStats.gateway.nameRequired"));
       return;
     }
     setCreating(true);
@@ -63,13 +65,13 @@ export function ApiKeyTable({ className }: { className?: string }) {
       const result = await createKey(trimmed, region);
       const value = result.key;
       if (!value) {
-        toast.error("创建成功但未返回明文，请重试");
+        toast.error(t("wbStats.gateway.createdNoPlaintext"));
         return;
       }
       setCreateOpen(false);
       setPlaintext({ value, name: trimmed });
     } catch (e) {
-      toast.error("创建失败", { description: api.asError(e) });
+      toast.error(t("wbStats.gateway.createFail"), { description: api.asError(e) });
     } finally {
       setCreating(false);
     }
@@ -80,10 +82,10 @@ export function ApiKeyTable({ className }: { className?: string }) {
     setBusy(true);
     try {
       await revokeKey(revokeTarget.id);
-      toast.success("已吊销", { description: revokeTarget.name });
+      toast.success(t("wbStats.gateway.revokedToast"), { description: revokeTarget.name });
       setRevokeTarget(null);
     } catch (e) {
-      toast.error("吊销失败", { description: api.asError(e) });
+      toast.error(t("wbStats.gateway.revokeFail"), { description: api.asError(e) });
     } finally {
       setBusy(false);
     }
@@ -94,10 +96,10 @@ export function ApiKeyTable({ className }: { className?: string }) {
     setBusy(true);
     try {
       await deleteKey(deleteTarget.id);
-      toast.success("已删除", { description: deleteTarget.name });
+      toast.success(t("wbStats.gateway.deletedToast"), { description: deleteTarget.name });
       setDeleteTarget(null);
     } catch (e) {
-      toast.error("删除失败", { description: api.asError(e) });
+      toast.error(t("wbStats.gateway.deleteFail"), { description: api.asError(e) });
     } finally {
       setBusy(false);
     }
@@ -110,25 +112,25 @@ export function ApiKeyTable({ className }: { className?: string }) {
         <DemoAction>
           <Button size="sm" onClick={openCreate}>
             <KeyRound />
-            创建 API Key
+            {t("wbStats.gateway.createKey")}
           </Button>
         </DemoAction>
       </div>
 
       <div className="px-5 py-3">
         {keys.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">尚未创建 API Key。</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{t("wbStats.gateway.noKeys")}</p>
         ) : (
           <div className="min-w-0 overflow-x-auto">
             <table className="w-full min-w-[560px] text-left text-sm">
               <thead>
                 <tr className="text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">名称</th>
-                  <th className="pb-2 pr-4 font-medium">版本</th>
-                  <th className="pb-2 pr-4 font-medium">前缀</th>
-                  <th className="pb-2 pr-4 font-medium">创建时间</th>
-                  <th className="pb-2 pr-4 font-medium">状态</th>
-                  <th className="pb-2 font-medium">操作</th>
+                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.name")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.version")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.prefix")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.createdAt")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.status")}</th>
+                  <th className="pb-2 font-medium">{t("wbStats.table.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -147,11 +149,11 @@ export function ApiKeyTable({ className }: { className?: string }) {
                       <td className="py-2 pr-4">
                         {revoked ? (
                           <Badge variant="secondary" className="rounded-md text-muted-foreground">
-                            已吊销
+                            {t("wbStats.gateway.revoked")}
                           </Badge>
                         ) : (
                           <Badge variant="success" className="rounded-md">
-                            启用
+                            {t("wbStats.gateway.enabled")}
                           </Badge>
                         )}
                       </td>
@@ -159,11 +161,11 @@ export function ApiKeyTable({ className }: { className?: string }) {
                         {revoked ? (
                           <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(key)}>
                             <Trash2 />
-                            删除
+                            {t("wbStats.gateway.delete")}
                           </Button>
                         ) : (
                           <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
-                            吊销
+                            {t("wbStats.gateway.revoke")}
                           </Button>
                         )}
                       </td>
@@ -180,25 +182,25 @@ export function ApiKeyTable({ className }: { className?: string }) {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>创建 API Key</DialogTitle>
-            <DialogDescription>每个 Key 只能访问其归属版本的模型与账号。</DialogDescription>
+            <DialogTitle>{t("wbStats.gateway.createTitle")}</DialogTitle>
+            <DialogDescription>{t("wbStats.gateway.createDesc")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="key-name">名称</Label>
+              <Label htmlFor="key-name">{t("wbStats.gateway.nameLabel")}</Label>
               <Input
                 id="key-name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="例如 Cursor"
+                placeholder={t("wbStats.gateway.namePlaceholder")}
                 spellCheck={false}
                 autoComplete="off"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="key-region">归属版本</Label>
+              <Label htmlFor="key-region">{t("wbStats.gateway.regionLabel")}</Label>
               <Select value={region} onValueChange={(value) => setRegion(value as Region)}>
-                <SelectTrigger id="key-region" className="w-full" aria-label="归属版本">
+                <SelectTrigger id="key-region" className="w-full" aria-label={t("wbStats.gateway.regionAria")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -213,11 +215,11 @@ export function ApiKeyTable({ className }: { className?: string }) {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
-              取消
+              {t("wbStats.gateway.cancel")}
             </Button>
             <Button onClick={() => void onCreate()} disabled={creating}>
               {creating && <Loader2 className="animate-spin" />}
-              创建
+              {t("wbStats.gateway.create")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -227,19 +229,19 @@ export function ApiKeyTable({ className }: { className?: string }) {
       <Dialog open={plaintext !== null} onOpenChange={(open) => !open && setPlaintext(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>API Key 已创建</DialogTitle>
-            <DialogDescription>完整 Key 只显示这一次，请立即复制保存。</DialogDescription>
+            <DialogTitle>{t("wbStats.gateway.createdTitle")}</DialogTitle>
+            <DialogDescription>{t("wbStats.gateway.createdDesc")}</DialogDescription>
           </DialogHeader>
           {plaintext && (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
               <code className="min-w-0 flex-1 break-all font-mono text-xs">{plaintext.value}</code>
-              <Button variant="outline" size="sm" onClick={() => void copyText(plaintext.value, "API Key 已复制")}>
-                复制
+              <Button variant="outline" size="sm" onClick={() => void copyText(plaintext.value, t("wbStats.gateway.keyCopied"))}>
+                {t("wbStats.gateway.copy")}
               </Button>
             </div>
           )}
           <DialogFooter>
-            <Button onClick={() => setPlaintext(null)}>我已保存，关闭</Button>
+            <Button onClick={() => setPlaintext(null)}>{t("wbStats.gateway.savedClose")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -248,17 +250,17 @@ export function ApiKeyTable({ className }: { className?: string }) {
       <Dialog open={revokeTarget !== null} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>吊销 API Key</DialogTitle>
+            <DialogTitle>{t("wbStats.gateway.revokeTitle")}</DialogTitle>
             <DialogDescription>
-              吊销后「{revokeTarget?.name}」立即失效（401），列表中保留为「已吊销」状态。
+              {t("wbStats.gateway.revokeDesc", { name: revokeTarget?.name ?? "" })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRevokeTarget(null)} disabled={busy}>
-              取消
+              {t("wbStats.gateway.cancel")}
             </Button>
             <Button variant="destructive" onClick={() => void confirmRevoke()} disabled={busy}>
-              吊销
+              {t("wbStats.gateway.revoke")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -268,15 +270,15 @@ export function ApiKeyTable({ className }: { className?: string }) {
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除 API Key</DialogTitle>
-            <DialogDescription>确定删除已吊销的「{deleteTarget?.name}」？此操作不可撤销。</DialogDescription>
+            <DialogTitle>{t("wbStats.gateway.deleteTitle")}</DialogTitle>
+            <DialogDescription>{t("wbStats.gateway.deleteDesc", { name: deleteTarget?.name ?? "" })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={busy}>
-              取消
+              {t("wbStats.gateway.cancel")}
             </Button>
             <Button variant="destructive" onClick={() => void confirmDelete()} disabled={busy}>
-              删除
+              {t("wbStats.gateway.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>

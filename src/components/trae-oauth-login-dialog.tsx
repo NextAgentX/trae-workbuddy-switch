@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { traeVariantLabel, type TraeAccount } from "@/lib/trae-types";
 import { useTraeVariant } from "@/lib/use-trae-variant";
 
@@ -71,6 +72,7 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
    */
   const [variant] = useTraeVariant();
   const variantLabel = traeVariantLabel(variant);
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [loginId, setLoginId] = useState<string | null>(null);
   const [uri, setUri] = useState("");
@@ -171,7 +173,7 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
               onSuccessRef.current?.(res.account);
             }
           } else if (!cancelled && !timedOutRef.current) {
-            setError(res.error || "登录失败");
+            setError(res.error || t("trae.comp.oauth.error.fallback"));
           }
           return;
         }
@@ -212,13 +214,7 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
           timedOutRef.current = true;
           // 超时同样是终态：一并落下"已落定"，让轮询的语义只有一个判据。
           settledRef.current = true;
-          setError(
-            `等待授权超时（${TRAE_OAUTH_FRONTEND_TIMEOUT_SECONDS - 10} 秒）。` +
-              "请确认浏览器里已完成授权；若已授权但仍超时，" +
-              "通常是授权页没有把回调打回本机监听端口（端口见下方）。" +
-              "可先关闭弹窗后重试；若反复超时，请确认本机 17388 端口未被其它程序占用。" +
-              "也可改用「导入本机账号」。",
-          );
+          setError(t("trae.comp.oauth.error.timeout", { seconds: TRAE_OAUTH_FRONTEND_TIMEOUT_SECONDS - 10 }));
         }
         return;
       }
@@ -307,19 +303,20 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
             说清「正在为哪条线登录」是本次变体透传修复的**用户可见那一半** ——
             只把参数传对、却不告诉用户，用户仍然无法预期账号会落到哪里。
           */}
-          <DialogTitle>OAuth 网页登录 · {variantLabel}</DialogTitle>
+          <DialogTitle>{t("trae.comp.oauth.title", { variant: variantLabel })}</DialogTitle>
           <DialogDescription>
-            在浏览器中登录 <span className="font-medium text-foreground">{variantLabel}</span>{" "}
-            并授权，应用会自动接住回调并把账号采集到{" "}
+            {t("trae.comp.oauth.desc.lead")}{" "}
             <span className="font-medium text-foreground">{variantLabel}</span>{" "}
-            的账号库，无需粘贴任何令牌。
+            {t("trae.comp.oauth.desc.mid")}{" "}
+            <span className="font-medium text-foreground">{variantLabel}</span>
+            {t("trae.comp.oauth.desc.tail")}
           </DialogDescription>
         </DialogHeader>
 
         {!loginId && !result && (
           <div className="space-y-3">
             <Button onClick={start} disabled={busy} className="w-full">
-              {busy ? `正在为 ${variantLabel} 发起登录…` : `开始 ${variantLabel} 网页登录`}
+              {busy ? t("trae.comp.oauth.startBusy", { variant: variantLabel }) : t("trae.comp.oauth.start", { variant: variantLabel })}
             </Button>
           </div>
         )}
@@ -347,9 +344,9 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
               </AlertDescription>
             </Alert>
             <p className="text-sm text-muted-foreground">
-              正在等待授权，请在浏览器完成登录…
+              {t("trae.comp.oauth.waiting")}
               {remaining !== null && (
-                <span className="ml-1 text-xs">剩余 {formatRemaining(remaining)}</span>
+                <span className="ml-1 text-xs">{t("trae.comp.oauth.remaining", { time: formatRemaining(remaining) })}</span>
               )}
             </p>
             {/* 显式展示回调地址与端口。
@@ -358,7 +355,8 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
                 把地址摆出来是因为「授权页探得到、但没把回调打回来」这种情况只能靠它排查。 */}
             {port !== null && (
               <p className="text-xs text-muted-foreground break-all">
-                本机回调监听：<code>http://127.0.0.1:{port}/authorize</code>
+                {t("trae.comp.oauth.callback")}
+                <code>http://127.0.0.1:{port}/authorize</code>
               </p>
             )}
           </div>
@@ -366,7 +364,7 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
 
         {result && (
           <Alert>
-            <AlertDescription>已添加账号：{result.name || result.userId}</AlertDescription>
+            <AlertDescription>{t("trae.comp.oauth.result", { name: result.name || result.userId })}</AlertDescription>
           </Alert>
         )}
 
@@ -385,18 +383,19 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
         {/* 出错/超时后仍把回调地址摆出来：这是排查「回调没打回本机」的唯一抓手。 */}
         {error && !result && port !== null && (
           <p className="text-xs text-muted-foreground break-all">
-            本机回调监听：<code>http://127.0.0.1:{port}/authorize</code>
+            {t("trae.comp.oauth.callback")}
+            <code>http://127.0.0.1:{port}/authorize</code>
           </p>
         )}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => void close()}>
-            关闭
+            {t("trae.comp.oauth.close")}
           </Button>
-          {result && <Button onClick={() => void close()}>完成</Button>}
+          {result && <Button onClick={() => void close()}>{t("trae.comp.oauth.done")}</Button>}
           {error && !result && (
             <Button onClick={() => void retry()} disabled={busy}>
-              {busy ? "正在发起登录…" : "重新发起登录"}
+              {busy ? t("trae.comp.oauth.retryBusy") : t("trae.comp.oauth.retry")}
             </Button>
           )}
         </DialogFooter>

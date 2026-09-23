@@ -69,6 +69,7 @@ export const en = {
   "wbStats.token.noStats": "No statistics available for this source. Click refresh to retry.",
   "wbStats.token.trendSummary": "Total {total} tokens · {calls} calls",
   "wbStats.token.srSummary": "{date}: used {total} tokens, {calls} calls",
+  "wbStats.token.coverage": "Data covers up to {date}",
 
   // ---- Credit statistics ----
   "wbStats.credit.allAccounts": "All accounts",
@@ -185,6 +186,8 @@ export const en = {
   "wbStats.gateway.refreshFail": "Refresh failed",
   "wbStats.gateway.refresh": "Refresh",
   "wbStats.gateway.noModels": "No model data.",
+  "wbStats.gateway.modelTitle": "{name} · context {context} · max output {max}",
+  "wbStats.gateway.free": "Free",
   "wbStats.gateway.createKey": "Create API Key",
   "wbStats.gateway.noKeys": "No API Keys created yet.",
   "wbStats.gateway.revoked": "Revoked",
@@ -238,6 +241,11 @@ export const en = {
   "wbStats.gateway.codeCopied": "Code copied",
   "wbStats.gateway.streamNote": "Streaming (stream) is recommended; non-streaming requests are aggregated by the gateway and returned at once, with higher first-byte latency.",
   "wbStats.gateway.noKeyHint": "sk-wb-… (create a key above first)",
+  // Field labels inside the copyable snippets (shared by all client snippets)
+  "wbStats.gateway.snippet.apiBase": "API Base URL",
+  "wbStats.gateway.snippet.apiKey": "API Key",
+  "wbStats.gateway.snippet.modelPick": "Pick one from the model list, e.g. GLM-5.3",
+  "wbStats.gateway.snippet.modelPickPlain": "Pick one from the model list",
 
   // ---- Table headers ----
   "wbStats.table.name": "Name",
@@ -249,6 +257,7 @@ export const en = {
 
   // ---- Credit statistics (added) ----
   "wbStats.credit.trendUsageLabel": "{date} usage",
+  "wbStats.credit.updatedPrefix": "Data updated at",
   "wbStats.credit.filterByDetail": "Filter credit details by account",
   "wbStats.credit.bothRegions": "(CN + Global)",
   "wbStats.credit.refresh": "Refresh stats",

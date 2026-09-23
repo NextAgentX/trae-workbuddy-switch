@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { useT, type Translate } from "@/lib/i18n";
 import type { TraeAccount, TraeVariantId } from "@/lib/trae-types";
 
 interface Props {
@@ -25,8 +26,8 @@ interface Props {
 }
 
 /** 账号展示名（与账号卡片一致）。 */
-function accountLabel(a: TraeAccount): string {
-  return a.name || `UID · ${a.userId}`;
+function accountLabel(a: TraeAccount, t: Translate): string {
+  return a.name || t("trae.comp.export.uid", { uid: a.userId });
 }
 
 /**
@@ -63,11 +64,11 @@ async function revealInDir(path: string): Promise<void> {
 }
 
 /** 按平台显示文件管理器文案（与 update-install-dialog 的 userAgent 判断一致）。 */
-function revealLabel(): string {
+function revealLabel(t: Translate): string {
   const ua = navigator.userAgent;
-  if (ua.includes("Windows")) return "在资源管理器中显示";
-  if (ua.includes("Linux")) return "在文件管理器中显示";
-  return "在 Finder 中显示";
+  if (ua.includes("Windows")) return t("trae.comp.export.reveal.windows");
+  if (ua.includes("Linux")) return t("trae.comp.export.reveal.linux");
+  return t("trae.comp.export.reveal.mac");
 }
 
 /**
@@ -78,6 +79,7 @@ function revealLabel(): string {
  * 以及导出文件的键名保持 Trae 参考实现形状（`UserID` 大写）。
  */
 export function TraeExportAccountsDialog({ open, onOpenChange, accounts, variant, onExported }: Props) {
+  const t = useT();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -124,7 +126,7 @@ export function TraeExportAccountsDialog({ open, onOpenChange, accounts, variant
         // 桌面端：系统保存对话框选位置 → 后端写入该路径（WKWebView 不支持 `<a download>`）
         const { save } = await import("@tauri-apps/plugin-dialog");
         const path = await save({
-          title: "导出 Trae 账号",
+          title: t("trae.comp.export.saveTitle"),
           defaultPath: exportFileName(),
           filters: [{ name: "JSON", extensions: ["json"] }],
         });
@@ -144,27 +146,25 @@ export function TraeExportAccountsDialog({ open, onOpenChange, accounts, variant
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="min-w-0 overflow-x-hidden">
         <DialogHeader>
-          <DialogTitle>导出账号</DialogTitle>
-          <DialogDescription>勾选要导出的 Trae 账号，导出为 JSON 文件。</DialogDescription>
+          <DialogTitle>{t("trae.comp.export.title")}</DialogTitle>
+          <DialogDescription>{t("trae.comp.export.desc")}</DialogDescription>
         </DialogHeader>
 
         <Alert variant="warning">
-          <AlertTitle>安全提示</AlertTitle>
-          <AlertDescription>
-            导出文件含 Cloud-IDE-JWT，等同密码，请勿上传网盘或发送给他人。
-          </AlertDescription>
+          <AlertTitle>{t("trae.comp.export.warningTitle")}</AlertTitle>
+          <AlertDescription>{t("trae.comp.export.warningBody")}</AlertDescription>
         </Alert>
 
         {accounts.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">暂无账号可导出。</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{t("trae.comp.export.empty")}</p>
         ) : (
           <>
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
-                共 {accounts.length} 个账号，已选 {selected.size} 个
+                {t("trae.comp.export.summary", { total: accounts.length, count: selected.size })}
               </span>
               <button type="button" className="text-primary hover:underline" onClick={toggleAll}>
-                {allSelected ? "取消全选" : "全选"}
+                {allSelected ? t("trae.comp.export.deselectAll") : t("trae.comp.export.selectAll")}
               </button>
             </div>
             <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
@@ -179,7 +179,7 @@ export function TraeExportAccountsDialog({ open, onOpenChange, accounts, variant
                     checked={selected.has(a.userId)}
                     onChange={() => toggle(a.userId)}
                   />
-                  <span className="min-w-0 flex-1 truncate text-sm">{accountLabel(a)}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm">{accountLabel(a, t)}</span>
                 </label>
               ))}
             </div>
@@ -194,12 +194,12 @@ export function TraeExportAccountsDialog({ open, onOpenChange, accounts, variant
 
         {savedPath && (
           <Alert>
-            <AlertTitle>导出成功</AlertTitle>
+            <AlertTitle>{t("trae.comp.export.successTitle")}</AlertTitle>
             <AlertDescription className="space-y-2">
               <span className="block break-all font-mono text-xs">{savedPath}</span>
               <Button variant="outline" size="sm" onClick={() => void revealInDir(savedPath)}>
                 <FolderOpen />
-                {revealLabel()}
+                {revealLabel(t)}
               </Button>
             </AlertDescription>
           </Alert>
@@ -207,12 +207,12 @@ export function TraeExportAccountsDialog({ open, onOpenChange, accounts, variant
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            {savedPath ? "完成" : "取消"}
+            {savedPath ? t("trae.comp.export.done") : t("trae.comp.export.cancel")}
           </Button>
           {!savedPath && (
             <Button onClick={doExport} disabled={busy || selected.size === 0}>
               {busy ? <Loader2 className="animate-spin" /> : <Download />}
-              导出勾选账号
+              {t("trae.comp.export.submit")}
             </Button>
           )}
         </DialogFooter>

@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { useT } from "@/lib/i18n";
 import { traeRegionLabelOf } from "@/lib/trae-types";
 import type { TraeApiKeyRecord, TraeVariantId } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
@@ -67,6 +68,7 @@ export function TraeApiKeyTable({
   defaultVariant?: TraeVariantId;
   onChanged?: () => void;
 }) {
+  const t = useT();
   const [keys, setKeys] = useState<TraeApiKeyRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -86,7 +88,7 @@ export function TraeApiKeyTable({
       setKeys(result.keys ?? []);
     } catch (e) {
       // 演示模式 / 后端不可用：保持空列表，不清空已有数据。
-      toast.error("读取 API Key 列表失败", { description: api.asError(e) });
+      toast.error(t("trae.gateway.key.loadFailed"), { description: api.asError(e) });
     } finally {
       setLoading(false);
     }
@@ -105,7 +107,7 @@ export function TraeApiKeyTable({
   async function onCreate() {
     const trimmed = name.trim();
     if (!trimmed) {
-      toast.error("请填写名称");
+      toast.error(t("trae.gateway.key.nameRequired"));
       return;
     }
     setCreating(true);
@@ -114,7 +116,7 @@ export function TraeApiKeyTable({
       const value = result.key;
       if (!value) {
         // 创建成功但没回明文 = 契约异常，必须显式提示而不是静默（明文不可复原）。
-        toast.error("创建成功但未返回明文，请重试");
+        toast.error(t("trae.gateway.key.noPlaintext"));
         return;
       }
       setCreateOpen(false);
@@ -122,7 +124,7 @@ export function TraeApiKeyTable({
       await load();
       onChanged?.();
     } catch (e) {
-      toast.error("创建失败", { description: api.asError(e) });
+      toast.error(t("trae.gateway.key.createFailed"), { description: api.asError(e) });
     } finally {
       setCreating(false);
     }
@@ -133,12 +135,12 @@ export function TraeApiKeyTable({
     setBusy(true);
     try {
       await api.revokeTraeApiKey(revokeTarget.id);
-      toast.success("已吊销", { description: revokeTarget.name });
+      toast.success(t("trae.gateway.key.revoked"), { description: revokeTarget.name });
       setRevokeTarget(null);
       await load();
       onChanged?.();
     } catch (e) {
-      toast.error("吊销失败", { description: api.asError(e) });
+      toast.error(t("trae.gateway.key.revokeFailed"), { description: api.asError(e) });
     } finally {
       setBusy(false);
     }
@@ -149,12 +151,12 @@ export function TraeApiKeyTable({
     setBusy(true);
     try {
       await api.deleteTraeApiKey(deleteTarget.id);
-      toast.success("已删除", { description: deleteTarget.name });
+      toast.success(t("trae.gateway.key.deleted"), { description: deleteTarget.name });
       setDeleteTarget(null);
       await load();
       onChanged?.();
     } catch (e) {
-      toast.error("删除失败", { description: api.asError(e) });
+      toast.error(t("trae.gateway.key.deleteFailed"), { description: api.asError(e) });
     } finally {
       setBusy(false);
     }
@@ -167,7 +169,7 @@ export function TraeApiKeyTable({
         <DemoAction>
           <Button size="sm" onClick={openCreate}>
             <KeyRound />
-            创建 API Key
+            {t("trae.gateway.key.create")}
           </Button>
         </DemoAction>
       </div>
@@ -176,22 +178,22 @@ export function TraeApiKeyTable({
         {loading && keys.length === 0 ? (
           <p className="py-4 text-center text-sm text-muted-foreground">
             <Loader2 className="mr-1.5 inline size-3.5 animate-spin" />
-            读取中…
+            {t("trae.gateway.key.loading")}
           </p>
         ) : keys.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">尚未创建 API Key。</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{t("trae.gateway.key.empty")}</p>
         ) : (
           <div className="min-w-0 overflow-x-auto">
             <table className="w-full min-w-[640px] text-left text-sm">
               <thead>
                 <tr className="text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">名称</th>
-                  <th className="pb-2 pr-4 font-medium">归属版本</th>
-                  <th className="pb-2 pr-4 font-medium">前缀</th>
-                  <th className="pb-2 pr-4 font-medium">创建时间</th>
-                  <th className="pb-2 pr-4 font-medium">最近使用</th>
-                  <th className="pb-2 pr-4 font-medium">状态</th>
-                  <th className="pb-2 font-medium">操作</th>
+                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.name")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.variant")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.prefix")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.createdAt")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.lastUsed")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.status")}</th>
+                  <th className="pb-2 font-medium">{t("trae.gateway.key.col.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -208,16 +210,16 @@ export function TraeApiKeyTable({
                       <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{key.prefix}…</td>
                       <td className="py-2 pr-4 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
                       <td className="py-2 pr-4 text-xs text-muted-foreground">
-                        {key.lastUsedAt ? formatDate(key.lastUsedAt) : "从未使用"}
+                        {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("trae.gateway.key.neverUsed")}
                       </td>
                       <td className="py-2 pr-4">
                         {revoked ? (
                           <Badge variant="secondary" className="rounded-md text-muted-foreground">
-                            已吊销
+                            {t("trae.gateway.key.statusRevoked")}
                           </Badge>
                         ) : (
                           <Badge variant="success" className="rounded-md">
-                            启用
+                            {t("trae.gateway.key.statusActive")}
                           </Badge>
                         )}
                       </td>
@@ -230,11 +232,11 @@ export function TraeApiKeyTable({
                             onClick={() => setDeleteTarget(key)}
                           >
                             <Trash2 />
-                            删除
+                            {t("trae.gateway.key.delete")}
                           </Button>
                         ) : (
                           <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
-                            吊销
+                            {t("trae.gateway.key.revoke")}
                           </Button>
                         )}
                       </td>
@@ -251,25 +253,25 @@ export function TraeApiKeyTable({
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>创建 API Key</DialogTitle>
-            <DialogDescription>每个 Key 只能访问其归属版本的模型与账号池。</DialogDescription>
+            <DialogTitle>{t("trae.gateway.key.create")}</DialogTitle>
+            <DialogDescription>{t("trae.gateway.key.createDesc")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="trae-key-name">名称</Label>
+              <Label htmlFor="trae-key-name">{t("trae.gateway.key.name")}</Label>
               <Input
                 id="trae-key-name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="例如 Cursor"
+                placeholder={t("trae.gateway.key.namePlaceholder")}
                 spellCheck={false}
                 autoComplete="off"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="trae-key-variant">归属版本</Label>
+              <Label htmlFor="trae-key-variant">{t("trae.gateway.key.variant")}</Label>
               <Select value={variant} onValueChange={(value) => setVariant(value as TraeVariantId)}>
-                <SelectTrigger id="trae-key-variant" className="w-full" aria-label="归属版本">
+                <SelectTrigger id="trae-key-variant" className="w-full" aria-label={t("trae.gateway.key.variant")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -284,11 +286,11 @@ export function TraeApiKeyTable({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
-              取消
+              {t("trae.gateway.key.cancel")}
             </Button>
             <Button onClick={() => void onCreate()} disabled={creating}>
               {creating && <Loader2 className="animate-spin" />}
-              创建
+              {t("trae.gateway.key.createSubmit")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -298,8 +300,8 @@ export function TraeApiKeyTable({
       <Dialog open={plaintext !== null} onOpenChange={(open) => !open && setPlaintext(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>API Key 已创建</DialogTitle>
-            <DialogDescription>完整 Key 只显示这一次，请立即复制保存。</DialogDescription>
+            <DialogTitle>{t("trae.gateway.key.createdTitle")}</DialogTitle>
+            <DialogDescription>{t("trae.gateway.key.createdDesc")}</DialogDescription>
           </DialogHeader>
           {plaintext && (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
@@ -307,14 +309,14 @@ export function TraeApiKeyTable({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => void copyText(plaintext.value, "API Key 已复制")}
+                onClick={() => void copyText(plaintext.value, t("trae.gateway.key.copied"))}
               >
-                复制
+                {t("trae.gateway.key.copy")}
               </Button>
             </div>
           )}
           <DialogFooter>
-            <Button onClick={() => setPlaintext(null)}>我已保存，关闭</Button>
+            <Button onClick={() => setPlaintext(null)}>{t("trae.gateway.key.saved")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -323,17 +325,17 @@ export function TraeApiKeyTable({
       <Dialog open={revokeTarget !== null} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>吊销 API Key</DialogTitle>
+            <DialogTitle>{t("trae.gateway.key.revokeTitle")}</DialogTitle>
             <DialogDescription>
-              吊销后「{revokeTarget?.name}」立即失效（401），列表中保留为「已吊销」状态。
+              {t("trae.gateway.key.revokeDesc", { name: revokeTarget?.name ?? "" })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRevokeTarget(null)} disabled={busy}>
-              取消
+              {t("trae.gateway.key.cancel")}
             </Button>
             <Button variant="destructive" onClick={() => void confirmRevoke()} disabled={busy}>
-              吊销
+              {t("trae.gateway.key.revoke")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -343,15 +345,17 @@ export function TraeApiKeyTable({
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除 API Key</DialogTitle>
-            <DialogDescription>确定删除已吊销的「{deleteTarget?.name}」？此操作不可撤销。</DialogDescription>
+            <DialogTitle>{t("trae.gateway.key.deleteTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("trae.gateway.key.deleteDesc", { name: deleteTarget?.name ?? "" })}
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={busy}>
-              取消
+              {t("trae.gateway.key.cancel")}
             </Button>
             <Button variant="destructive" onClick={() => void confirmDelete()} disabled={busy}>
-              删除
+              {t("trae.gateway.key.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -43,7 +43,9 @@ import type {
   TravelStatus,
   UpdateInfo,
 } from "./types";
-import { DEMO_UNAVAILABLE_MESSAGE, demoModeEnabled } from "./demo-mode";
+import { demoModeEnabled, demoUnavailableMessage } from "./demo-mode";
+import { localizeCodedStrings, localizeError } from "./error-code";
+import { t } from "./i18n";
 import { screenshotDemoResponse } from "./screenshot-demo";
 import type {
   TraeAccount,
@@ -266,7 +268,7 @@ function queryString(args?: Record<string, unknown>): string {
 
 async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const route = ROUTES[cmd];
-  if (!route) throw new Error(`webui 模式暂不支持该操作: ${cmd}`);
+  if (!route) throw new Error(t("shared.api.unsupportedInWebui", { cmd }));
   let res: Response;
   try {
     const url =
@@ -279,24 +281,26 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       body: route.method === "POST" ? JSON.stringify(args ?? {}) : undefined,
     });
   } catch {
-    throw new Error(`无法连接 Buddy Switch 服务（${API_BASE}），请先运行 \`buddy-switch\``);
+    throw new Error(t("shared.api.unreachable", { base: API_BASE }));
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.message || data.error || `请求失败 (${res.status})`);
+    throw new Error(data.message || data.error || t("shared.api.requestFailed", { status: res.status }));
   }
-  return data as T;
+  // 数据带上来的错误（`error` / `warning` 这类字段）在**这里**统一本地化，
+  // 而不是靠每个渲染点自己记得剥结构尾 —— 见 `error-code.ts` 的说明。
+  return localizeCodedStrings(data) as T;
 }
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (demoModeEnabled) {
     if (cmd === "get_credit_statistics" && args?.refresh === true) {
-      throw new Error(DEMO_UNAVAILABLE_MESSAGE);
+      throw new Error(demoUnavailableMessage());
     }
-    if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
-    return screenshotDemoResponse(cmd, args) as T;
+    if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(demoUnavailableMessage());
+    return localizeCodedStrings(screenshotDemoResponse(cmd, args)) as T;
   }
-  if (!isWebui()) return invoke<T>(cmd, args);
+  if (!isWebui()) return localizeCodedStrings(await invoke<T>(cmd, args)) as T;
   return httpCall<T>(cmd, args);
 }
 
@@ -502,7 +506,7 @@ export function migrateAccountData(
 export function openPermissionSettings(
   target?: "app_management" | "all_files",
 ): Promise<void> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("open_permission_settings", { target: target ?? "app_management" });
 }
@@ -515,11 +519,11 @@ export function checkAuthPermission(): Promise<{
   dir?: string;
   hint?: string;
 }> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) {
     return Promise.resolve({
       ok: true,
-      message: "webui 模式由服务进程（终端启动）的权限决定，无需额外授权",
+      message: t("shared.api.webuiPermissionByProcess"),
       hint: "",
     });
   }
@@ -528,7 +532,7 @@ export function checkAuthPermission(): Promise<{
 
 /** 在 Finder 中显示当前 App（桌面端专用；webui 无操作）。 */
 export function revealAppInFinder(): Promise<void> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("reveal_app_in_finder");
 }
@@ -566,7 +570,7 @@ export async function getCheckinStatus(accountId: string, region?: Region): Prom
     const one = all.accounts.find((a) => a.accountId === accountId);
     return one
       ? { ok: one.ok, todayCheckedIn: one.todayCheckedIn, error: one.error, raw: one.raw }
-      : { ok: false, todayCheckedIn: false, error: "未找到账号" };
+      : { ok: false, todayCheckedIn: false, error: t("shared.api.accountNotFound") };
   }
   return call("get_checkin_status", { accountId, ...regionArg(region) });
 }
@@ -771,7 +775,7 @@ export function checkUpdate(proxy?: string, force?: boolean): Promise<UpdateInfo
 
 /** 重启 App（桌面端专用；webui 无操作）。守卫在 wrapper 内部，保证「webui 不可达」由本函数自证。 */
 export function relaunchApp(): Promise<void> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("relaunch_app");
 }
@@ -789,16 +793,27 @@ export function getLaunchAtLoginEnabled(): Promise<boolean> {
 
 /** 注册 / 移除系统开机自启，返回回读后的权威状态（桌面端）。 */
 export function setLaunchAtLoginEnabled(enabled: boolean): Promise<boolean> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (!isDesktop()) return Promise.resolve(false);
   return call("set_launch_at_login_enabled", { enabled });
 }
 
-/** 把 Tauri command / HTTP 抛出的错误统一为 Error。 */
+/**
+ * 把 Tauri command / HTTP 抛出的错误统一为 Error，并**按当前语言**渲染。
+ *
+ * 这里是全应用错误文案的唯一裁决点：后端把「文本 + 错误码 + 参数」编进同一个字符串
+ * （见 `lib/error-code.ts`），本函数解出码后交给 `localizeError` 选文案。
+ * 因此**所有已经用 `asError(e)` 的调用点无需逐个改造**，就同时获得中英两种文案。
+ *
+ * 中文界面下结果与改造前**逐字节相同**：`localizeError` 对中文直接返回后端原文，
+ * 而结构尾已在解码时剥掉。
+ */
 export function asError(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e instanceof Error) return e.message;
-  return JSON.stringify(e ?? "未知错误");
+  if (typeof e === "string") return localizeError(e);
+  if (e instanceof Error) return localizeError(e.message);
+  if (e === null || e === undefined) return t("common.unknownError");
+  const serialized = JSON.stringify(e);
+  return localizeError(serialized ?? t("common.unknownError"));
 }
 
 // ---------------------------------------------------------------------------

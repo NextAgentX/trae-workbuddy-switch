@@ -15,18 +15,20 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { avatarTone } from "@/components/account-card";
 import { TraeMark, TraeVariantMark } from "@/components/product-marks";
+import { useT, type Translate } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import { cn } from "@/lib/utils";
 import type { TraeAccount, TraeJwtStatus, TraeVariantId } from "@/lib/trae-types";
 
 const chipClass = "rounded-md px-1.5 py-0 text-[11px] font-medium";
 
 /** 剩余小时数 → 可读文案。 */
-export function hoursText(hours: number | null): string {
-  if (hours === null || !Number.isFinite(hours)) return "未知";
-  if (hours <= 0) return "已过期";
-  if (hours < 1) return `${Math.round(hours * 60)} 分钟`;
-  if (hours < 48) return `${hours.toFixed(1)} 小时`;
-  return `${Math.floor(hours / 24)} 天`;
+export function hoursText(hours: number | null, t: Translate): string {
+  if (hours === null || !Number.isFinite(hours)) return t("trae.comp.card.hours.unknown");
+  if (hours <= 0) return t("trae.comp.card.hours.expired");
+  if (hours < 1) return t("trae.comp.card.hours.minutes", { count: Math.round(hours * 60) });
+  if (hours < 48) return t("trae.comp.card.hours.hours", { count: hours.toFixed(1) });
+  return t("trae.comp.card.hours.days", { count: Math.floor(hours / 24) });
 }
 
 /** Unix 秒 → `MM-DD HH:mm`。 */
@@ -38,20 +40,24 @@ export function shortTime(seconds: number | null): string {
 }
 
 /** JWT 状态 → Badge 变体与文案。 */
-export function jwtBadge(status: TraeJwtStatus, hours: number | null) {
+export function jwtBadge(status: TraeJwtStatus, hours: number | null, t: Translate) {
   switch (status) {
     case "ok":
-      return { variant: "secondary" as const, className: "", text: `有效 ${hoursText(hours)}` };
+      return {
+        variant: "secondary" as const,
+        className: "",
+        text: t("trae.comp.card.jwt.valid", { hours: hoursText(hours, t) }),
+      };
     case "warn":
       return {
         variant: "secondary" as const,
         className: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-        text: `临期 ${hoursText(hours)}`,
+        text: t("trae.comp.card.jwt.warn", { hours: hoursText(hours, t) }),
       };
     case "expired":
-      return { variant: "destructive" as const, className: "", text: "已过期" };
+      return { variant: "destructive" as const, className: "", text: t("trae.comp.card.jwt.expired") };
     default:
-      return { variant: "outline" as const, className: "", text: "无法解析" };
+      return { variant: "outline" as const, className: "", text: t("trae.comp.card.jwt.unparsable") };
   }
 }
 
@@ -61,11 +67,13 @@ function formatCredits(value: number | null): string {
 }
 
 /** Unix 秒 → `MM/DD 到期`（与 WorkBuddy 卡片的 `formatCreditExpiry` 同形）。 */
-function formatExpiryShort(seconds: number | null): string {
-  if (!seconds) return "长期有效";
+function formatExpiryShort(seconds: number | null, t: Translate): string {
+  if (!seconds) return t("trae.comp.card.expiry.permanent");
   const date = new Date(seconds * 1000);
-  if (Number.isNaN(date.getTime())) return "长期有效";
-  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} 到期`;
+  if (Number.isNaN(date.getTime())) return t("trae.comp.card.expiry.permanent");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return t("trae.comp.card.expiry.short", { date: `${mm}/${dd}` });
 }
 
 /** Unix 秒 → `YYYY/MM/DD`。 */
@@ -165,8 +173,9 @@ export function TraeAccountCard({
   onClearCooldown,
   onDelete,
 }: Props) {
+  const t = useT();
   const name = account.name || `UID · ${account.userId}`;
-  const badge = jwtBadge(account.jwtStatus, account.jwtExpHours);
+  const badge = jwtBadge(account.jwtStatus, account.jwtExpHours, t);
   // 忙状态 key 带上变体（`switch-<uid>@<变体>`）：同一账号可能在切另一条线，
   // 只按 uid 判定会把「切 Trae CN 中」的转圈画到 Trae Work 的按钮上。
   const switchKeyPrefix = `switch-${account.userId}@`;
@@ -188,22 +197,22 @@ export function TraeAccountCard({
    * 但**不搬 WorkBuddy 的字段**：Trae 没有积分包（package）粒度数据，
    * 因此这里放的是 Trae 真实持有的账号属性——设备、JWT 到期、加入时间、最近更新。
    */
-  const detailRows: { label: string; value: string; title?: string }[] = [
-    { label: "设备", value: account.deviceIdMasked || "—" },
+  const detailRows: { labelKey: TranslationKey; value: string; title?: string }[] = [
+    { labelKey: "trae.comp.card.label.device", value: account.deviceIdMasked || "—" },
     {
-      label: "JWT 到期",
-      value: account.jwtExpTimestamp ? shortTime(account.jwtExpTimestamp) : "无法解析",
+      labelKey: "trae.comp.card.label.jwtExpiry",
+      value: account.jwtExpTimestamp ? shortTime(account.jwtExpTimestamp) : t("trae.comp.card.jwt.unparsable"),
       title: badge.text,
     },
     {
-      label: "加入时间",
+      labelKey: "trae.comp.card.label.addedAt",
       value: account.addedAt ? formatFullDate(Math.floor(new Date(account.addedAt).getTime() / 1000)) : "—",
     },
     {
-      label: "最近更新",
+      labelKey: "trae.comp.card.label.updatedAt",
       value: account.updatedAt ? shortTime(Math.floor(new Date(account.updatedAt).getTime() / 1000)) : "—",
     },
-    ...(groupName ? [{ label: "分组", value: groupName }] : []),
+    ...(groupName ? [{ labelKey: "trae.comp.card.label.group" as TranslationKey, value: groupName }] : []),
   ];
 
   /**
@@ -234,19 +243,19 @@ export function TraeAccountCard({
         {badge.text}
       </Badge>
       <Badge variant={account.checkedToday ? "success" : "secondary"} className={cn(chipClass, !account.checkedToday && "text-muted-foreground")}>
-        {account.checkedToday ? "已签到" : "未签到"}
+        {account.checkedToday ? t("trae.comp.card.chip.checked") : t("trae.comp.card.chip.unchecked")}
       </Badge>
       {account.cooldownType &&
         (compact ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Badge variant="warning" className={chipClass}>
-                冷却中
+                {t("trae.comp.card.chip.cooling")}
               </Badge>
             </TooltipTrigger>
             <TooltipContent side="top">
               {account.cooldownType}
-              {account.cooldownUntil ? ` · 至 ${shortTime(account.cooldownUntil)}` : ""}
+              {account.cooldownUntil ? t("trae.comp.card.cooldown.until", { time: shortTime(account.cooldownUntil) }) : ""}
               {account.cooldownReason ? ` · ${account.cooldownReason}` : ""}
             </TooltipContent>
           </Tooltip>
@@ -263,14 +272,16 @@ export function TraeAccountCard({
       )}
       {!compact && account.hasRefreshToken && (
         <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>
-          {account.jwtAutoRefresh ? "自动刷新 JWT" : "支持刷新 JWT"}
+          {account.jwtAutoRefresh ? t("trae.comp.card.chip.jwtAuto") : t("trae.comp.card.chip.jwtManual")}
         </Badge>
       )}
     </>
   );
 
   const switchTooltip = (program: TraeProgram) =>
-    program.installed ? `切换为 ${program.label} 当前账号（会重启 ${program.label}）` : `未检测到 ${program.label}`;
+    program.installed
+      ? t("trae.comp.card.switch.tip", { label: program.label })
+      : t("trae.comp.card.switch.missing", { label: program.label });
 
   /**
    * 单个程序的控件。
@@ -289,7 +300,7 @@ export function TraeAccountCard({
           <TooltipTrigger asChild>
             <span
               role="status"
-              aria-label={`${program.label} 当前账号`}
+              aria-label={t("trae.comp.card.currentOf", { label: program.label })}
               className="relative inline-flex size-7 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary"
             >
               <TraeVariantMark variant={program.variant} size={15} />
@@ -298,21 +309,21 @@ export function TraeAccountCard({
               </span>
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top">{program.label} 当前账号</TooltipContent>
+          <TooltipContent side="top">{t("trae.comp.card.currentOf", { label: program.label })}</TooltipContent>
         </Tooltip>
       ) : (
         <Tooltip key={program.variant}>
           <TooltipTrigger asChild>
             <span
               role="status"
-              aria-label={`${program.label} 当前账号`}
+              aria-label={t("trae.comp.card.currentOf", { label: program.label })}
               className="inline-flex h-7 items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-2.5 text-xs text-primary shadow-[inset_0_1px_0_rgba(255,255,255,.8)]"
             >
               <TraeVariantMark variant={program.variant} size={18} />
               <Check className="size-3.5" strokeWidth={2.25} />
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top">{program.label} 当前账号</TooltipContent>
+          <TooltipContent side="top">{t("trae.comp.card.currentOf", { label: program.label })}</TooltipContent>
         </Tooltip>
       );
     }
@@ -324,7 +335,7 @@ export function TraeAccountCard({
         className="size-7 rounded-lg"
         disabled={featuresDisabled || switchBusy || !program.installed || !onSwitchTo}
         onClick={() => onSwitchTo?.(account, program.variant)}
-        aria-label={busyHere ? `正在切换到 ${program.label}` : `切换到 ${program.label}`}
+        aria-label={busyHere ? t("trae.comp.card.switch.ariaBusy", { label: program.label }) : t("trae.comp.card.switch.aria", { label: program.label })}
         aria-busy={busyHere}
       >
         {busyHere ? <Loader2 className="size-3.5 animate-spin" /> : <TraeVariantMark variant={program.variant} size={15} />}
@@ -336,11 +347,11 @@ export function TraeAccountCard({
         className="h-7 rounded-full px-2.5 pr-3.5 text-xs"
         disabled={featuresDisabled || switchBusy || !program.installed || !onSwitchTo}
         onClick={() => onSwitchTo?.(account, program.variant)}
-        aria-label={busyHere ? `正在切换到 ${program.label}` : `切换到 ${program.label}`}
+        aria-label={busyHere ? t("trae.comp.card.switch.ariaBusy", { label: program.label }) : t("trae.comp.card.switch.aria", { label: program.label })}
         aria-busy={busyHere}
       >
         {busyHere ? <Loader2 className="size-4 animate-spin" /> : <TraeVariantMark variant={program.variant} size={18} />}
-        <span>{busyHere ? "切换中…" : program.label}</span>
+        <span>{busyHere ? t("trae.comp.card.switch.busy") : program.label}</span>
       </Button>
     );
 
@@ -361,17 +372,17 @@ export function TraeAccountCard({
   const menu = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={`管理账号 ${name}`} title="更多账号操作">
+        <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={t("trae.comp.card.manage.aria", { name })} title={t("trae.comp.card.manage.title")}>
           <Ellipsis />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuItem disabled={featuresDisabled || saving} onSelect={() => onSaveLogin(account)}>
-          <Save />保存登录态
+          <Save />{t("trae.comp.card.menu.save")}
         </DropdownMenuItem>
         {account.hasRefreshToken && (
           <DropdownMenuItem disabled={featuresDisabled || refreshingJwt} onSelect={() => onRefreshJwt(account)}>
-            <KeyRound />刷新 JWT
+            <KeyRound />{t("trae.comp.card.menu.refreshJwt")}
           </DropdownMenuItem>
         )}
         {/* 「手动签到」与 WorkBuddy 卡片菜单同位（刷新之后、删除之前）。
@@ -379,12 +390,12 @@ export function TraeAccountCard({
             摆一个点不动的入口比不摆更差。 */}
         {!account.checkedToday && (
           <DropdownMenuItem disabled={featuresDisabled || checkingIn} onSelect={() => onCheckin?.(account)}>
-            <CircleCheck />手动签到
+            <CircleCheck />{t("trae.comp.card.menu.checkin")}
           </DropdownMenuItem>
         )}
         {account.cooldownType && (
           <DropdownMenuItem disabled={featuresDisabled || thawing} onSelect={() => onClearCooldown(account)}>
-            <CircleSlash />解除冷却
+            <CircleSlash />{t("trae.comp.card.menu.thaw")}
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
@@ -393,7 +404,7 @@ export function TraeAccountCard({
           disabled={deleting}
           onSelect={() => onDelete(account)}
         >
-          <Trash2 />删除账号
+          <Trash2 />{t("trae.comp.card.menu.delete")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -423,7 +434,7 @@ export function TraeAccountCard({
           <div className={cn("absolute z-20", compact ? "right-2.5 top-1/2 -translate-y-1/2" : "right-3.5 top-3.5")}>
             {featuresDisabled ? (
               <DemoAction>
-                <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={`管理账号 ${name}`} title="更多账号操作">
+                <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={t("trae.comp.card.manage.aria", { name })} title={t("trae.comp.card.manage.title")}>
                   <Ellipsis />
                 </Button>
               </DemoAction>
@@ -467,21 +478,21 @@ export function TraeAccountCard({
               </strong>
             </span>
             <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>
-              {hasCredits ? "剩余积分" : "积分未查询"}
+              {hasCredits ? t("trae.comp.card.credits.remaining") : t("trae.comp.card.credits.unknown")}
             </span>
             <div
               className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")}
               title={
                 account.cooldownUntil
-                  ? `冷却至 ${shortTime(account.cooldownUntil)}`
+                  ? t("trae.comp.card.expiry.cooldownUntil", { time: shortTime(account.cooldownUntil) })
                   : account.creditsExpireAt
-                    ? `最早到期 ${shortTime(account.creditsExpireAt)}`
-                    : "暂无到期时间"
+                    ? t("trae.comp.card.expiry.earliest", { time: shortTime(account.creditsExpireAt) })
+                    : t("trae.comp.card.expiry.none")
               }
             >
               <Clock3 className="size-3.5 shrink-0" />
               <span className="whitespace-nowrap tabular-nums">
-                {account.creditsExpireAt ? formatExpiryShort(account.creditsExpireAt) : "暂无到期"}
+                {account.creditsExpireAt ? formatExpiryShort(account.creditsExpireAt, t) : t("trae.comp.card.expiry.noneShort")}
               </span>
             </div>
           </div>
@@ -490,37 +501,42 @@ export function TraeAccountCard({
           {account.cooldownType ? (
             <div className={cn("flex min-w-0 items-center gap-2 text-destructive", compact ? "mt-3 text-[11px]" : "mt-4 text-xs")}>
               <Coins className="size-4 shrink-0" />
-              <span className="min-w-0 truncate">{account.cooldownReason || `冷却中（${account.cooldownType}）`}</span>
+              <span className="min-w-0 truncate">{account.cooldownReason || t("trae.comp.card.cooldown.fallback", { type: account.cooldownType })}</span>
             </div>
           ) : !hasCredits ? (
             <div className={cn("flex min-w-0 items-center gap-2 text-muted-foreground", compact ? "mt-3 text-[11px]" : "mt-4 text-xs")}>
               <Coins className="size-4 shrink-0" />
-              <span className="min-w-0 truncate">尚未查询到积分，点右上角菜单「刷新积分」重试</span>
+              <span className="min-w-0 truncate">{t("trae.comp.card.credits.notQueried")}</span>
             </div>
           ) : null}
 
           {/* 近期到期：与 WorkBuddy `account-card.tsx` 的积分包区块逐段对齐（剩余徽标 / 包名 /
               到期日 / 比例条），数据源＝本账号的逐包明细 `creditPackages`。
               无包级数据（未刷新过积分）时如实显示「暂无可用积分」，不渲染占位进度条。 */}
-          <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>近期到期</div>
+          <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>{t("trae.comp.card.section.expiring")}</div>
           <div className={cn(compact ? "mt-1.5 space-y-2" : "mt-2 space-y-2.5")}>
             {visiblePackages.length > 0 ? (
               visiblePackages.map((item, index) => {
-                const packageName = item.packageName || item.packageCode || "积分包";
+                const packageName = item.packageName || item.packageCode || t("trae.comp.card.package.fallback");
                 const ratio = item.total > 0 ? Math.min(100, Math.max(0, (item.remaining / item.total) * 100)) : 0;
                 return (
                   <div
                     key={`${item.packageCode ?? "resource"}-${item.expireAt ?? "none"}-${index}`}
                     className="min-w-0"
-                    title={`${packageName} · 剩余 ${formatCredits(item.remaining)} / ${formatCredits(item.total)} · ${formatExpiryShort(item.expireAt)}`}
+                    title={t("trae.comp.card.package.tip", {
+                      name: packageName,
+                      remaining: formatCredits(item.remaining),
+                      total: formatCredits(item.total),
+                      expiry: formatExpiryShort(item.expireAt, t),
+                    })}
                   >
                     <div className={cn("grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3", compact ? "text-[11px]" : "text-xs")}>
                       <span className={cn("rounded-lg bg-muted/80 font-medium tabular-nums text-foreground", compact ? "px-1.5 py-0.5" : "px-2 py-1")}>
-                        {formatCredits(item.remaining)} 积分
+                        {t("trae.comp.card.package.remaining", { credits: formatCredits(item.remaining) })}
                       </span>
                       <span className="truncate text-muted-foreground">{packageName}</span>
                       <span className={cn("whitespace-nowrap tabular-nums", expiryTone(item.expired, item.expiringSoon))}>
-                        {formatExpiryShort(item.expireAt)}
+                        {formatExpiryShort(item.expireAt, t)}
                       </span>
                     </div>
                     <div className={cn("h-1 overflow-hidden rounded-full bg-muted", compact ? "mt-1" : "mt-1.5")} aria-hidden="true">
@@ -533,19 +549,19 @@ export function TraeAccountCard({
                 );
               })
             ) : (
-              <div className="py-1 text-[11px] text-muted-foreground">暂无可用积分</div>
+              <div className="py-1 text-[11px] text-muted-foreground">{t("trae.comp.card.package.empty")}</div>
             )}
           </div>
 
           {/* 账号信息：Trae 真实持有的账号属性行（设备 / JWT 到期 / 加入时间 / 最近更新）。 */}
-          <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>账号信息</div>
+          <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>{t("trae.comp.card.section.info")}</div>
           <div className={cn(compact ? "mt-1.5 space-y-1.5" : "mt-2 space-y-2")}>
             {detailRows.map((row) => (
               <div
-                key={row.label}
+                key={row.labelKey}
                 className={cn("grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3", compact ? "text-[11px]" : "text-xs")}
               >
-                <span className="shrink-0 text-muted-foreground">{row.label}</span>
+                <span className="shrink-0 text-muted-foreground">{t(row.labelKey)}</span>
                 <span className="min-w-0 truncate text-right font-mono tabular-nums text-foreground/80" title={row.title ?? row.value}>
                   {row.value}
                 </span>
@@ -562,7 +578,7 @@ export function TraeAccountCard({
             )}
             onClick={() => setDetailOpen(true)}
           >
-            查看账号详情
+            {t("trae.comp.card.detail.open")}
             <ArrowRight className="size-3.5" />
           </button>
         </section>
@@ -574,8 +590,8 @@ export function TraeAccountCard({
 
             {featuresDisabled ? (
               <DemoAction>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="保存登录态">
-                  <Save className="size-4" /><span>保存登录态</span>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label={t("trae.comp.card.menu.save")}>
+                  <Save className="size-4" /><span>{t("trae.comp.card.menu.save")}</span>
                 </Button>
               </DemoAction>
             ) : (
@@ -590,10 +606,10 @@ export function TraeAccountCard({
                     aria-busy={saving}
                   >
                     {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                    <span>{saving ? "保存中…" : "保存登录态"}</span>
+                    <span>{saving ? t("trae.comp.card.action.saving") : t("trae.comp.card.menu.save")}</span>
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="top">把当前 Trae 登录态备份到该账号槽位</TooltipContent>
+                <TooltipContent side="top">{t("trae.comp.card.action.saveTip")}</TooltipContent>
               </Tooltip>
             )}
 
@@ -609,10 +625,10 @@ export function TraeAccountCard({
                     aria-busy={refreshingJwt}
                   >
                     {refreshingJwt ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-                    <span>{refreshingJwt ? "刷新中…" : "刷新 JWT"}</span>
+                    <span>{refreshingJwt ? t("trae.comp.card.action.refreshing") : t("trae.comp.card.menu.refreshJwt")}</span>
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="top">用 refresh token 换一份新的 JWT</TooltipContent>
+                <TooltipContent side="top">{t("trae.comp.card.action.refreshJwtTip")}</TooltipContent>
               </Tooltip>
             )}
 
@@ -620,10 +636,12 @@ export function TraeAccountCard({
               <TooltipTrigger asChild>
                 <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
                   <Plug className="size-3.5" />
-                  {account.updatedAt ? `${shortTime(Math.floor(new Date(account.updatedAt).getTime() / 1000))} 更新` : "未记录更新时间"}
+                  {account.updatedAt
+                    ? t("trae.comp.card.footer.updatedAt", { time: shortTime(Math.floor(new Date(account.updatedAt).getTime() / 1000)) })
+                    : t("trae.comp.card.footer.noUpdate")}
                 </span>
               </TooltipTrigger>
-              <TooltipContent side="top">该账号在本地账号库中的最近更新时间</TooltipContent>
+              <TooltipContent side="top">{t("trae.comp.card.footer.updatedTip")}</TooltipContent>
             </Tooltip>
           </footer>
         )}
@@ -635,37 +653,37 @@ export function TraeAccountCard({
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>账号详情</DialogTitle>
+            <DialogTitle>{t("trae.comp.card.detail.title")}</DialogTitle>
             <DialogDescription>
-              {name} · UID {account.userId}
+              {t("trae.comp.card.detail.subtitle", { name, uid: account.userId })}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] min-w-0 space-y-3 overflow-y-auto">
             {(
               [
-                { label: "账号 ID", value: account.userId },
-                { label: "分组", value: groupName ?? "未分组" },
+                { labelKey: "trae.comp.card.detail.accountId", value: account.userId },
+                { labelKey: "trae.comp.card.label.group", value: groupName ?? t("trae.comp.card.detail.ungrouped") },
                 {
-                  label: "已启用的程序",
+                  labelKey: "trae.comp.card.detail.enabledPrograms",
                   value:
                     programs
                       .filter((program) => program.current)
                       .map((program) => program.label)
-                      .join(" / ") || "无",
+                      .join(" / ") || t("trae.comp.card.detail.none"),
                 },
-                { label: "剩余积分", value: account.remainingCredits === null ? "未查询" : formatCredits(account.remainingCredits) },
-                { label: "积分到期", value: account.creditsExpireAt ? formatFullDate(account.creditsExpireAt) : "长期有效" },
-                { label: "JWT 状态", value: badge.text },
-                { label: "JWT 到期", value: account.jwtExpTimestamp ? `${formatFullDate(account.jwtExpTimestamp)} ${shortTime(account.jwtExpTimestamp).slice(-5)}` : "无法解析" },
-                { label: "自动刷新 JWT", value: account.hasRefreshToken ? (account.jwtAutoRefresh ? "已开启" : "可手动刷新") : "无 refresh token" },
-                { label: "设备标识", value: account.deviceIdMasked || "—" },
-                { label: "加入时间", value: account.addedAt ? formatFullDate(Math.floor(new Date(account.addedAt).getTime() / 1000)) : "—" },
-                { label: "最近更新", value: account.updatedAt ? shortTime(Math.floor(new Date(account.updatedAt).getTime() / 1000)) : "—" },
-                { label: "冷却", value: account.cooldownType ? `${account.cooldownType}${account.cooldownUntil ? ` · 至 ${shortTime(account.cooldownUntil)}` : ""}` : "无" },
-              ] as { label: string; value: string }[]
+                { labelKey: "trae.comp.card.credits.remaining", value: account.remainingCredits === null ? t("trae.comp.card.detail.notQueried") : formatCredits(account.remainingCredits) },
+                { labelKey: "trae.comp.card.detail.creditsExpiry", value: account.creditsExpireAt ? formatFullDate(account.creditsExpireAt) : t("trae.comp.card.expiry.permanent") },
+                { labelKey: "trae.comp.card.detail.jwtStatus", value: badge.text },
+                { labelKey: "trae.comp.card.label.jwtExpiry", value: account.jwtExpTimestamp ? `${formatFullDate(account.jwtExpTimestamp)} ${shortTime(account.jwtExpTimestamp).slice(-5)}` : t("trae.comp.card.jwt.unparsable") },
+                { labelKey: "trae.comp.card.detail.jwtAutoRefresh", value: account.hasRefreshToken ? (account.jwtAutoRefresh ? t("trae.comp.card.detail.jwtAutoOn") : t("trae.comp.card.detail.jwtAutoOff")) : t("trae.comp.card.detail.noRefreshToken") },
+                { labelKey: "trae.comp.card.detail.deviceId", value: account.deviceIdMasked || "—" },
+                { labelKey: "trae.comp.card.label.addedAt", value: account.addedAt ? formatFullDate(Math.floor(new Date(account.addedAt).getTime() / 1000)) : "—" },
+                { labelKey: "trae.comp.card.label.updatedAt", value: account.updatedAt ? shortTime(Math.floor(new Date(account.updatedAt).getTime() / 1000)) : "—" },
+                { labelKey: "trae.comp.card.detail.cooldown", value: account.cooldownType ? `${account.cooldownType}${account.cooldownUntil ? t("trae.comp.card.cooldown.until", { time: shortTime(account.cooldownUntil) }) : ""}` : t("trae.comp.card.detail.none") },
+              ] as { labelKey: TranslationKey; value: string }[]
             ).map((row) => (
-              <div key={row.label} className="min-w-0">
-                <div className="text-[11px] text-muted-foreground">{row.label}</div>
+              <div key={row.labelKey} className="min-w-0">
+                <div className="text-[11px] text-muted-foreground">{t(row.labelKey)}</div>
                 <div className="mt-0.5 break-all font-mono text-xs text-foreground/90">{row.value}</div>
               </div>
             ))}

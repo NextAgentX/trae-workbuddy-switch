@@ -42,6 +42,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
+import {
+  loadScheduleConfig,
+  saveSchedulePatch,
+  SCHEDULE_CONFIG_KEY,
+} from "@/lib/schedule-config";
 import { isAutoDetected, traeProductLabel } from "@/lib/trae-client";
 import { traeVariantLabel } from "@/lib/trae-types";
 import {
@@ -50,6 +57,7 @@ import {
   loadTraeVariantStatuses,
   type TraeVariantLogins,
 } from "@/lib/trae-variant-status";
+import type { ScheduleConfig } from "@/lib/types";
 import type {
   TraeAccount,
   TraeAccountsOverview,
@@ -85,7 +93,7 @@ interface AccountsSnapshot {
   checkin: TraeCheckinStatus;
   /** 本机全部产品线的环境状态（并排视角），账号卡片与状态条共用。 */
   variantStatuses: TraeVariantStatus[];
-  /** 每条产品线各自的当前登录账号（`profiles.currentAccount`）。 */
+  /** 每条产品线各自的当前登录账号（`profiles.currentAccount` 的 uid + 展示名）。 */
   logins: TraeVariantLogins;
 }
 
@@ -110,8 +118,11 @@ interface AccountsSnapshot {
  *   与「区域」是两层：区域决定账号库与端点，程序位决定写进哪个客户端；
  * - **支持 OAuth 网页登录**（`trae-oauth-login-dialog.tsx` + OAuth 三命令），
  *   粘贴 `Cloud-IDE-JWT` 只是「优先用网页登录」的兜底方式；
- * - 没有自动签到定时器（Trae 侧无调度器），对应位置是「跳过今日已签」这一
- *   真实生效的批量签到策略开关；
+ * - **有自动签到**（排程任务 `trae_checkin`，默认关闭）：与 WorkBuddy 工具栏的同名开关
+ *   同位同义 —— 到点由后台调度器签一轮、应用启动时若当天还没签则补一轮，两个区域各签一遍；
+ *   小时点在 Trae 设置页配置。它管**何时签**；
+ * - 「跳过今日已签」是**策略**开关（管**怎么签**）：手动与自动两轮都受它约束，
+ *   两者是不同层，因此并排出现并不重复；
  * - 没有自动旅行（Trae 侧不存在该客户端）。
  */
 export default function TraeAccountsPage() {
@@ -126,6 +137,7 @@ export default function TraeAccountsPage() {
    * 「该线的安装/运行状态」。两者分工不同，不要混为一谈。
    */
   const [variant] = useTraeVariant();
+  const t = useT();
 
   /**
    * 一次取齐本页快照。四份分家数据全部按**当前选中的产品线**读取，与侧栏分区同源。
@@ -181,6 +193,19 @@ export default function TraeAccountsPage() {
   );
 
   /**
+   * 自动签到的**排程**（何时跑），与 Trae 设置页共用同一把键（`SCHEDULE_CONFIG_KEY`）。
+   *
+   * 它和上面那份 `trae:settings` 是**两份不同的数据**：
+   * 这里回答「到点要不要跑、几点跑」，`trae:settings` 回答「跑的时候怎么跑」
+   * （跳过已签 / 跳过过期 / 重试次数）。排程是**全局单份**、按**任务**分家 ——
+   * WorkBuddy 的六类任务与它读写同一个 `schedule_config.json`。
+   */
+  const { data: schedule, patch: patchSchedule } = useCachedResource<ScheduleConfig>(
+    SCHEDULE_CONFIG_KEY,
+    loadScheduleConfig,
+  );
+
+  /**
    * 本机全部 Trae 产品线的环境状态（并排视角），与状态条、卡片共用同一份。
    *
    * 账号卡片上的「程序切换按钮」要按**每条线**渲染，因此这里必须拿全量，
@@ -197,16 +222,27 @@ export default function TraeAccountsPage() {
   const checkin = snapshot?.checkin ?? null;
   const variantStatuses = snapshot?.variantStatuses ?? TRAE_VARIANT_FALLBACK;
   /**
-   * 每条产品线各自的当前登录账号（`profiles.currentAccount`）。
+   * 每条产品线各自的当前登录账号（`profiles.currentAccount` 的 uid + 展示名）。
    *
    * **不能**只读当前这条线：卡片上每条程序按钮的「是否当前账号」是**各判各的**，
    * 同一个 Trae 账号完全可以同时是 Trae Work 的当前账号、却不是 Trae CN 的。
    * 只拿当前线的值会让另一枚按钮永远显示成「未启用」——那是谎报，不是简化。
+   *
+   * 身份与展示名同源（同一次 `get_trae_profiles`）：卡片用 `userId` 比身份，
+   * 状态条用 `name` 显示 —— 两者绑在一个对象里，不会出现半更新。
    */
   const logins = snapshot?.logins ?? {};
 
   const [busy, setBusy] = useState<string | null>(null);
+  /** 「跳过已签到」（签到策略，写 `trae:settings`）的保存中标志。 */
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
+  /**
+   * 「自动签到」（排程，写 `schedule_config.json`）的保存中标志。
+   *
+   * 与上面那个**刻意分开**：两者写的是两份不同的文件、属于两个不同的概念层
+   * （何时签 vs 怎么签）。共用一个标志会让「切 A 时 B 的转圈亮起」，把操作归因到错的地方。
+   */
+  const [scheduleSaving, setScheduleSaving] = useState(false);
   const [oauthOpen, setOauthOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -261,19 +297,24 @@ export default function TraeAccountsPage() {
       try {
         const report = await api.traeMergeLegacyRegions();
         if (disposed || !report.changed) return;
-        toast.success("已合并旧产品线账号库", {
+        toast.success(t("trae.page.accounts.mergeDone"), {
           description: [
-            `并入 ${report.accountsAdded} 个账号（保留现有 ${report.accountsKept} 个）`,
-            report.groupsAdded > 0 ? `分组 ${report.groupsAdded} 个` : null,
-            report.backup ? `旧数据已备份到 ${report.backup}` : null,
-            report.backupFailed ? "⚠️ 备份失败，请先手动复制数据目录" : null,
+            t("trae.page.accounts.mergeSummary", {
+              added: report.accountsAdded,
+              kept: report.accountsKept,
+            }),
+            report.groupsAdded > 0
+              ? t("trae.page.accounts.mergeGroups", { count: report.groupsAdded })
+              : null,
+            report.backup ? t("trae.page.accounts.mergeBackup", { path: report.backup }) : null,
+            report.backupFailed ? t("trae.page.accounts.mergeBackupFailed") : null,
           ]
             .filter(Boolean)
             .join(" · "),
         });
         await loadAll();
       } catch (e) {
-        toast.error("合并旧账号库失败", { description: api.asError(e) });
+        toast.error(t("trae.page.accounts.mergeFailed"), { description: api.asError(e) });
       }
     })();
     return () => {
@@ -301,8 +342,10 @@ export default function TraeAccountsPage() {
   /** 统一的动作执行：加忙标记、成功提示、失败提示、随后刷新聚合数据。 */
   async function run<T>(
     key: string,
-    label: string,
+    /** 动作的文案键；渲染时才取词，切换语言后同一枚按钮读到的就是新语言。 */
+    labelKey: TranslationKey,
     action: () => Promise<T>,
+    labelParams?: Record<string, string | number>,
     after?: (result: T) => void,
     /**
      * 自定义成功文案；返回 `null` 表示用默认的「{label}完成」。
@@ -313,26 +356,56 @@ export default function TraeAccountsPage() {
     successMessage?: (result: T) => string | null,
   ) {
     setBusy(key);
+    const label = t(labelKey, labelParams);
     try {
       const result = await action();
       after?.(result);
       const custom = successMessage?.(result);
-      toast.success(custom ?? `${label}完成`);
+      toast.success(custom ?? t("trae.page.accounts.actionDone", { label }));
       await loadAll();
     } catch (e) {
-      toast.error(`${label}失败`, { description: api.asError(e) });
+      toast.error(t("trae.page.accounts.actionFailed", { label }), { description: api.asError(e) });
     } finally {
       setBusy(null);
     }
   }
 
   /**
+   * 「自动签到」开关 —— **排程层**的开关（到点由后台调度器签一轮、应用启动时补一轮）。
+   *
+   * 与 WorkBuddy 工具栏的同名开关**同位同义**（都读写 `schedule_config.json` 里各自那一类
+   * 任务），差别只在 Trae 是**独立任务**：关掉 WorkBuddy 的自动签到不会连带关掉 Trae 的，
+   * 两边也可以设不同的小时点。
+   *
+   * 保存走**整份提交**（见 `saveSchedulePatch`）：后端按整份解析，只发一个字段会让
+   * 其余任务的配置被默认值覆盖 —— 那是静默的配置丢失。
+   */
+  async function onAutoCheckinChange(enabled: boolean) {
+    if (!schedule || scheduleSaving) return;
+    const previous = schedule;
+    // 乐观更新写进**快照缓存**：这个值归 `SCHEDULE_CONFIG_KEY` 那把键所有，
+    // 写回组件 state 会让「设置页/账号页读到同一份」在结构上不再成立。
+    patchSchedule((prev) => ({ ...prev, trae_checkin_enabled: enabled }));
+    setScheduleSaving(true);
+    try {
+      const saved = await saveSchedulePatch(previous, { trae_checkin_enabled: enabled });
+      patchSchedule(() => saved);
+    } catch (e) {
+      patchSchedule(() => previous);
+      toast.error(t("trae.page.accounts.autoCheckinSaveFailed"), { description: api.asError(e) });
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
+
+  /**
    * 「跳过今日已签到」开关。
    *
-   * 与 WorkBuddy 工具栏上的「自动签到」开关**同位**，但语义按 Trae 实情落地：
-   * WorkBuddy 的自动签到是定时任务（到点由调度器触发），而 Trae 侧的签到
-   * 只在用户点「全部签到」时执行，因此这里暴露的是「批量签到的跳过策略」
-   * ——一个真实生效、且与用户决策直接相关的开关，而不是一个没有后台支撑的假自动。
+   * 与 WorkBuddy 工具栏的第二个开关**同位**（那边是「自动旅行」；Trae 没有该功能，
+   * 按用户决定「Trae 无自动旅行则隐藏」处理，不塞假开关占位）。
+   *
+   * 它属于**签到策略**（怎么签），与上面的自动签到（何时签）是两件事：
+   * 后端从设置读（`handlers::parse_checkin_options`），因此手动与自动两轮**都**受它约束。
    */
   async function onSkipCheckedChange(enabled: boolean) {
     if (!settings || autoCheckinSaving) return;
@@ -346,7 +419,7 @@ export default function TraeAccountsPage() {
       patchSettings(() => saved);
     } catch (e) {
       patchSettings(() => previous);
-      toast.error("设置保存失败", { description: api.asError(e) });
+      toast.error(t("trae.page.accounts.settingsSaveFailed"), { description: api.asError(e) });
     } finally {
       setAutoCheckinSaving(false);
     }
@@ -365,7 +438,7 @@ export default function TraeAccountsPage() {
   async function checkinAll() {
     await run(
       "checkin",
-      "签到并刷新积分",
+      "trae.page.accounts.actionCheckinAll",
       async () => {
         // 变体决定「签哪条产品线的账号」以及「冷却/摘要落哪份文件」，
         // 不传会让后端回落默认变体 —— 在 Trae CN 页面上点签到却签了 Trae Work。
@@ -375,14 +448,15 @@ export default function TraeAccountsPage() {
         try {
           await api.traeRefreshCredits(undefined, variant);
         } catch (e) {
-          toast.warning("积分刷新失败", { description: api.asError(e) });
+          toast.warning(t("trae.page.accounts.creditsRefreshFailed"), { description: api.asError(e) });
         }
         return result;
       },
+      undefined,
       (result) => setReport(result),
       // 「跳过今日已签到」打开时，一轮只处理**本轮还没签过的**账号：全都签过时
       // `total` 为 0，报「签到并刷新积分完成」会让人以为刚签了一遍。
-      (result) => (result.total === 0 ? "没有需要签到的账号" : null),
+      (result) => (result.total === 0 ? t("trae.page.accounts.noNeedCheckin") : null),
     );
   }
 
@@ -412,21 +486,31 @@ export default function TraeAccountsPage() {
       if (!outcome) {
         // 一条结果都没有 = 该账号在计划阶段就被跳过（今日已签 / 冷却中 / 凭据过期）。
         // 如实说「没有执行」，不要为了好看谎报成功。
-        toast.info("未执行签到", {
-          description: result.warnings[0] ?? `${label} 已被跳过（今日已签、冷却中或凭据过期）`,
+        toast.info(t("trae.page.accounts.checkinNotRun"), {
+          description:
+            result.warnings[0] ??
+            t("trae.page.accounts.checkinSkippedDesc", { name: label }),
         });
       } else if (outcome.action === "skip_already") {
-        toast.success("今天已签到", { description: label });
+        toast.success(t("trae.page.accounts.alreadyCheckedToday"), { description: label });
       } else if (!outcome.ok) {
-        toast.error("签到失败", { description: `${label}：${outcome.message || outcome.action}` });
+        toast.error(t("trae.page.accounts.checkinFailed"), {
+          description: t("trae.page.accounts.checkinFailedDesc", {
+            name: label,
+            reason: outcome.message || outcome.action,
+          }),
+        });
       } else {
-        toast.success("签到成功", {
-          description: `${label}${outcome.delta > 0 ? `：+${outcome.delta} 积分` : ""}`,
+        toast.success(t("trae.page.accounts.checkinSuccess"), {
+          description:
+            outcome.delta > 0
+              ? t("trae.page.accounts.checkinSuccessDesc", { name: label, delta: outcome.delta })
+              : label,
         });
       }
       await loadAll();
     } catch (e) {
-      toast.error("签到失败", { description: api.asError(e) });
+      toast.error(t("trae.page.accounts.checkinFailed"), { description: api.asError(e) });
     } finally {
       setBusy(null);
     }
@@ -445,12 +529,15 @@ export default function TraeAccountsPage() {
       // 是 `null`，会让「用户抢在加载完成前点导入」落到默认变体上；
       // `variant` 初值就是默认变体、加载完成后被修正，语义更稳。
       const result = await api.traeImportLocalAccount(variant);
-      toast.success("已导入本机账号", {
-        description: `${result.name || result.userId}${result.userId ? ` · UID ${result.userId.slice(-6)}` : ""}`,
+      const who = result.name || result.userId;
+      toast.success(t("trae.page.accounts.importLocalDone"), {
+        description: result.userId
+          ? t("trae.page.accounts.importLocalUid", { name: who, uid: result.userId.slice(-6) })
+          : who,
       });
       await loadAll();
     } catch (e) {
-      toast.error("导入本机账号失败", { description: api.asError(e) });
+      toast.error(t("trae.page.accounts.importLocalFailed"), { description: api.asError(e) });
     } finally {
       setImporting(false);
     }
@@ -472,8 +559,11 @@ export default function TraeAccountsPage() {
    *
    * 它只用于卡片本体（头部高亮、幽灵 logo）：卡片上每枚程序按钮的「是否当前账号」
    * 各判各的，见 {@link programsFor}。
+   *
+   * ⚠️ 取的是 `userId`（身份），**不是** `name`：卡片高亮与「当前账号」角标都靠
+   * 「这个账号 uid == 客户端此刻登录的 uid」，拿展示名比较会在用户改名后立刻失配。
    */
-  const currentUserId = logins[variant] ?? null;
+  const currentUserId = logins[variant]?.userId ?? null;
   const switchBusy = busy?.startsWith("switch-") ?? false;
 
   /**
@@ -496,10 +586,11 @@ export default function TraeAccountsPage() {
       installed: program.installed,
       // 登录态是**客户端级**的：只有拿到程序位标识才能比较，
       // 且两边都非空（`logins` 读不到时是 `null`，不能让 `null` 与空 userId 相互匹配）。
+      // 比的是 `userId`（身份）而不是 `name`（展示名）—— 后者改名即失配。
       current:
         program.variant !== null &&
         Boolean(account.userId) &&
-        logins[program.variant] === account.userId,
+        logins[program.variant]?.userId === account.userId,
     }));
   }
   // 探测到的是哪条产品线。同机装多个 Trae 时，用户靠这个确认切换器管的是哪一个。
@@ -516,7 +607,7 @@ export default function TraeAccountsPage() {
 
   function groupNameOf(account: TraeAccount): string | null {
     if (!account.groupId) return null;
-    return groups.find((group) => group.id === account.groupId)?.name ?? "分组";
+    return groups.find((group) => group.id === account.groupId)?.name ?? t("trae.page.accounts.fallbackGroup");
   }
 
   return (
@@ -528,9 +619,9 @@ export default function TraeAccountsPage() {
           与 WorkBuddy 的骨架冲突，也让同一功能出现两个入口。 */}
       <header className="mb-6">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">账号管理</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.page.accounts.title")}</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            管理 {variantLabel} 账号的登录凭据、签到与登录态切换。与 WorkBuddy 的账号库彼此独立。
+            {t("trae.page.accounts.subtitle", { line: variantLabel })}
           </p>
         </div>
       </header>
@@ -547,7 +638,7 @@ export default function TraeAccountsPage() {
       {error && (
         <Alert variant="destructive" className="mb-4">
           <AlertTriangle />
-          <AlertTitle>无法读取 Trae 数据</AlertTitle>
+          <AlertTitle>{t("trae.page.accounts.loadFailed")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
@@ -573,8 +664,10 @@ export default function TraeAccountsPage() {
             </div>
             <div className="relative flex flex-wrap items-center gap-x-5 gap-y-4">
               <div className="min-w-[190px] flex-1">
-                <h2 className="text-sm font-semibold text-foreground">添加与迁移账号</h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">快速接入新账号，或从已有环境恢复</p>
+                <h2 className="text-sm font-semibold text-foreground">{t("trae.page.accounts.addTitle")}</h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {t("trae.page.accounts.addSubtitle")}
+                </p>
               </div>
               <div className="flex flex-wrap items-center gap-2.5">
                 {/* 主入口与 WorkBuddy 同形同位：OAuth。Trae 的授权页是普通网页
@@ -584,12 +677,12 @@ export default function TraeAccountsPage() {
                     className="h-10 bg-primary px-4 text-primary-foreground shadow-sm hover:bg-primary/90"
                     onClick={() => setOauthOpen(true)}
                   >
-                    <QrCode />OAuth 网页登录
+                    <QrCode />{t("trae.page.accounts.oauthLogin")}
                   </Button>
                 </DemoAction>
                 <DemoAction>
                   <Button className="h-10 px-4" onClick={() => void importLocal()} disabled={importing} variant="outline">
-                    {importing ? <Loader2 className="animate-spin" /> : <Download />}导入本机账号
+                    {importing ? <Loader2 className="animate-spin" /> : <Download />}{t("trae.page.accounts.importLocal")}
                   </Button>
                 </DemoAction>
               </div>
@@ -597,18 +690,18 @@ export default function TraeAccountsPage() {
                 {/* 粘贴 JWT 是 Trae 独有且**已降级**的兜底路径（OAuth 才是主路径），
                     按「Trae 独有项下沉」放进 ghost 组，与备份导入导出同级。 */}
                 <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setAddOpen(true)} title="手动粘贴 Cloud-IDE-JWT（兜底方式，优先用上方网页登录）">
-                    <UserPlus />粘贴 JWT
+                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setAddOpen(true)} title={t("trae.page.accounts.pasteJwtTitle")}>
+                    <UserPlus />{t("trae.page.accounts.pasteJwt")}
                   </Button>
                 </DemoAction>
                 <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setImportOpen(true)} title="从备份文件导入账号">
-                    <FileUp />导入备份
+                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setImportOpen(true)} title={t("trae.page.accounts.importBackupTitle")}>
+                    <FileUp />{t("trae.page.accounts.importBackup")}
                   </Button>
                 </DemoAction>
                 <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setExportOpen(true)} disabled={accounts.length === 0} title="导出账号备份">
-                    <FileDown />导出
+                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setExportOpen(true)} disabled={accounts.length === 0} title={t("trae.page.accounts.exportTitle")}>
+                    <FileDown />{t("trae.page.accounts.export")}
                   </Button>
                 </DemoAction>
               </div>
@@ -619,9 +712,13 @@ export default function TraeAccountsPage() {
           <Card className="mb-6 gap-0 py-0">
             <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-3.5 text-sm">
               <span className="flex items-center gap-2">
-                客户端
+                {t("trae.page.accounts.client")}
                 <span className={cn("font-medium", env?.installed ? "text-emerald-600" : "text-muted-foreground")}>
-                  {env?.installed ? `已安装${env.version ? ` v${env.version}` : ""}` : "未检测到"}
+                  {env?.installed
+                    ? env.version
+                      ? t("trae.page.accounts.installedVersion", { version: env.version })
+                      : t("trae.page.accounts.installed")
+                    : t("trae.page.accounts.notInstalled")}
                 </span>
                 {env?.installed && productLabel && (
                   <TooltipProvider delayDuration={400}>
@@ -629,7 +726,7 @@ export default function TraeAccountsPage() {
                       <TooltipTrigger asChild>
                         <Badge variant="secondary" className="cursor-default">
                           {productLabel}
-                          {!autoDetected && <span className="ml-1 text-muted-foreground">· 手动指定</span>}
+                          {!autoDetected && <span className="ml-1 text-muted-foreground">{t("trae.page.accounts.manualPinned")}</span>}
                         </Badge>
                       </TooltipTrigger>
                       <TooltipContent className="max-w-md">
@@ -643,40 +740,40 @@ export default function TraeAccountsPage() {
                 )}
               </span>
               <span className="flex items-center gap-2">
-                运行状态
+                {t("trae.page.accounts.runtime")}
                 <span className={cn("inline-flex items-center gap-1.5 font-medium", env?.running ? "text-emerald-600" : "text-muted-foreground")}>
                   <span className={cn("size-2 rounded-full", env?.running ? "bg-emerald-500" : "bg-muted-foreground/50")} />
-                  {env?.running ? "运行中" : "未运行"}
+                  {env?.running ? t("trae.page.accounts.running") : t("trae.page.accounts.notRunning")}
                 </span>
               </span>
               <span className="text-muted-foreground">
-                今日已签 <span className="font-medium text-foreground">{checkedToday}</span>
+                {t("trae.page.accounts.checkedTodayLabel")} <span className="font-medium text-foreground">{checkedToday}</span>
               </span>
               <span className="text-muted-foreground">
-                可用积分 <span className="font-medium text-foreground">{totalCredits.toLocaleString("zh-CN")}</span>
+                {t("trae.page.accounts.availableCredits")} <span className="font-medium text-foreground">{totalCredits.toLocaleString("zh-CN")}</span>
               </span>
               {credits && (
                 <span className="text-muted-foreground">
-                  今日新增 <span className="font-medium text-foreground">{credits.todayEarned}</span>
+                  {t("trae.page.accounts.todayEarned")} <span className="font-medium text-foreground">{credits.todayEarned}</span>
                 </span>
               )}
               {expiringSoon > 0 && (
                 <span className="text-amber-600 dark:text-amber-400">
-                  JWT 临期 <span className="font-medium">{expiringSoon}</span>
+                  {t("trae.page.accounts.jwtExpiring")} <span className="font-medium">{expiringSoon}</span>
                 </span>
               )}
               {coolingCount > 0 && (
                 <span className="flex items-center gap-2 text-muted-foreground">
                   <CircleSlash className="size-3.5" />
-                  冷却中 <span className="font-medium text-foreground">{coolingCount}</span>
+                  {t("trae.page.accounts.cooling")} <span className="font-medium text-foreground">{coolingCount}</span>
                   <DemoAction>
                     <Button
                       variant="ghost"
                       size="sm"
                       disabled={busy === "clear-cooldown"}
-                      onClick={() => void run("clear-cooldown", "清除冷却", () => api.traeClearCooldown(undefined, variant))}
+                      onClick={() => void run("clear-cooldown", "trae.page.accounts.actionClearCooldown", () => api.traeClearCooldown(undefined, variant))}
                     >
-                      全部清除
+                      {t("trae.page.accounts.clearCooldownAll")}
                     </Button>
                   </DemoAction>
                 </span>
@@ -684,8 +781,8 @@ export default function TraeAccountsPage() {
             </div>
             {env?.dataDir && (
               <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-                客户端数据目录：<code className="font-mono">{env.dataDir}</code>
-                {!env.dataDirExists && <span className="ml-2 text-amber-600 dark:text-amber-400">（尚未生成，请先启动一次 Trae 并登录）</span>}
+                {t("trae.page.accounts.dataDirLabel")}<code className="font-mono">{env.dataDir}</code>
+                {!env.dataDirExists && <span className="ml-2 text-amber-600 dark:text-amber-400">{t("trae.page.accounts.dataDirMissing")}</span>}
               </div>
             )}
           </Card>
@@ -694,12 +791,12 @@ export default function TraeAccountsPage() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <h2 id="trae-accounts-list-title" className="text-base font-semibold tracking-tight">
-                  账号
+                  {t("trae.page.accounts.sectionTitle")}
                 </h2>
                 <Badge
                   variant="secondary"
                   className="h-6 min-w-6 rounded-full border-0 px-1.5 text-[11px] tabular-nums text-muted-foreground shadow-none"
-                  aria-label={`${accounts.length} 个账号`}
+                  aria-label={t("trae.page.accounts.countAria", { count: accounts.length })}
                 >
                   {accounts.length}
                 </Badge>
@@ -707,15 +804,15 @@ export default function TraeAccountsPage() {
                     按「独有项下沉」放在标题侧，不占用右侧工具栏的固定槽位——
                     右侧必须与 WorkBuddy 保持「开关 → 分隔符 → 两个图标」的一致节奏。 */}
                 <Select value={groupFilter} onValueChange={setGroupFilter}>
-                  <SelectTrigger size="sm" className="ml-1 w-40" aria-label="按分组筛选">
+                  <SelectTrigger size="sm" className="ml-1 w-40" aria-label={t("trae.page.accounts.groupFilterAria")}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部账号（{accounts.length}）</SelectItem>
-                    <SelectItem value={UNGROUPED}>未分组（{overview?.ungrouped ?? 0}）</SelectItem>
+                    <SelectItem value="all">{t("trae.page.accounts.allAccounts", { count: accounts.length })}</SelectItem>
+                    <SelectItem value={UNGROUPED}>{t("trae.page.accounts.ungrouped", { count: overview?.ungrouped ?? 0 })}</SelectItem>
                     {groups.map((group) => (
                       <SelectItem key={group.id} value={group.id}>
-                        {group.name}（{group.count}）
+                        {t("trae.page.accounts.groupItem", { name: group.name, count: group.count })}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -723,16 +820,42 @@ export default function TraeAccountsPage() {
               </div>
               <TooltipProvider delayDuration={400}>
                 <div className="ml-auto flex items-center gap-1">
-                  {/* 签到策略：与 WorkBuddy 工具栏的「自动签到」开关**同位**。
-                      Trae 侧没有调度器，开关的实际语义是「批量签到是否跳过今日已签账号」。
-                      WorkBuddy 该位置的第二个开关是「自动旅行」——Trae 没有这个功能，
-                      按用户决定「Trae 无自动旅行则隐藏」处理，不塞一个假开关占位。 */}
+                  {/* 自动签到：与 WorkBuddy 工具栏的**同名开关同位同义** —— 都写排程任务
+                      （何时签）。Trae 是**独立任务**（`trae_checkin`），关掉另一方不受影响。
+                      小时点在 Trae 设置页配（这里只放开/关）。 */}
+                  <div className="mr-1 flex items-center gap-2.5">
+                    <label
+                      htmlFor="trae-auto-checkin"
+                      className="cursor-pointer text-xs font-medium text-muted-foreground"
+                    >
+                      {t("trae.page.accounts.autoCheckin")}
+                    </label>
+                    <DemoAction>
+                      <Switch
+                        id="trae-auto-checkin"
+                        checked={schedule?.trae_checkin_enabled ?? false}
+                        disabled={!schedule || scheduleSaving}
+                        onCheckedChange={(enabled) => void onAutoCheckinChange(enabled)}
+                        aria-label={t("trae.page.accounts.autoCheckin")}
+                      />
+                    </DemoAction>
+                    {scheduleSaving && (
+                      <Loader2
+                        className="size-3.5 animate-spin text-muted-foreground"
+                        aria-label={t("trae.page.accounts.autoCheckinSaving")}
+                      />
+                    )}
+                  </div>
+                  {/* 签到策略：与 WorkBuddy 工具栏的第二个开关同位 —— 那边是「自动旅行」，
+                      Trae 没有该功能（按用户决定隐藏，不塞假开关占位）。
+                      这里放的是「批量签到是否跳过今日已签账号」：它管**怎么签**，
+                      与上面的「何时签」是两个层，因此两枚开关并不重复。 */}
                   <div className="mr-1 flex items-center gap-2.5">
                     <label
                       htmlFor="trae-skip-checked"
                       className="cursor-pointer text-xs font-medium text-muted-foreground"
                     >
-                      跳过已签到
+                      {t("trae.page.accounts.skipChecked")}
                     </label>
                     <DemoAction>
                       <Switch
@@ -740,13 +863,13 @@ export default function TraeAccountsPage() {
                         checked={settings?.checkinSkipChecked ?? true}
                         disabled={!settings || autoCheckinSaving}
                         onCheckedChange={(enabled) => void onSkipCheckedChange(enabled)}
-                        aria-label="跳过今日已签到账号"
+                        aria-label={t("trae.page.accounts.skipCheckedAria")}
                       />
                     </DemoAction>
                     {autoCheckinSaving && (
                       <Loader2
                         className="size-3.5 animate-spin text-muted-foreground"
-                        aria-label="正在保存签到设置"
+                        aria-label={t("trae.page.accounts.checkinSettingsSaving")}
                       />
                     )}
                   </div>
@@ -758,12 +881,14 @@ export default function TraeAccountsPage() {
                         size="icon"
                         className={cn("size-9 rounded-lg", compact && "bg-accent text-accent-foreground")}
                         onClick={toggleCompact}
-                        aria-label={compact ? "切换为宽松模式" : "切换为紧凑模式"}
+                        aria-label={compact ? t("trae.page.accounts.compactToLoose") : t("trae.page.accounts.compactToCompact")}
                       >
                         {compact ? <Rows3 /> : <Columns3 />}
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">{compact ? "切换为宽松模式" : "切换为紧凑模式"}</TooltipContent>
+                    <TooltipContent side="top">
+                      {compact ? t("trae.page.accounts.compactToLoose") : t("trae.page.accounts.compactToCompact")}
+                    </TooltipContent>
                   </Tooltip>
                   {/* 与 WorkBuddy 同名同形：一个图标同时承担「批量签到」与「刷新积分」。
                       Trae 侧这两步是两个接口，`checkinAll` 里按顺序调完再统一刷新。 */}
@@ -777,7 +902,7 @@ export default function TraeAccountsPage() {
                             className="size-9 rounded-lg"
                             disabled={busy === "checkin" || busy === "refresh-credits" || accounts.length === 0}
                             onClick={() => void checkinAll()}
-                            aria-label="签到并刷新全部账号积分"
+                            aria-label={t("trae.page.accounts.checkinRefreshAll")}
                           >
                             <RefreshCw className={busy === "checkin" || busy === "refresh-credits" ? "animate-spin" : undefined} />
                           </Button>
@@ -785,7 +910,7 @@ export default function TraeAccountsPage() {
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="top">
-                      {api.isDemoMode() ? "演示模式下不可操作" : "签到并刷新全部账号积分"}
+                      {api.isDemoMode() ? t("trae.page.accounts.demoDisabled") : t("trae.page.accounts.checkinRefreshAll")}
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -794,7 +919,7 @@ export default function TraeAccountsPage() {
 
             {visible.length === 0 ? (
               <Card className="px-5 py-10 text-center text-sm text-muted-foreground">
-                该分组下没有账号，换个分组看看。
+                {t("trae.page.accounts.groupEmpty")}
               </Card>
             ) : (
               <div className={cn("grid min-w-0 items-start gap-5", compact ? "grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))]" : "grid-cols-[repeat(auto-fit,minmax(min(100%,340px),1fr))]")}>
@@ -821,30 +946,31 @@ export default function TraeAccountsPage() {
                     onSwitchTo={(target, programVariant) =>
                       void run(
                         `switch-${target.userId}@${programVariant}`,
-                        `切换${traeVariantLabel(programVariant)}账号`,
+                        "trae.page.accounts.actionSwitch",
                         () =>
                           api.traeSwitchAccount({
                             userId: target.userId,
                             launch: true,
                             variant: programVariant,
                           }),
+                        { line: traeVariantLabel(programVariant) },
                         (outcome) => {
                           if (!outcome.success) {
                             const last = outcome.steps[outcome.steps.length - 1];
-                            toast.error("切换未完成", { description: outcome.error ?? last?.message });
+                            toast.error(t("trae.page.accounts.switchIncomplete"), { description: outcome.error ?? last?.message });
                           }
                         },
                       )
                     }
                     onCheckin={(target) => void checkinOne(target)}
                     onSaveLogin={(target) =>
-                      void run(`save-${target.userId}`, "保存登录态", () => api.traeSaveLogin(target.userId, variant))
+                      void run(`save-${target.userId}`, "trae.page.accounts.actionSaveLogin", () => api.traeSaveLogin(target.userId, variant))
                     }
                     onRefreshJwt={(target) =>
-                      void run(`jwt-${target.userId}`, "刷新 JWT", () => api.traeRefreshJwt(target.userId, variant))
+                      void run(`jwt-${target.userId}`, "trae.page.accounts.actionRefreshJwt", () => api.traeRefreshJwt(target.userId, variant))
                     }
                     onClearCooldown={(target) =>
-                      void run(`thaw-${target.userId}`, "解除冷却", () => api.traeClearCooldown(target.userId, variant))
+                      void run(`thaw-${target.userId}`, "trae.page.accounts.actionThaw", () => api.traeClearCooldown(target.userId, variant))
                     }
                     onDelete={(target) => setPendingDelete(target)}
                   />
@@ -859,10 +985,10 @@ export default function TraeAccountsPage() {
       {(progress || report) && (
         <Card className="mt-6 gap-0 py-0">
           <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-            <span className="text-sm font-semibold">签到结果</span>
+            <span className="text-sm font-semibold">{t("trae.page.accounts.resultTitle")}</span>
             {progress?.type === "account" && (
               <span className="text-xs text-muted-foreground">
-                正在处理 {progress.index} / {report?.total ?? "…"}
+                {t("trae.page.accounts.resultProgress", { index: progress.index, total: report?.total ?? "…" })}
               </span>
             )}
           </div>
@@ -874,21 +1000,33 @@ export default function TraeAccountsPage() {
                   {item.delta > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{item.delta}</span>}
                   <span className="text-xs text-muted-foreground">{item.message || item.action}</span>
                   <Badge variant={item.ok ? "secondary" : "destructive"}>
-                    {item.action === "skip_already" ? "已签到" : item.ok ? "成功" : "失败"}
+                    {item.action === "skip_already"
+                      ? t("trae.page.accounts.resultSkipped")
+                      : item.ok
+                        ? t("trae.page.accounts.resultSuccess")
+                        : t("trae.page.accounts.resultFailed")}
                   </Badge>
                 </span>
               </div>
             ))}
             {!report && progress?.type === "account" && (
               <div className="px-5 py-2.5 text-sm text-muted-foreground">
-                {progress.name}：{progress.status === "success" ? "成功" : progress.status === "already" ? "已签到" : "失败"}
+                {t("trae.page.accounts.resultLine", {
+                  name: progress.name,
+                  status:
+                    progress.status === "success"
+                      ? t("trae.page.accounts.resultSuccess")
+                      : progress.status === "already"
+                        ? t("trae.page.accounts.resultSkipped")
+                        : t("trae.page.accounts.resultFailed"),
+                })}
               </div>
             )}
             {/* 空队列要说明白「为什么一条都没有」，否则看着像功能坏了 ——
                 打开「跳过今日已签到」后这是最常见的一种正常结果。 */}
             {report && report.results.length === 0 && (
               <div className="px-5 py-2.5 text-sm text-muted-foreground">
-                本轮没有需要签到的账号（今日已签到、冷却中或凭据过期）。
+                {t("trae.page.accounts.resultEmpty")}
               </div>
             )}
           </div>
@@ -906,17 +1044,17 @@ export default function TraeAccountsPage() {
       {(checkin?.summary.results.length ?? 0) > 0 && (
         <Card className="mt-6 gap-0 py-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-            <span className="text-sm font-semibold">上次签到</span>
+            <span className="text-sm font-semibold">{t("trae.page.accounts.lastTitle")}</span>
             <span className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>{checkin?.summary.time ?? "时间未知"}</span>
+              <span>{checkin?.summary.time ?? t("trae.page.accounts.lastUnknownTime")}</span>
               {checkin && !checkin.summaryIsToday && (
-                <span className="text-amber-600 dark:text-amber-400">（非今日）</span>
+                <span className="text-amber-600 dark:text-amber-400">{t("trae.page.accounts.lastNotToday")}</span>
               )}
               <span className="flex items-center gap-1.5">
                 <CheckCircle2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-                成功 <span className="font-medium text-foreground">{checkin?.summary.totalOk ?? 0}</span>
+                {t("trae.page.accounts.resultSuccess")} <span className="font-medium text-foreground">{checkin?.summary.totalOk ?? 0}</span>
                 <XCircle className="ml-1.5 size-3.5 text-destructive" />
-                失败 <span className="font-medium text-foreground">{checkin?.summary.failed ?? 0}</span>
+                {t("trae.page.accounts.resultFailed")} <span className="font-medium text-foreground">{checkin?.summary.failed ?? 0}</span>
               </span>
             </span>
           </div>
@@ -940,12 +1078,25 @@ export default function TraeAccountsPage() {
           </div>
           {(checkin?.summary.results.length ?? 0) > 10 && (
             <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-              仅展示前 10 条，共 {checkin?.summary.results.length} 条。
+              {t("trae.page.accounts.lastTruncated", {
+                limit: 10,
+                total: checkin?.summary.results.length ?? 0,
+              })}
             </div>
           )}
           {checkin && checkin.cooldownCount > 0 && (
             <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-              冷却明细：{checkin.cooldowns.map((item) => `${item.userId}（${item.type}${item.permanent ? "·永久" : ""}）`).join("、")}
+              {t("trae.page.accounts.lastCooldownDetail", {
+                list: checkin.cooldowns
+                  .map((item) =>
+                    t("trae.page.accounts.lastCooldownItem", {
+                      uid: item.userId,
+                      type: item.type,
+                      permanent: item.permanent ? t("trae.page.accounts.lastCooldownPermanent") : "",
+                    }),
+                  )
+                  .join(t("trae.page.accounts.lastCooldownSep")),
+              })}
             </div>
           )}
         </Card>
@@ -955,8 +1106,8 @@ export default function TraeAccountsPage() {
         open={oauthOpen}
         onOpenChange={setOauthOpen}
         onSuccess={(account) => {
-          toast.success("已添加账号", {
-            description: `${account.name || account.userId}${account.hasRefreshToken ? " · 支持自动续期" : ""}`,
+          toast.success(t("trae.page.accounts.accountAdded"), {
+            description: `${account.name || account.userId}${account.hasRefreshToken ? t("trae.page.accounts.autoRenewSuffix") : ""}`,
           });
           void loadAll();
         }}
@@ -975,7 +1126,7 @@ export default function TraeAccountsPage() {
         onOpenChange={setExportOpen}
         accounts={accounts}
         variant={variant}
-        onExported={(count) => toast.success(`已导出 ${count} 个账号`)}
+        onExported={(count) => toast.success(t("trae.page.accounts.exportedCount", { count }))}
       />
 
       <TraeImportAccountsDialog
@@ -983,8 +1134,12 @@ export default function TraeAccountsPage() {
         onOpenChange={setImportOpen}
         variant={variant}
         onImported={(result) => {
-          toast.success("导入完成", {
-            description: `新增 ${result.imported} · 覆盖 ${result.overwritten} · 跳过 ${result.skipped}`,
+          toast.success(t("trae.page.accounts.importDone"), {
+            description: t("trae.page.accounts.importSummary", {
+              added: result.imported,
+              overwritten: result.overwritten,
+              skipped: result.skipped,
+            }),
           });
           void loadAll();
         }}
@@ -994,15 +1149,16 @@ export default function TraeAccountsPage() {
       <Dialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除账号</DialogTitle>
+            <DialogTitle>{t("trae.page.accounts.deleteTitle")}</DialogTitle>
             <DialogDescription>
-              确定删除账号「{pendingDelete?.name || pendingDelete?.userId}」？登录态快照会保留，
-              可在「设置 → 登录态快照」中单独清理。此操作不可撤销。
+              {t("trae.page.accounts.deleteBody", {
+                name: pendingDelete?.name || pendingDelete?.userId || t("trae.page.accounts.unknownAccount"),
+              })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPendingDelete(null)}>
-              取消
+              {t("trae.page.accounts.cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -1011,12 +1167,12 @@ export default function TraeAccountsPage() {
                 const target = pendingDelete;
                 if (!target) return;
                 setPendingDelete(null);
-                void run(`delete-${target.userId}`, "删除账号", () =>
+                void run(`delete-${target.userId}`, "trae.page.accounts.actionDelete", () =>
                   api.traeDeleteAccount(target.userId, false, variant),
                 );
               }}
             >
-              删除
+              {t("trae.page.accounts.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1054,66 +1210,66 @@ function EmptyTraeCard({
   onOAuth: () => void;
   importing: boolean;
 }) {
+  const t = useT();
   return (
     <Card className="gap-0 py-0">
       <div className="flex items-start gap-3 px-5 py-5">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-medium">还没有 Trae 账号</h2>
+          <h2 className="text-sm font-medium">{t("trae.page.accounts.emptyTitle")}</h2>
 
           <div className="mt-3 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground/80">可能原因：</p>
+            <p className="font-medium text-foreground/80">{t("trae.page.accounts.emptyReasons")}</p>
             <ul className="mt-1 list-disc space-y-1 pl-5">
-              <li>未安装 Trae 桌面客户端</li>
-              {installed && <li>客户端已安装，但当前无可用登录态</li>}
+              <li>{t("trae.page.accounts.emptyReasonNotInstalled")}</li>
+              {installed && <li>{t("trae.page.accounts.emptyReasonNoSession")}</li>}
               <li>
-                <span className="text-foreground/80">客户端已登录，但凭据是加密存储的</span>
-                ——Trae 1.107.x 起不再把明文 JWT 写入
+                <span className="text-foreground/80">{t("trae.page.accounts.emptyReasonEncryptedLead")}</span>
+                {t("trae.page.accounts.emptyReasonEncryptedMid")}
                 <code className="mx-1 rounded bg-muted/60 px-1 py-0.5 font-mono text-[11px]">storage.json</code>
-                ，因此本机导入读不到它。这是**当前版本最常见**的原因。
+                {t("trae.page.accounts.emptyReasonEncryptedTail")}
               </li>
-              <li>账号库为空，且尚未通过网页登录或备份文件添加过账号</li>
+              <li>{t("trae.page.accounts.emptyReasonEmpty")}</li>
             </ul>
           </div>
 
           <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3.5 py-3">
             <p className="text-sm text-foreground/80">
-              <span className="font-medium">推荐做法：</span>
-              用「OAuth 网页登录」在浏览器里登录一次并授权。应用会自己接住回调，
-              无需查找任何本地文件，也无需粘贴令牌——这是唯一不受加密存储影响的方式。
+              <span className="font-medium">{t("trae.page.accounts.emptyRecommendLabel")}</span>
+              {t("trae.page.accounts.emptyRecommendBody")}
             </p>
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
             <Button size="sm" onClick={onOAuth}>
               <QrCode />
-              OAuth 网页登录
+              {t("trae.page.accounts.oauthLogin")}
             </Button>
             <Button size="sm" variant="outline" onClick={onRecheck}>
               <RefreshCw />
-              重新检测
+              {t("trae.page.accounts.emptyRecheck")}
             </Button>
             <Button
               size="sm"
               variant="ghost"
               onClick={onImport}
               disabled={importing}
-              title="仅适用于旧版客户端或凭据仍是明文的安装；1.107.x 起通常读不到"
+              title={t("trae.page.accounts.emptyImportHint")}
             >
               {importing ? <Loader2 className="animate-spin" /> : <Download />}
-              尝试从本机导入
+              {t("trae.page.accounts.emptyImportTry")}
             </Button>
           </div>
 
           <div className="mt-4">
-            <p className="text-sm font-medium text-foreground/80">已探测的登录态目录：</p>
+            <p className="text-sm font-medium text-foreground/80">{t("trae.page.accounts.emptyDetectedDir")}</p>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <code className="min-w-0 break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                {dataDir ? `${dataDir}\\User\\globalStorage\\storage.json` : "尚未探测到客户端数据目录"}
+                {dataDir ? `${dataDir}\\User\\globalStorage\\storage.json` : t("trae.page.accounts.emptyNoDataDir")}
               </code>
             </div>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              该文件在新版客户端里已不再保存明文凭据；仅供确认客户端数据目录位置。
+              {t("trae.page.accounts.emptyDirNote")}
             </p>
           </div>
         </div>
@@ -1137,6 +1293,7 @@ function AddAccountDialog({
   variant: TraeVariantId;
   onAdded: () => void;
 }) {
+  const t = useT();
   const [name, setName] = useState("");
   const [jwt, setJwt] = useState("");
   const [groupId, setGroupId] = useState<string>("");
@@ -1144,20 +1301,20 @@ function AddAccountDialog({
 
   async function submit() {
     if (!jwt.trim()) {
-      toast.error("请粘贴 JWT");
+      toast.error(t("trae.page.accounts.needJwt"));
       return;
     }
     setSaving(true);
     try {
       await api.traeAddAccount(name.trim(), jwt.trim(), groupId || null, variant);
-      toast.success("账号已添加");
+      toast.success(t("trae.page.accounts.accountAdded"));
       setName("");
       setJwt("");
       setGroupId("");
       onOpenChange(false);
       onAdded();
     } catch (e) {
-      toast.error("添加失败", { description: api.asError(e) });
+      toast.error(t("trae.page.accounts.addFailed"), { description: api.asError(e) });
     } finally {
       setSaving(false);
     }
@@ -1167,14 +1324,12 @@ function AddAccountDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>粘贴 JWT 添加账号</DialogTitle>
+          <DialogTitle>{t("trae.page.accounts.addDialogTitle")}</DialogTitle>
           <DialogDescription>
-            兜底方式，仅在无法使用网页登录时使用。填 `Cloud-IDE-JWT …` 令牌
-            （可从代理日志或旧版客户端的明文存储中取得）。用户名留空时按 UID 尾部自动命名。
+            {t("trae.page.accounts.addDialogDesc")}
             <br />
             <span className="text-foreground/80">
-              注意：这种方式拿到的账号没有 refresh_token，JWT 过期后需要重新粘贴；
-              网页登录的账号可以自动续期。
+              {t("trae.page.accounts.addDialogNote")}
             </span>
           </DialogDescription>
         </DialogHeader>
@@ -1190,14 +1345,14 @@ function AddAccountDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="trae-name">账号名（可选）</Label>
-            <Input id="trae-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 主号" />
+            <Label htmlFor="trae-name">{t("trae.page.accounts.addDialogName")}</Label>
+            <Input id="trae-name" value={name} onChange={(event) => setName(event.target.value)} placeholder={t("trae.page.accounts.addDialogNamePlaceholder")} />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="trae-group">分组（可选）</Label>
+            <Label htmlFor="trae-group">{t("trae.page.accounts.addDialogGroup")}</Label>
             <Select value={groupId} onValueChange={setGroupId}>
               <SelectTrigger id="trae-group" className="w-full">
-                <SelectValue placeholder="未分组" />
+                <SelectValue placeholder={t("trae.page.accounts.ungroupedPlaceholder")} />
               </SelectTrigger>
               <SelectContent>
                 {groups.map((group) => (
@@ -1211,11 +1366,11 @@ function AddAccountDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            取消
+            {t("trae.page.accounts.cancel")}
           </Button>
           <Button onClick={() => void submit()} disabled={saving}>
             {saving && <Loader2 className="animate-spin" />}
-            添加
+            {t("trae.page.accounts.add")}
           </Button>
         </DialogFooter>
       </DialogContent>

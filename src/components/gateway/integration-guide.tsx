@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { copyText } from "@/lib/clipboard";
+import { useT, type Translate } from "@/lib/i18n";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
 import type { ApiKeyRecord, Region } from "@/lib/types";
@@ -21,13 +22,20 @@ const TOOLS = [
 
 type ToolKey = (typeof TOOLS)[number]["key"];
 
-/** 取该 region 第一个启用中的 Key 前缀；无则给出占位提示。 */
-function representativeKey(keys: ApiKeyRecord[], region: Region): string {
+/** 取该 region 第一个启用中的 Key 前缀；无启用中的 Key 时返回 null，由渲染处给出占位提示。 */
+function representativeKey(keys: ApiKeyRecord[], region: Region): string | null {
   const active = keys.find((key) => key.region === region && !key.revoked);
-  return active ? `${active.prefix}…` : "sk-wb-…（请先在上方创建 Key）";
+  return active ? `${active.prefix}…` : null;
 }
 
-function snippetFor(tool: ToolKey, baseUrl: string, rootUrl: string, key: string): string {
+/**
+ * 生成可粘贴的配置片段。
+ *
+ * `t` 只负责「字段标签 + 值里的自然语言」；片段里的键名（`apiProvider`、
+ * `ANTHROPIC_BASE_URL` 等）与工具自身的固定文案（`Cursor → Settings → …`）
+ * 一律保持英文 —— 它们是外部工具读取的契约，翻译了反而会粘贴失败。
+ */
+function snippetFor(t: Translate, tool: ToolKey, baseUrl: string, rootUrl: string, key: string): string {
   switch (tool) {
     case "cursor":
       return [
@@ -35,7 +43,7 @@ function snippetFor(tool: ToolKey, baseUrl: string, rootUrl: string, key: string
         "",
         `Override OpenAI Base URL: ${baseUrl}`,
         `API Key:  ${key}`,
-        "Model:    在模型列表中选择，如 GLM-5.3",
+        `Model:    ${t("wbStats.gateway.snippet.modelPick")}`,
       ].join("\n");
     case "cline":
       return JSON.stringify(
@@ -62,7 +70,11 @@ function snippetFor(tool: ToolKey, baseUrl: string, rootUrl: string, key: string
     case "openwebui":
       return [`Base URL: ${baseUrl}`, `API Key:  ${key}`].join("\n");
     case "cherry":
-      return [`API 地址: ${baseUrl}`, `API 密钥: ${key}`, "模型: 在模型列表中选择"].join("\n");
+      return [
+        `${t("wbStats.gateway.snippet.apiBase")}: ${baseUrl}`,
+        `${t("wbStats.gateway.snippet.apiKey")}: ${key}`,
+        `${t("wbStats.gateway.snippet.modelPickPlain")}: ${t("wbStats.gateway.snippet.modelPick")}`,
+      ].join("\n");
     default:
       return "";
   }
@@ -70,17 +82,18 @@ function snippetFor(tool: ToolKey, baseUrl: string, rootUrl: string, key: string
 
 /** 接入指引 Tabs（Cursor / Cline / Continue / Claude Code / OpenWebUI / Cherry Studio），带复制按钮（P0-9）。 */
 export function IntegrationGuide({ baseUrl, className }: { baseUrl: string; className?: string }) {
+  const t = useT();
   const keys = useGatewayStore((s) => s.keys);
   const [tool, setTool] = useState<ToolKey>("cursor");
   const [region, setRegion] = useState<Region>("cn");
   const [copied, setCopied] = useState(false);
 
   const rootUrl = baseUrl.replace(/\/v1\/?$/, "");
-  const key = representativeKey(keys, region);
-  const snippet = snippetFor(tool, baseUrl, rootUrl, key);
+  const key = representativeKey(keys, region) ?? t("wbStats.gateway.noKeyHint");
+  const snippet = snippetFor(t, tool, baseUrl, rootUrl, key);
 
   async function onCopy() {
-    await copyText(snippet, "代码已复制");
+    await copyText(snippet, t("wbStats.gateway.codeCopied"));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   }
@@ -88,7 +101,7 @@ export function IntegrationGuide({ baseUrl, className }: { baseUrl: string; clas
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">接入指引</span>
+        <span className="text-sm font-semibold">{t("wbStats.gateway.guide")}</span>
         <div className="flex flex-wrap items-center gap-2">
           <Tabs value={region} onValueChange={(value) => setRegion(value as Region)}>
             <TabsList>
@@ -101,7 +114,7 @@ export function IntegrationGuide({ baseUrl, className }: { baseUrl: string; clas
           </Tabs>
           <Button variant="outline" size="sm" onClick={() => void onCopy()}>
             {copied ? <Check /> : <Copy />}
-            复制代码
+            {t("wbStats.gateway.copyCode")}
           </Button>
         </div>
       </div>
@@ -121,7 +134,7 @@ export function IntegrationGuide({ baseUrl, className }: { baseUrl: string; clas
             {snippet}
           </pre>
           <p className="mt-2 text-xs text-muted-foreground">
-            建议开启流式（stream）；非流式请求会由网关聚合后一次性返回，首字节延迟较长。
+            {t("wbStats.gateway.streamNote")}
           </p>
         </div>
       </Tabs>

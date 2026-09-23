@@ -22,6 +22,8 @@ import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { Skeleton } from "@/components/ui/skeleton";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import type { TraeAccountsOverview, TraeCreditsOverview } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 import { useCachedResource } from "@/lib/use-cached-resource";
@@ -30,11 +32,12 @@ import { useTraeVariant } from "@/lib/use-trae-variant";
 /** 趋势图展示的天数（含今日）。 */
 const TREND_DAYS = 7;
 
-const TREND_SERIES = [
-  { key: "total", label: "积分总数", color: "var(--data-series-indigo)" },
-  { key: "earned", label: "获得积分", color: "var(--data-series-emerald)" },
-  { key: "consumed", label: "消耗积分", color: "var(--data-series-amber)" },
-] as const;
+/** 趋势系列只存**键**：表在模块加载时定型，存中文会让语言切换整条失效。 */
+const TREND_SERIES: { key: string; labelKey: TranslationKey; color: string }[] = [
+  { key: "total", labelKey: "trae.stats.credits.series.total", color: "var(--data-series-indigo)" },
+  { key: "earned", labelKey: "trae.stats.credits.series.earned", color: "var(--data-series-emerald)" },
+  { key: "consumed", labelKey: "trae.stats.credits.series.consumed", color: "var(--data-series-amber)" },
+];
 
 /** 本地日期 `YYYY-MM-DD`（与后端快照的日期口径一致，不用 UTC 以免跨时区错位）。 */
 function localDate(date: Date): string {
@@ -100,6 +103,7 @@ function StatMetric({
  * 账号名与分组来自 `get_trae_accounts`——积分缓存只存 uid，展示必须回表取名字。
  */
 export default function TraeCreditsPage() {
+  const t = useT();
   /** 当前产品线（由侧栏分区 / URL `?line=` 决定），决定读哪份积分与账号数据。 */
   const [variant] = useTraeVariant();
   const [refreshing, setRefreshing] = useState(false);
@@ -198,8 +202,11 @@ export default function TraeCreditsPage() {
   const hasTrend = trend.some((point) => point.total > 0 || point.earned > 0 || point.consumed > 0);
 
   const chartConfig: ChartConfig = useMemo(
-    () => Object.fromEntries(TREND_SERIES.map((series) => [series.key, { label: series.label, color: series.color }])),
-    [],
+    () =>
+      Object.fromEntries(
+        TREND_SERIES.map((series) => [series.key, { label: t(series.labelKey), color: series.color }]),
+      ) as ChartConfig,
+    [t],
   );
 
   async function refreshCredits() {
@@ -207,9 +214,9 @@ export default function TraeCreditsPage() {
     try {
       await api.traeRefreshCredits(undefined, variant);
       await loadAll();
-      toast.success("积分数据已刷新");
+      toast.success(t("trae.stats.credits.refreshDone"));
     } catch (e) {
-      toast.error("刷新失败", { description: api.asError(e) });
+      toast.error(t("trae.stats.credits.refreshFailed"), { description: api.asError(e) });
     } finally {
       setRefreshing(false);
     }
@@ -219,9 +226,9 @@ export default function TraeCreditsPage() {
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold tracking-tight">积分统计</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.stats.credits.title")}</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            查看每个 Trae 账号的剩余积分、每日变化与历史趋势。
+            {t("trae.stats.credits.subtitle")}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -231,7 +238,7 @@ export default function TraeCreditsPage() {
           <DemoAction>
             <Button variant="outline" size="sm" disabled={refreshing} onClick={() => void refreshCredits()}>
               {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              {refreshing ? "同步中" : "同步积分"}
+              {refreshing ? t("trae.stats.credits.syncing") : t("trae.stats.credits.sync")}
             </Button>
           </DemoAction>
         </div>
@@ -240,7 +247,7 @@ export default function TraeCreditsPage() {
       {error && (
         <Alert variant="destructive" className="mb-5">
           <AlertTriangle />
-          <AlertTitle>无法读取 Trae 积分数据</AlertTitle>
+          <AlertTitle>{t("trae.stats.credits.loadFailed")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
@@ -248,26 +255,33 @@ export default function TraeCreditsPage() {
       {loading && !credits ? (
         <Skeleton className="mb-6 h-24 w-full" />
       ) : (
-        <Card className="mb-6 min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none" aria-label="积分总览">
+        <Card className="mb-6 min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none" aria-label={t("trae.stats.credits.overviewAria")}>
           <CardContent className="grid min-w-0 grid-cols-1 divide-y divide-border/60 p-0 sm:grid-cols-5 sm:divide-y-0 sm:py-5">
-            <StatMetric icon={Coins} label="可用积分总额" value={formatCredits(total)} hint="全部账号合计" />
+            <StatMetric
+              icon={Coins}
+              label={t("trae.stats.credits.metric.total")}
+              value={formatCredits(total)}
+              hint={t("trae.stats.credits.metric.totalHint")}
+            />
             <StatMetric
               icon={CalendarDays}
-              label="平均可用积分"
+              label={t("trae.stats.credits.metric.average")}
               value={formatCredits(Math.round(average))}
-              hint="总额 ÷ 账号数"
+              hint={t("trae.stats.credits.metric.averageHint")}
               divided
             />
             <StatMetric
               icon={User}
-              label="账号数"
+              label={t("trae.stats.credits.metric.accounts")}
               value={String(rows.length)}
-              hint={`已同步 ${rows.filter((row) => row.credits !== null).length}`}
+              hint={t("trae.stats.credits.metric.accountsHint", {
+                count: rows.filter((row) => row.credits !== null).length,
+              })}
               divided
             />
             <StatMetric
               icon={TrendingUp}
-              label="今日新增积分"
+              label={t("trae.stats.credits.metric.todayEarned")}
               value={formatCredits(todayEarned)}
               hint={today}
               tone={todayEarned > 0 ? "up" : "default"}
@@ -275,7 +289,7 @@ export default function TraeCreditsPage() {
             />
             <StatMetric
               icon={TrendingDown}
-              label="今日消耗积分"
+              label={t("trae.stats.credits.metric.todayConsumed")}
               value={formatCredits(todayConsumed)}
               hint={today}
               tone={todayConsumed > 0 ? "down" : "default"}
@@ -284,8 +298,12 @@ export default function TraeCreditsPage() {
           </CardContent>
           {credits?.updatedAt && (
             <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-              积分缓存更新时间：{credits.updatedAt}
-              {credits.historyDays > 0 && <span className="ml-3">历史明细保留 {credits.historyDays} 天</span>}
+              {t("trae.stats.credits.cacheUpdated", { time: credits.updatedAt })}
+              {credits.historyDays > 0 && (
+                <span className="ml-3">
+                  {t("trae.stats.credits.historyDays", { days: credits.historyDays })}
+                </span>
+              )}
             </div>
           )}
         </Card>
@@ -294,13 +312,13 @@ export default function TraeCreditsPage() {
       <section className="min-w-0 space-y-2.5" aria-labelledby="trae-credits-trend-title">
         <div className="flex flex-wrap items-center justify-between gap-2 px-1">
           <h2 id="trae-credits-trend-title" className="text-[13px] font-medium leading-5">
-            近 {TREND_DAYS} 日积分趋势
+            {t("trae.stats.credits.trendTitle", { days: TREND_DAYS })}
           </h2>
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             {TREND_SERIES.map((series) => (
               <span key={series.key} className="inline-flex items-center gap-1.5">
                 <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: series.color }} aria-hidden="true" />
-                {series.label}
+                {t(series.labelKey)}
               </span>
             ))}
           </div>
@@ -308,7 +326,7 @@ export default function TraeCreditsPage() {
         <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
           <CardHeader className="gap-0 px-4 pt-3 pb-0 sm:px-5">
             <CardDescription className="text-xs">
-              数据来自每日积分快照；执行签到或同步积分后才会产生当天的点。
+              {t("trae.stats.credits.trendNote")}
             </CardDescription>
           </CardHeader>
           <CardContent className="min-w-0 px-4 pt-3 pb-4 sm:px-5">
@@ -316,11 +334,11 @@ export default function TraeCreditsPage() {
               <Skeleton className="h-56 w-full" />
             ) : rows.length === 0 ? (
               <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-                尚无账号数据。添加账号后这里会展示积分趋势。
+                {t("trae.stats.credits.trendEmptyAccounts")}
               </div>
             ) : !hasTrend ? (
               <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-                暂无趋势数据。执行一次签到或「同步积分」后即可看到每日变化。
+                {t("trae.stats.credits.trendEmptyData")}
               </div>
             ) : (
               <ChartContainer config={chartConfig} className="h-56 w-full">
@@ -364,7 +382,7 @@ export default function TraeCreditsPage() {
         <section className="mt-6 min-w-0 space-y-2.5" aria-labelledby="trae-credits-unsupported-title">
           <div className="px-1">
             <h2 id="trae-credits-unsupported-title" className="text-[13px] font-medium leading-5">
-              平台不支持的维度
+              {t("trae.stats.credits.unsupportedTitle")}
             </h2>
           </div>
           <Card className="min-w-0 gap-0 overflow-hidden rounded-xl border-dashed py-0 shadow-none">
@@ -372,7 +390,9 @@ export default function TraeCreditsPage() {
               {credits?.unsupported.map((item) => (
                 <div key={item.capability} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-5 py-3 opacity-70">
                   <span className="text-sm font-medium text-muted-foreground">{item.label}</span>
-                  <span className="text-xs text-muted-foreground">（仅 {item.supportedOn}）</span>
+                  <span className="text-xs text-muted-foreground">
+                    {t("trae.stats.credits.unsupportedOnly", { on: item.supportedOn })}
+                  </span>
                   <span className="w-full text-xs leading-5 text-muted-foreground">{item.reason}</span>
                 </div>
               ))}
@@ -384,35 +404,39 @@ export default function TraeCreditsPage() {
       <section className="mt-6 min-w-0 space-y-2.5" aria-labelledby="trae-credits-detail-title">
         <div className="px-1">
           <h2 id="trae-credits-detail-title" className="text-[13px] font-medium leading-5">
-            账号积分明细
+            {t("trae.stats.credits.detailTitle")}
           </h2>
           {/* 口径说明：Trae 积分来自签到快照，**没有**「请求用量」这一口径的数据源，
               因此这里是单栏明细 + 说明，而不是 WorkBuddy 那套「明细 / 请求用量」分栏。 */}
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            数据来源为签到快照与「同步积分」的结果；Trae 侧不存在「产生这些积分的请求用量」口径，故不设分栏。
+            {t("trae.stats.credits.detailNote")}
           </p>
         </div>
         <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-            <span className="text-[13px] font-medium">按账号</span>
-            <span className="text-xs text-muted-foreground">共 {rows.length} 个账号</span>
+            <span className="text-[13px] font-medium">{t("trae.stats.credits.detail.byAccount")}</span>
+            <span className="text-xs text-muted-foreground">
+              {t("trae.stats.credits.detail.accountCount", { count: rows.length })}
+            </span>
           </div>
           {loading && !overview ? (
             <div className="p-4">
               <Skeleton className="h-40 w-full" />
             </div>
           ) : rows.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-muted-foreground">尚无账号数据。</div>
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              {t("trae.stats.credits.detail.empty")}
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[700px] text-sm">
                 <thead className="bg-muted/50 text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-4 py-2.5 text-left font-medium">排名</th>
-                    <th className="px-4 py-2.5 text-left font-medium">账号</th>
-                    <th className="px-4 py-2.5 text-left font-medium">分组</th>
-                    <th className="px-4 py-2.5 text-left font-medium">积分到期</th>
-                    <th className="px-4 py-2.5 text-right font-medium">剩余可用积分</th>
+                    <th className="px-4 py-2.5 text-left font-medium">{t("trae.stats.credits.col.rank")}</th>
+                    <th className="px-4 py-2.5 text-left font-medium">{t("trae.stats.credits.col.account")}</th>
+                    <th className="px-4 py-2.5 text-left font-medium">{t("trae.stats.credits.col.group")}</th>
+                    <th className="px-4 py-2.5 text-left font-medium">{t("trae.stats.credits.col.expires")}</th>
+                    <th className="px-4 py-2.5 text-right font-medium">{t("trae.stats.credits.col.remaining")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -437,7 +461,9 @@ export default function TraeCreditsPage() {
                               {group.name}
                             </Badge>
                           ) : (
-                            <span className="text-xs text-muted-foreground">未分组</span>
+                            <span className="text-xs text-muted-foreground">
+                              {t("trae.stats.credits.ungrouped")}
+                            </span>
                           )}
                         </td>
                         <td className="px-4 py-2.5 text-xs text-muted-foreground">
@@ -447,7 +473,9 @@ export default function TraeCreditsPage() {
                         </td>
                         <td className="px-4 py-2.5 text-right tabular-nums">
                           {row.credits === null ? (
-                            <span className="text-xs text-muted-foreground">未同步</span>
+                            <span className="text-xs text-muted-foreground">
+                              {t("trae.stats.credits.notSynced")}
+                            </span>
                           ) : (
                             formatCredits(row.credits)
                           )}

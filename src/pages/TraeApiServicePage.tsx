@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { copyText } from "@/lib/clipboard";
 import {
   DEFAULT_TRAE_GATEWAY_CONFIG,
@@ -79,6 +80,7 @@ interface ApiServiceSnapshot {
  * 账号池卡替代。模型区**不加刷新按钮**（模型名是客户端常量，刷新永不改变结果）。
  */
 export default function TraeApiServicePage() {
+  const t = useT();
   /** 当前产品线：决定读哪个账号池（`trae_gateway_status(variant)`）与归属列默认值。 */
   const [variant] = useTraeVariant();
   const [saving, setSaving] = useState(false);
@@ -147,9 +149,13 @@ export default function TraeApiServicePage() {
       // 保存会启动/重启监听，状态要重读（仍按当前产品线）。
       const statusRaw = await api.getTraeGatewayStatus(variant);
       patchSnapshot({ status: normalizeTraeGatewayStatus(statusRaw) });
-      toast.success(merged.enabled ? "网关已保存并启动" : "网关已保存（未启用监听）");
+      toast.success(
+        merged.enabled
+          ? t("trae.stats.api.toast.savedStarted")
+          : t("trae.stats.api.toast.savedDisabled"),
+      );
     } catch (e) {
-      toast.error("保存失败", { description: api.asError(e) });
+      toast.error(t("trae.stats.api.toast.saveFailed"), { description: api.asError(e) });
     } finally {
       setSaving(false);
     }
@@ -172,7 +178,9 @@ export default function TraeApiServicePage() {
   function commitPort() {
     const parsed = Number.parseInt(portDraft, 10);
     if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) {
-      toast.error("端口无效", { description: "请输入 1–65535 之间的整数" });
+      toast.error(t("trae.stats.api.toast.portInvalid"), {
+        description: t("trae.stats.api.toast.portRange"),
+      });
       setPortDraft(String(config.port));
       return;
     }
@@ -185,9 +193,9 @@ export default function TraeApiServicePage() {
     try {
       await api.clearTraeGatewayLogs();
       patchSnapshot({ logs: [] });
-      toast.success("日志已清空");
+      toast.success(t("trae.stats.api.toast.logsCleared"));
     } catch (e) {
-      toast.error("清空失败", { description: api.asError(e) });
+      toast.error(t("trae.stats.api.toast.clearFailed"), { description: api.asError(e) });
     } finally {
       setClearing(false);
     }
@@ -209,12 +217,14 @@ export default function TraeApiServicePage() {
         reason?: string;
       };
       if (result?.capability) {
-        toast.message("当前平台不支持", { description: result.reason ?? "该能力仅在 Windows 提供。" });
+        toast.message(t("trae.stats.api.toast.unsupported"), {
+          description: result.reason ?? t("trae.stats.api.toast.unsupportedDesc"),
+        });
         return;
       }
-      toast.success("已打开 Trae 数据目录", { description: result?.path });
+      toast.success(t("trae.stats.api.toast.dirOpened"), { description: result?.path });
     } catch (e) {
-      toast.error("打开数据目录失败", { description: api.asError(e) });
+      toast.error(t("trae.stats.api.toast.dirOpenFailed"), { description: api.asError(e) });
     } finally {
       setOpeningDir(false);
     }
@@ -242,9 +252,9 @@ export default function TraeApiServicePage() {
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
       <header className="mb-6 flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">API 服务</h1>
+          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.stats.api.title")}</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            把 Trae 的模型额度以 OpenAI 兼容接口提供给本机工具。
+            {t("trae.stats.api.subtitle")}
           </p>
         </div>
         {/* 产品线切换器：Trae 分区的每个页面都可切，位置固定在页头右侧。 */}
@@ -254,13 +264,13 @@ export default function TraeApiServicePage() {
       {error && (
         <Alert variant="destructive" className="mb-5">
           <AlertTriangle />
-          <AlertTitle>无法读取网关状态</AlertTitle>
+          <AlertTitle>{t("trae.stats.api.loadFailed")}</AlertTitle>
           <AlertDescription className="flex flex-col gap-3">
             <span>{error}</span>
             <div>
               <Button variant="outline" size="sm" onClick={() => void loadAll()}>
                 <RefreshCw />
-                重试
+                {t("trae.stats.api.retry")}
               </Button>
             </div>
           </AlertDescription>
@@ -273,10 +283,12 @@ export default function TraeApiServicePage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Power className="size-4 text-muted-foreground" />
-              启用 API 网关
+              {t("trae.stats.api.gateway.enable")}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              开启后本机 AI 工具可通过下方地址调用 Trae 模型（上游 {status?.upstream || "trae-api-cn.mchost.guru"}）。
+              {t("trae.stats.api.gateway.desc", {
+                upstream: status?.upstream || "trae-api-cn.mchost.guru",
+              })}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -286,13 +298,13 @@ export default function TraeApiServicePage() {
                 checked={config.enabled}
                 disabled={saving}
                 onCheckedChange={(checked) => void persist({ enabled: checked })}
-                aria-label="启用 API 网关"
+                aria-label={t("trae.stats.api.gateway.enable")}
               />
             </DemoAction>
             <DemoAction>
               <Button variant="outline" size="sm" onClick={() => void loadAll()}>
                 <RefreshCw />
-                刷新
+                {t("trae.stats.api.refresh")}
               </Button>
             </DemoAction>
           </div>
@@ -300,19 +312,19 @@ export default function TraeApiServicePage() {
 
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3 px-5 py-4">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">监听地址</span>
+            <span className="text-xs text-muted-foreground">{t("trae.stats.api.gateway.bindAddr")}</span>
             <Select value={config.bindAddr} onValueChange={onBindAddrChange} disabled={saving}>
-              <SelectTrigger size="sm" className="w-52" aria-label="监听地址">
+              <SelectTrigger size="sm" className="w-52" aria-label={t("trae.stats.api.gateway.bindAddr")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={LOOPBACK}>127.0.0.1（仅本机）</SelectItem>
-                <SelectItem value={LAN}>0.0.0.0（局域网）</SelectItem>
+                <SelectItem value={LOOPBACK}>{t("trae.stats.api.gateway.bindLoopback")}</SelectItem>
+                <SelectItem value={LAN}>{t("trae.stats.api.gateway.bindLan")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">监听端口</span>
+            <span className="text-xs text-muted-foreground">{t("trae.stats.api.gateway.port")}</span>
             <DemoAction>
               <Input
                 className="h-8 w-28"
@@ -323,12 +335,12 @@ export default function TraeApiServicePage() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") commitPort();
                 }}
-                aria-label="监听端口"
+                aria-label={t("trae.stats.api.gateway.port")}
               />
             </DemoAction>
           </div>
           <span className="flex items-center gap-1.5 text-xs">
-            状态：
+            {t("trae.stats.api.gateway.statusLabel")}
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 font-medium",
@@ -336,7 +348,9 @@ export default function TraeApiServicePage() {
               )}
             >
               <span className={cn("size-2 rounded-full", running ? "bg-emerald-500" : "bg-muted-foreground/50")} />
-              {running ? "运行中" : "已停止"}
+              {running
+                ? t("trae.stats.api.gateway.running")
+                : t("trae.stats.api.gateway.stopped")}
             </span>
           </span>
           <DemoAction>
@@ -348,19 +362,21 @@ export default function TraeApiServicePage() {
               onClick={() => void onOpenDataDir()}
             >
               {openingDir ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-              打开数据目录
+              {t("trae.stats.api.gateway.openDataDir")}
             </Button>
           </DemoAction>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
-          默认端口 7864，与 WorkBuddy 网关（57891）错开——两者都占用 <code className="font-mono">/v1/chat/completions</code>。
-          {config.bindAddr === LAN && "局域网模式下，同网段任何设备拿到 Key 都能消耗你的 Trae 积分。"}
+          {t("trae.stats.api.gateway.noteLead")}
+          <code className="font-mono">/v1/chat/completions</code>
+          {t("trae.stats.api.gateway.noteTail")}
+          {config.bindAddr === LAN && t("trae.stats.api.gateway.lanWarning")}
         </div>
 
         {status?.lastError && (
           <div className="border-t border-border/60 px-5 py-3">
-            <p className="text-xs text-muted-foreground">最近一次错误</p>
+            <p className="text-xs text-muted-foreground">{t("trae.stats.api.gateway.lastError")}</p>
             <p className="mt-1 break-words text-xs text-destructive">{status.lastError}</p>
           </div>
         )}
@@ -370,22 +386,28 @@ export default function TraeApiServicePage() {
       {/* WorkBuddy 此处是「按版本」逐 region 一行；Trae 无 region，故只有一条。 */}
       <Card className="mb-6 gap-0 py-0">
         <div className="border-b border-border/60 px-5 py-3">
-          <span className="text-sm font-semibold">接入地址</span>
+          <span className="text-sm font-semibold">{t("trae.stats.api.endpoint.title")}</span>
         </div>
         <div className="px-5 py-4">
           <div className="flex flex-wrap items-center gap-3">
-            <span className="text-xs text-muted-foreground">Base URL</span>
+            <span className="text-xs text-muted-foreground">{t("trae.stats.api.endpoint.baseUrl")}</span>
             <code className="min-w-0 break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs">
               {baseUrl}
             </code>
-            <Button variant="ghost" size="sm" onClick={() => void copyText(baseUrl, "Base URL 已复制")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void copyText(baseUrl, t("trae.stats.api.endpoint.copied"))}
+            >
               <Copy />
-              复制
+              {t("trae.stats.api.copy")}
             </Button>
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-            <span>最近 Key 前缀</span>
-            <code className="font-mono">{keyPrefix ? `${keyPrefix}…` : "尚无可用 Key"}</code>
+            <span>{t("trae.stats.api.endpoint.keyPrefix")}</span>
+            <code className="font-mono">
+              {keyPrefix ? `${keyPrefix}…` : t("trae.stats.api.endpoint.noKey")}
+            </code>
           </div>
         </div>
       </Card>
@@ -421,20 +443,17 @@ export default function TraeApiServicePage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ShieldAlert className="size-4 text-amber-500" />
-              允许局域网访问？
+              {t("trae.stats.api.lanDialog.title")}
             </DialogTitle>
-            <DialogDescription>
-              监听 0.0.0.0 后，同网段（含公共 Wi-Fi）的任何设备只要拿到 API Key，就能消耗你的 Trae
-              积分。请只在可信网络下开启。
-            </DialogDescription>
+            <DialogDescription>{t("trae.stats.api.lanDialog.desc")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRiskOpen(false)}>
-              取消
+              {t("trae.stats.api.lanDialog.cancel")}
             </Button>
             <Button onClick={confirmLan}>
               <Power />
-              我已确认，开启
+              {t("trae.stats.api.lanDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

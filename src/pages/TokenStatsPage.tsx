@@ -36,6 +36,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/locales/zh";
 import * as api from "@/lib/api";
 import { regionFilterLabel } from "@/lib/region";
 import { getStackedSegmentVisualLayout } from "@/lib/stacked-bar-visuals";
@@ -119,26 +121,26 @@ function persistPreferredRegion(region: RegionFilter): void {
   }
 }
 
-const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
-  { key: "30d", label: "近 30 天" },
-  { key: "today", label: "今天" },
-  { key: "7d", label: "近 7 天" },
-  { key: "month", label: "本月" },
+const RANGE_OPTIONS: { key: RangeKey; label: TranslationKey }[] = [
+  { key: "30d", label: "wbStats.token.range.30d" },
+  { key: "today", label: "wbStats.token.range.today" },
+  { key: "7d", label: "wbStats.token.range.7d" },
+  { key: "month", label: "wbStats.token.range.month" },
 ];
 
-const OVERVIEW_RANGE_OPTIONS: { key: OverviewRangeKey; label: string }[] = [
-  { key: "today", label: "今日" },
-  { key: "7d", label: "近 7 天" },
-  { key: "30d", label: "近 30 天" },
-  { key: "total", label: "总计" },
+const OVERVIEW_RANGE_OPTIONS: { key: OverviewRangeKey; label: TranslationKey }[] = [
+  { key: "today", label: "wbStats.token.range.today" },
+  { key: "7d", label: "wbStats.token.range.7d" },
+  { key: "30d", label: "wbStats.token.range.30d" },
+  { key: "total", label: "wbStats.token.overviewTotal" },
 ];
 
 const chartConfig = {
-  cacheRead: { label: "缓存读取", color: "var(--data-series-emerald)" },
-  uncachedInput: { label: "新增输入", color: "var(--data-series-teal)" },
-  output: { label: "输出", color: "var(--data-series-violet)" },
-  cacheWrite: { label: "缓存写入", color: "var(--data-series-amber)" },
-  records: { label: "调用次数", color: "var(--data-series-indigo)" },
+  cacheRead: { label: "wbStats.token.cacheRead", color: "var(--data-series-emerald)" },
+  uncachedInput: { label: "wbStats.token.uncachedInput", color: "var(--data-series-teal)" },
+  output: { label: "wbStats.token.output", color: "var(--data-series-violet)" },
+  cacheWrite: { label: "wbStats.token.cacheWrite", color: "var(--data-series-amber)" },
+  records: { label: "wbStats.token.records", color: "var(--data-series-indigo)" },
 } satisfies ChartConfig;
 
 const compactTokenFormatter = new Intl.NumberFormat("en-US", {
@@ -199,8 +201,8 @@ function formatHeatmapDate(date: Date): string {
   });
 }
 
-function rangeLabel(range: RangeKey): string {
-  return RANGE_OPTIONS.find((option) => option.key === range)?.label ?? "近 30 天";
+function rangeLabel(range: RangeKey): TranslationKey {
+  return RANGE_OPTIONS.find((option) => option.key === range)?.label ?? "wbStats.token.range.30d";
 }
 
 function rangePoints(daily: TokenStatsGroup[], range: RangeKey): TokenStatsGroup[] {
@@ -337,12 +339,13 @@ function StatMetric({
 }
 
 function CompactComposition({ value }: { value: TokenStatsTotals }) {
+  const t = useT();
   const total = tokenTotal(value);
-  const rows = [
-    { label: "缓存占比", value: value.cacheRead, color: "bg-primary" },
-    { label: "新增", value: value.uncachedInput, color: "bg-sky-500" },
-    { label: "输出", value: value.output, color: "bg-violet-500" },
-    { label: "写入", value: value.cacheWrite, color: "bg-amber-500" },
+  const rows: { labelKey: TranslationKey; value: number; color: string }[] = [
+    { labelKey: "wbStats.token.compCache", value: value.cacheRead, color: "bg-primary" },
+    { labelKey: "wbStats.token.compNew", value: value.uncachedInput, color: "bg-sky-500" },
+    { labelKey: "wbStats.token.compOutput", value: value.output, color: "bg-violet-500" },
+    { labelKey: "wbStats.token.compWrite", value: value.cacheWrite, color: "bg-amber-500" },
   ];
 
   return (
@@ -352,24 +355,24 @@ function CompactComposition({ value }: { value: TokenStatsTotals }) {
           className="flex h-2 w-full max-w-[360px] overflow-hidden rounded-full bg-muted"
           role="img"
           aria-label={rows
-            .map((row) => `${row.label} ${percentage(row.value, total)}`)
+            .map((row) => `${t(row.labelKey)} ${percentage(row.value, total)}`)
             .join("，")}
         >
           {rows.map((row) => (
             <span
-              key={row.label}
+              key={row.labelKey}
               className={`h-full min-w-0 ${row.color}`}
               style={{ width: total > 0 ? `${(row.value / total) * 100}%` : "0%" }}
-              title={`${row.label} ${formatTokenCompact(row.value)} · ${percentage(row.value, total)}`}
-              aria-label={`${row.label} ${formatTokenExact(row.value)} Token，${percentage(row.value, total)}`}
+              title={`${t(row.labelKey)} ${formatTokenCompact(row.value)} · ${percentage(row.value, total)}`}
+              aria-label={`${t(row.labelKey)} ${formatTokenExact(row.value)} Token，${percentage(row.value, total)}`}
             />
           ))}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] text-muted-foreground">
           {rows.map((row) => (
-            <span key={row.label} className="inline-flex items-center gap-1 whitespace-nowrap">
+            <span key={row.labelKey} className="inline-flex items-center gap-1 whitespace-nowrap">
               <span className={`size-1.5 rounded-full ${row.color}`} aria-hidden="true" />
-              {row.label} {percentage(row.value, total)}
+              {t(row.labelKey)} {percentage(row.value, total)}
             </span>
           ))}
         </div>
@@ -379,16 +382,17 @@ function CompactComposition({ value }: { value: TokenStatsTotals }) {
 }
 
 function Overview({ source }: { source: TokenStatsSource }) {
+  const t = useT();
   const [range, setRange] = useState<OverviewRangeKey>("today");
   const summary = useMemo(() => overviewTotals(source, range), [range, source]);
   const cacheRate = summary.cacheHitRate;
 
   return (
     <section className="min-w-0 space-y-2.5" aria-labelledby="token-overview-title">
-      <SectionTitle id="token-overview-title">Token 总览</SectionTitle>
+      <SectionTitle id="token-overview-title">{t("wbStats.token.overviewTitle")}</SectionTitle>
       <Card
         className="min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none"
-        aria-label="Token 总览"
+        aria-label={t("wbStats.token.overviewTitle")}
       >
         <CardHeader className="gap-0 px-4 pt-3 pb-0 sm:px-5">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
@@ -400,11 +404,11 @@ function Overview({ source }: { source: TokenStatsSource }) {
             >
               <TabsList
                 className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:w-fit sm:flex-wrap"
-                aria-label="总览范围"
+                aria-label={t("wbStats.token.overviewRangeAria")}
               >
                 {OVERVIEW_RANGE_OPTIONS.map((option) => (
                   <TabsTrigger key={option.key} value={option.key} className="px-2">
-                    {option.label}
+                    {t(option.label)}
                   </TabsTrigger>
                 ))}
               </TabsList>
@@ -412,17 +416,17 @@ function Overview({ source }: { source: TokenStatsSource }) {
           </div>
         </CardHeader>
         <CardContent className="grid min-w-0 grid-cols-1 divide-y divide-border/60 p-0 sm:grid-cols-4 sm:divide-y-0 sm:py-5">
-          <StatMetric icon={MessagesSquare} label="总 Token" value={formatTokenCompact(tokenTotal(summary))} />
-          <StatMetric icon={ArrowDownToLine} label="输入 Token" value={formatTokenCompact(summary.input)} divided />
+          <StatMetric icon={MessagesSquare} label={t("wbStats.token.metricTotal")} value={formatTokenCompact(tokenTotal(summary))} />
+          <StatMetric icon={ArrowDownToLine} label={t("wbStats.token.metricInput")} value={formatTokenCompact(summary.input)} divided />
           <StatMetric
             icon={ArrowUpFromLine}
-            label="输出 Token"
+            label={t("wbStats.token.metricOutput")}
             value={formatTokenCompact(summary.output)}
             divided
           />
           <StatMetric
             icon={Gauge}
-            label="缓存命中率"
+            label={t("wbStats.token.metricCacheRate")}
             value={cacheRate == null ? "—" : `${(cacheRate * 100).toFixed(1)}%`}
             divided
           />
@@ -508,18 +512,19 @@ function TokenBarShape({
 }
 
 function TrendLegend() {
-  const items = [
-    { key: "cacheRead", label: "缓存读取", color: "var(--data-series-emerald)", kind: "area" },
-    { key: "uncachedInput", label: "新增输入", color: "var(--data-series-teal)", kind: "area" },
-    { key: "output", label: "输出", color: "var(--data-series-violet)", kind: "area" },
-    { key: "cacheWrite", label: "缓存写入", color: "var(--data-series-amber)", kind: "area" },
-    { key: "records", label: "调用次数", color: "var(--data-series-indigo)", kind: "line" },
+  const t = useT();
+  const items: { key: string; labelKey: TranslationKey; color: string; kind: string }[] = [
+    { key: "cacheRead", labelKey: "wbStats.token.cacheRead", color: "var(--data-series-emerald)", kind: "area" },
+    { key: "uncachedInput", labelKey: "wbStats.token.uncachedInput", color: "var(--data-series-teal)", kind: "area" },
+    { key: "output", labelKey: "wbStats.token.output", color: "var(--data-series-violet)", kind: "area" },
+    { key: "cacheWrite", labelKey: "wbStats.token.cacheWrite", color: "var(--data-series-amber)", kind: "area" },
+    { key: "records", labelKey: "wbStats.token.records", color: "var(--data-series-indigo)", kind: "line" },
   ];
 
   return (
     <div
       className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground"
-      aria-label="图表图例"
+      aria-label={t("wbStats.token.legendAria")}
     >
       {items.map((item) => (
         <span key={item.key} className="inline-flex items-center gap-1.5 whitespace-nowrap">
@@ -544,7 +549,7 @@ function TrendLegend() {
               aria-hidden="true"
             />
           )}
-          {item.label}
+          {t(item.labelKey)}
         </span>
       ))}
     </div>
@@ -558,20 +563,21 @@ function TrendTooltipContent({
   active?: boolean;
   payload?: Array<{ payload?: TrendChartPoint }>;
 }) {
+  const t = useT();
   if (!active || !payload?.length) return null;
   const point = payload[0]?.payload;
   if (!point) return null;
-  const rows = [
-    { key: "cacheRead", label: "缓存读取", value: point.cacheRead, color: "var(--data-series-emerald)" },
+  const rows: { key: string; labelKey: TranslationKey; value: number; color: string }[] = [
+    { key: "cacheRead", labelKey: "wbStats.token.cacheRead", value: point.cacheRead, color: "var(--data-series-emerald)" },
     {
       key: "uncachedInput",
-      label: "新增输入",
+      labelKey: "wbStats.token.uncachedInput",
       value: point.uncachedInput,
       color: "var(--data-series-teal)",
     },
-    { key: "output", label: "输出", value: point.output, color: "var(--data-series-violet)" },
-    { key: "cacheWrite", label: "缓存写入", value: point.cacheWrite, color: "var(--data-series-amber)" },
-    { key: "records", label: "调用次数", value: point.records, color: "var(--data-series-indigo)" },
+    { key: "output", labelKey: "wbStats.token.output", value: point.output, color: "var(--data-series-violet)" },
+    { key: "cacheWrite", labelKey: "wbStats.token.cacheWrite", value: point.cacheWrite, color: "var(--data-series-amber)" },
+    { key: "records", labelKey: "wbStats.token.records", value: point.records, color: "var(--data-series-indigo)" },
   ];
   const total = tokenTotal(point);
 
@@ -579,7 +585,7 @@ function TrendTooltipContent({
     <div className="grid min-w-[13rem] gap-2 rounded-lg border border-border/50 bg-background px-3 py-2.5 text-xs shadow-xl">
       <div className="font-medium text-foreground">{formatChartDate(point.date)}</div>
       <div className="flex items-center justify-between border-b border-border/60 pb-1.5">
-        <span className="text-muted-foreground">Token 总量</span>
+        <span className="text-muted-foreground">{t("wbStats.token.totalLabel")}</span>
         <span
           className="whitespace-nowrap font-mono font-semibold tabular-nums text-foreground"
           title={`${formatTokenExact(total)} Token`}
@@ -600,13 +606,13 @@ function TrendTooltipContent({
               }
               aria-hidden="true"
             />
-            <span className="flex-1 text-muted-foreground">{row.label}</span>
+            <span className="flex-1 text-muted-foreground">{t(row.labelKey)}</span>
             <span
               className="whitespace-nowrap font-mono font-medium tabular-nums text-foreground"
               title={row.key === "records" ? undefined : `${formatTokenExact(row.value)} Token`}
               aria-label={row.key === "records" ? undefined : `${formatTokenExact(row.value)} Token`}
             >
-              {row.key === "records" ? exact.format(row.value) : formatTokenCompact(row.value)} {row.key === "records" ? "次" : "Token"}
+              {row.key === "records" ? exact.format(row.value) : formatTokenCompact(row.value)} {row.key === "records" ? t("wbStats.token.unitCalls") : "Token"}
               {row.key !== "records" ? (
                 <span className="ml-1 font-sans text-[11px] font-normal text-muted-foreground">
                   ({percentage(row.value, total)})
@@ -621,6 +627,7 @@ function TrendTooltipContent({
 }
 
 function TrendChart({ source }: { source: TokenStatsSource }) {
+  const t = useT();
   const [range, setRange] = useState<RangeKey>("30d");
   const [modelFilter, setModelFilter] = useState("all");
   const modelOptions = useMemo(
@@ -645,14 +652,12 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
 
   return (
     <section className="min-w-0 space-y-2.5" aria-labelledby="token-trend-title">
-      <SectionTitle id="token-trend-title">
-        Token 与调用趋势
-      </SectionTitle>
+      <SectionTitle id="token-trend-title">{t("wbStats.token.trendTitle")}</SectionTitle>
       <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
         <CardHeader className="gap-0 px-4 pt-3 pb-0 sm:px-5">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
             <CardDescription className="min-w-0 text-xs">
-              彩色堆叠柱表示每日总 Token 及构成，虚线表示调用次数。
+              {t("wbStats.token.trendDesc")}
             </CardDescription>
             <div className="flex max-w-full flex-wrap items-center gap-2">
               <DropdownMenu>
@@ -661,16 +666,16 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
                     variant="ghost"
                     size="sm"
                     className="h-8 max-w-[190px] gap-1.5 px-2.5 text-xs text-muted-foreground hover:text-foreground"
-                    aria-label="按模型筛选"
+                    aria-label={t("wbStats.token.filterByModel")}
                   >
                     <SlidersHorizontal className="size-3.5 shrink-0" />
-                    <span className="truncate">{modelFilter === "all" ? "所有模型" : modelFilter}</span>
+                    <span className="truncate">{modelFilter === "all" ? t("wbStats.token.allModels") : modelFilter}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="max-h-80 w-56 overflow-y-auto">
                   <DropdownMenuItem onSelect={() => setModelFilter("all")}>
                     <SlidersHorizontal className="size-3.5 shrink-0" />
-                    所有模型
+                    {t("wbStats.token.allModels")}
                     {modelFilter === "all" && <Check className="ml-auto size-3.5 shrink-0" />}
                   </DropdownMenuItem>
                   {modelOptions.length > 0 && <DropdownMenuSeparator />}
@@ -682,7 +687,7 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
-              <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label="趋势范围">
+              <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label={t("wbStats.token.trendRangeAria")}>
               {RANGE_OPTIONS.map((option) => (
                 <button
                   key={option.key}
@@ -695,7 +700,7 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
                   onClick={() => setRange(option.key)}
                   aria-pressed={range === option.key}
                 >
-                  {option.label}
+                  {t(option.label)}
                 </button>
               ))}
               </div>
@@ -705,7 +710,7 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
         <CardContent className="min-w-0 px-4 pt-3 pb-4 sm:px-5">
           {chartData.length === 0 ? (
             <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-              当前范围暂无可展示的 Token 数据。
+              {t("wbStats.token.emptyRange")}
             </div>
           ) : (
             <>
@@ -713,7 +718,7 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
                 <TrendLegend />
               </div>
               <div className="mb-1 flex items-center justify-end px-1 text-[11px] font-medium text-muted-foreground">
-                <span className="font-normal">左轴：Token · 右轴：调用次数</span>
+                <span className="font-normal">{t("wbStats.token.axisNote")}</span>
               </div>
               <ChartContainer config={chartConfig} className="h-64 w-full sm:h-72">
                 <ComposedChart
@@ -782,15 +787,15 @@ function TrendChart({ source }: { source: TokenStatsSource }) {
               </ChartContainer>
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                 <span>
-                  {rangeLabel(range)}合计 {formatTokenCompact(tokenTotal(totals))} Token · {exact.format(totals.records)} 次调用
+                  {t(rangeLabel(range))} {t("wbStats.token.trendSummary", { total: formatTokenCompact(tokenTotal(totals)), calls: exact.format(totals.records) })}
                 </span>
-                <span>数据覆盖至 {formatDateTime(source.coverageEndAt)}</span>
+                <span>{t("wbStats.token.coverage", { date: formatDateTime(source.coverageEndAt) })}</span>
               </div>
               <p className="sr-only">
                 {chartData
                   .map(
                     (point) =>
-                      `${point.date} 使用 ${formatTokenCompact(tokenTotal(point))} Token，${exact.format(point.records)} 次调用`,
+                      t("wbStats.token.srSummary", { date: point.date, total: formatTokenCompact(tokenTotal(point)), calls: exact.format(point.records) }),
                   )
                   .join("；")}
               </p>
@@ -811,6 +816,7 @@ const HEATMAP_LEVEL_CLASS = [
 ] as const;
 
 function Heatmap({ groups }: { groups: TokenStatsGroup[] }) {
+  const t = useT();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const valueByDate = new Map(groups.map((group) => [group.key, tokenTotal(group)]));
   const recordByDate = new Map(groups.map((group) => [group.key, group.records]));
@@ -863,12 +869,12 @@ function Heatmap({ groups }: { groups: TokenStatsGroup[] }) {
 
   return (
     <section className="min-w-0 space-y-2.5" aria-labelledby="token-heatmap-title">
-      <SectionTitle id="token-heatmap-title">Token 活动</SectionTitle>
+      <SectionTitle id="token-heatmap-title">{t("wbStats.token.heatmapTitle")}</SectionTitle>
       <Card className="min-w-0 gap-0 rounded-xl py-0 shadow-none">
         <CardHeader className="px-4 pt-4 pb-0 sm:px-5">
           <div className="flex items-center justify-between gap-3">
-            <CardDescription className="text-xs">最近一年按天显示 Token 活跃度。</CardDescription>
-            <span className="shrink-0 text-xs font-medium text-foreground">每日</span>
+            <CardDescription className="text-xs">{t("wbStats.token.heatmapDesc")}</CardDescription>
+            <span className="shrink-0 text-xs font-medium text-foreground">{t("wbStats.token.heatmapDaily")}</span>
           </div>
         </CardHeader>
         <CardContent className="min-w-0 px-4 pt-5 pb-5 sm:px-5">
@@ -876,7 +882,7 @@ function Heatmap({ groups }: { groups: TokenStatsGroup[] }) {
             <div
               className="min-w-[760px]"
               role="img"
-              aria-label={`最近一年每日 Token 活动热力图，共 ${activeDays} 个活跃日`}
+              aria-label={t("wbStats.token.heatmapAria", { activeDays })}
             >
               <div
                 className="grid gap-1"
@@ -895,7 +901,7 @@ function Heatmap({ groups }: { groups: TokenStatsGroup[] }) {
                           day.future ? "opacity-0" : HEATMAP_LEVEL_CLASS[level]
                         }`}
                         style={{ gridColumn: weekIndex + 1, gridRow: dayIndex + 1 }}
-                        aria-label={`${formatHeatmapDate(day.date)}使用了 ${formatTokenExact(day.value)} 个 Token`}
+                        aria-label={t("wbStats.token.heatmapCell", { date: formatHeatmapDate(day.date), count: formatTokenExact(day.value) })}
                       />
                     );
 
@@ -909,8 +915,8 @@ function Heatmap({ groups }: { groups: TokenStatsGroup[] }) {
                           sideOffset={7}
                           className="pointer-events-none rounded-lg bg-foreground px-2.5 py-1.5 text-xs leading-4 text-background shadow-md"
                         >
-                          {formatHeatmapDate(day.date)} 使用了 {formatTokenCompact(day.value)} 个 Token
-                          {day.records > 0 ? ` · ${exact.format(day.records)} 次调用` : ""}
+                          {t("wbStats.token.heatmapTip", { date: formatHeatmapDate(day.date), count: formatTokenCompact(day.value) })}
+                          {day.records > 0 ? ` · ${t("wbStats.token.heatmapCalls", { calls: exact.format(day.records) })}` : ""}
                         </TooltipContent>
                       </Tooltip>
                     );
@@ -947,6 +953,7 @@ function Ranking({
   description: string;
   controls?: ReactNode;
 }) {
+  const t = useT();
   const rows = groups.slice(0, RANKING_LIMIT);
 
   return (
@@ -992,7 +999,7 @@ function Ranking({
         })}
         {rows.length === 0 && (
           <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-            暂无统计数据
+            {t("wbStats.token.emptyRank")}
           </div>
         )}
       </CardContent>
@@ -1001,20 +1008,21 @@ function Ranking({
 }
 
 function SessionRanking({ groups, denominator }: { groups: TokenStatsGroup[]; denominator: number }) {
+  const t = useT();
   const rows = groups.slice(0, RANKING_LIMIT);
 
   return (
     <section className="min-w-0 space-y-2.5" aria-labelledby="token-sessions-title">
-      <SectionTitle id="token-sessions-title">消耗最高的会话</SectionTitle>
+      <SectionTitle id="token-sessions-title">{t("wbStats.token.sessionsTitle")}</SectionTitle>
       <Card className="min-w-0 gap-0 rounded-xl py-0 shadow-none">
         <CardHeader className="px-4 pt-3 pb-0 sm:px-5">
-          <CardDescription className="text-xs">按本地聚合 Token 从高到低排列。</CardDescription>
+          <CardDescription className="text-xs">{t("wbStats.token.sessionsDesc")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 px-4 pt-3 pb-5 sm:px-5">
           {rows.map((row, index) => {
             const amount = tokenTotal(row);
             const share = percentage(amount, denominator);
-            const label = row.title?.trim() || "未命名会话";
+            const label = row.title?.trim() || t("wbStats.token.unnamedSession");
             const detail = [row.project, row.title ? undefined : row.sessionId]
               .filter(Boolean)
               .join(" · ");
@@ -1056,7 +1064,7 @@ function SessionRanking({ groups, denominator }: { groups: TokenStatsGroup[]; de
           })}
           {rows.length === 0 && (
             <div className="rounded-lg border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-              暂无统计数据
+              {t("wbStats.token.emptyRank")}
             </div>
           )}
         </CardContent>
@@ -1066,22 +1074,23 @@ function SessionRanking({ groups, denominator }: { groups: TokenStatsGroup[]; de
 }
 
 function Distribution({ source }: { source: TokenStatsSource }) {
+  const t = useT();
   const [distribution, setDistribution] = useState<DistributionKey>("projects");
   const groups = source[distribution];
 
   return (
     <section className="min-w-0 space-y-2.5" aria-labelledby="token-distribution-title">
-      <SectionTitle id="token-distribution-title">用量分布</SectionTitle>
+      <SectionTitle id="token-distribution-title">{t("wbStats.token.distTitle")}</SectionTitle>
       <Ranking
         groups={groups}
         denominator={tokenTotal(source.summary)}
         description={
           distribution === "projects"
-            ? "按项目汇总本地 Token 用量。"
-            : "按模型汇总本地 Token 用量。"
+            ? t("wbStats.token.rankProjectsDesc")
+            : t("wbStats.token.rankModelsDesc")
         }
         controls={
-          <div className="flex rounded-lg bg-muted p-1" role="group" aria-label="用量分布维度">
+          <div className="flex rounded-lg bg-muted p-1" role="group" aria-label={t("wbStats.token.distAria")}>
             <Button
               type="button"
               variant="ghost"
@@ -1094,7 +1103,7 @@ function Distribution({ source }: { source: TokenStatsSource }) {
               aria-pressed={distribution === "projects"}
               onClick={() => setDistribution("projects")}
             >
-              按项目
+              {t("wbStats.token.byProject")}
             </Button>
             <Button
               type="button"
@@ -1108,7 +1117,7 @@ function Distribution({ source }: { source: TokenStatsSource }) {
               aria-pressed={distribution === "models"}
               onClick={() => setDistribution("models")}
             >
-              按模型
+              {t("wbStats.token.byModel")}
             </Button>
           </div>
         }
@@ -1118,6 +1127,7 @@ function Distribution({ source }: { source: TokenStatsSource }) {
 }
 
 function Dashboard({ source }: { source: TokenStatsSource }) {
+  const t = useT();
   const denominator = tokenTotal(source.summary);
 
   if (source.summary.records === 0) {
@@ -1125,12 +1135,12 @@ function Dashboard({ source }: { source: TokenStatsSource }) {
       <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
         <div>
           {source.filesScanned > 0
-            ? `已扫描 ${exact.format(source.filesScanned)} 个会话文件，但没有可用的 usage。`
-            : "尚未发现该来源的本地会话日志。"}
+            ? t("wbStats.token.scannedFiles", { count: exact.format(source.filesScanned) })
+            : t("wbStats.token.noLogs")}
         </div>
         {source.parseErrors > 0 && (
           <div className="mt-2 text-xs text-amber-600">
-            已跳过 {exact.format(source.parseErrors)} 条无法解析的本地记录。
+            {t("wbStats.token.skippedRecords", { count: exact.format(source.parseErrors) })}
           </div>
         )}
       </div>
@@ -1147,7 +1157,7 @@ function Dashboard({ source }: { source: TokenStatsSource }) {
       {source.parseErrors > 0 && (
         <p className="flex items-center gap-1.5 px-1 text-xs text-amber-600">
           <CircleAlert className="size-3.5" aria-hidden="true" />
-          已跳过 {exact.format(source.parseErrors)} 条无法解析的本地记录。
+          {t("wbStats.token.skippedRecords", { count: exact.format(source.parseErrors) })}
         </p>
       )}
     </div>
@@ -1155,16 +1165,17 @@ function Dashboard({ source }: { source: TokenStatsSource }) {
 }
 
 function TokenStatsLoadingSkeleton() {
+  const t = useT();
   return (
     <div
       className="min-w-0 space-y-12"
       role="status"
-      aria-label="正在扫描本地会话日志…"
+      aria-label={t("wbStats.token.scanning")}
     >
-      <span className="sr-only">正在扫描本地会话日志…</span>
+      <span className="sr-only">{t("wbStats.token.scanning")}</span>
       <p className="flex items-center gap-2 text-sm text-muted-foreground" aria-hidden="true">
         <span className="size-1.5 rounded-full bg-primary/70" />
-        正在扫描本地会话日志…
+        {t("wbStats.token.scanning")}
       </p>
 
       <section className="min-w-0 space-y-2.5" aria-hidden="true">
@@ -1273,6 +1284,7 @@ export default function TokenStatsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const t = useT();
 
   // region 是页面级数据源：切换即重新取数；旧结果保留到新结果返回，避免闪白。
   useEffect(() => {
@@ -1336,10 +1348,10 @@ export default function TokenStatsPage() {
             </div>
           ) : (
             <>
-              <h1 className="text-[28px] font-semibold tracking-tight">Token 统计</h1>
+              <h1 className="text-[28px] font-semibold tracking-tight">{t("wbStats.token.pageTitle")}</h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                当前数据更新于 {stats ? formatDateTime(stats.generatedAt) : "—"}
-                {region === "all" && "（国内版 + 国际版）"}
+                {t("wbStats.token.updatedPrefix")} {stats ? formatDateTime(stats.generatedAt) : "—"}
+                {region === "all" && t("wbStats.token.bothRegions")}
               </p>
             </>
           )}
@@ -1354,7 +1366,7 @@ export default function TokenStatsPage() {
               disabled={loading}
             >
               {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              刷新统计
+              {t("wbStats.token.refresh")}
             </Button>
           </DemoAction>
         </div>
@@ -1366,18 +1378,18 @@ export default function TokenStatsPage() {
           value={region}
           onChange={setRegion}
           disabled={loading}
-          ariaLabel="Token 统计范围"
+          ariaLabel={t("wbStats.token.scopeAria")}
         />
       </div>
 
       {error && (
         <Alert variant="destructive" className="mb-5">
           <CircleAlert />
-          <AlertTitle>统计加载失败</AlertTitle>
+          <AlertTitle>{t("wbStats.token.loadFailed")}</AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-3">
             <span>{error}</span>
             <Button size="sm" variant="outline" onClick={() => setReload((value) => value + 1)}>
-              重试
+              {t("wbStats.token.retry")}
             </Button>
           </AlertDescription>
         </Alert>
@@ -1399,7 +1411,7 @@ export default function TokenStatsPage() {
                 persistPreferredTokenSource(value);
               }}
             >
-              <TabsList className="h-auto max-w-full flex-wrap" aria-label="Token 数据来源">
+              <TabsList className="h-auto max-w-full flex-wrap" aria-label={t("wbStats.token.sourceAria")}>
                 {visibleSources.map((key) => (
                   <TabsTrigger key={key} className="max-w-full whitespace-normal" value={key}>
                     {SOURCE_LABELS[key]}
@@ -1412,14 +1424,14 @@ export default function TokenStatsPage() {
             <Dashboard source={source} />
           ) : (
             <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
-              {regionFilterLabel(region)}范围下暂无可用数据来源，请点击刷新重试。
+              {t("wbStats.token.noSource", { scope: regionFilterLabel(region) })}
             </div>
           )}
         </div>
       ) : (
         !error && (
           <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
-            该来源暂无可用统计数据，请点击刷新重试。
+            {t("wbStats.token.noStats")}
           </div>
         )
       )}

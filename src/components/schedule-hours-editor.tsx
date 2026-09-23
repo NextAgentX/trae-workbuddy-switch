@@ -5,6 +5,7 @@ import { Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 
 /**
  * 某一类定时任务的**小时列表编辑器**：以标签展示当前小时点，可逐个删除或新增。
@@ -32,6 +33,7 @@ export function HoursEditor({
   disabled?: boolean;
   onChange: (hours: number[]) => void;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -39,11 +41,11 @@ export function HoursEditor({
     const raw = draft.trim();
     const value = Number(raw);
     if (raw === "" || !Number.isInteger(value) || value < 0 || value > 23) {
-      setError("小时必须是 0-23 之间的整数");
+      setError(t("wbSettings.schedule.hourInvalid"));
       return;
     }
     if (hours.includes(value)) {
-      setError(`${value} 点已在列表中`);
+      setError(t("wbSettings.schedule.hourDuplicate", { hour: value }));
       return;
     }
     setError(null);
@@ -55,14 +57,14 @@ export function HoursEditor({
     <div className="flex w-full flex-col items-end gap-2 sm:w-auto">
       <div className="flex w-full flex-wrap items-center justify-end gap-1.5">
         {hours.length === 0 ? (
-          <span className="text-xs text-muted-foreground">未设置小时点</span>
+          <span className="text-xs text-muted-foreground">{t("wbSettings.schedule.hourEmpty")}</span>
         ) : (
           hours.map((hour) => (
             <Badge key={hour} variant="secondary" className="gap-1 pr-1 font-mono">
               {String(hour).padStart(2, "0")}:00
               <button
                 type="button"
-                aria-label={`移除 ${hour} 点`}
+                aria-label={t("wbSettings.schedule.hourRemoveAria", { hour })}
                 className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
                 disabled={disabled}
                 onClick={() => onChange(hours.filter((h) => h !== hour))}
@@ -97,7 +99,7 @@ export function HoursEditor({
         />
         <Button type="button" size="sm" variant="outline" onClick={add} disabled={disabled}>
           <Plus />
-          添加
+          {t("wbSettings.schedule.hourAdd")}
         </Button>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}

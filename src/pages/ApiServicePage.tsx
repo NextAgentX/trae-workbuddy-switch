@@ -24,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { useT } from "@/lib/i18n";
 import { resolveGatewayBaseUrl, resolveGatewayRunning } from "@/lib/gateway";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
@@ -33,13 +34,15 @@ import { useGatewayStore } from "@/stores/gateway";
 const LOOPBACK = "127.0.0.1";
 const LAN = "0.0.0.0";
 
-function representativeKey(keys: ApiKeyRecord[], region: Region): string {
+/** 无启用中的 Key 时返回 null，由渲染处给出占位提示文案。 */
+function representativeKey(keys: ApiKeyRecord[], region: Region): string | null {
   const active = keys.find((key) => key.region === region && !key.revoked);
-  return active ? `${active.prefix}…` : "sk-wb-…（在下方 Key 列表创建）";
+  return active ? `${active.prefix}…` : null;
 }
 
 /** 「API 服务」页：网关开关、监听、Base URL、Key、模型、策略、接入指引、请求日志（P0-11）。 */
 export default function ApiServicePage() {
+  const t = useT();
   const config = useGatewayStore((s) => s.config);
   const status = useGatewayStore((s) => s.status);
   const keys = useGatewayStore((s) => s.keys);
@@ -65,7 +68,7 @@ export default function ApiServicePage() {
     try {
       await saveConfig({ ...config, ...next });
     } catch (e) {
-      toast.error("保存失败", { description: api.asError(e) });
+      toast.error(t("wbStats.gateway.saveFail"), { description: api.asError(e) });
     } finally {
       setSaving(false);
     }
@@ -89,7 +92,7 @@ export default function ApiServicePage() {
   function commitPort() {
     const parsed = Number.parseInt(portDraft, 10);
     if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) {
-      toast.error("端口需为 1-65535 之间的整数");
+      toast.error(t("wbStats.gateway.portRange"));
       setPortDraft(String(config.port));
       return;
     }
@@ -103,16 +106,16 @@ export default function ApiServicePage() {
   return (
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
       <header className="mb-6">
-        <h1 className="text-[28px] font-semibold tracking-tight">API 服务</h1>
+        <h1 className="text-[28px] font-semibold tracking-tight">{t("wbStats.gateway.title")}</h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          把 WorkBuddy 的模型额度以 OpenAI / Anthropic 兼容接口提供给本机工具。
+          {t("wbStats.gateway.desc")}
         </p>
       </header>
 
       {error && (
         <Alert variant="destructive" className="mb-4">
           <AlertTriangle />
-          <AlertTitle>操作失败</AlertTitle>
+          <AlertTitle>{t("wbStats.gateway.opFail")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
@@ -123,9 +126,9 @@ export default function ApiServicePage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Power className="size-4 text-muted-foreground" />
-              启用 API 网关
+              {t("wbStats.gateway.enableGateway")}
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">开启后本机 AI 工具可通过下方地址调用 WorkBuddy 模型。</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("wbStats.gateway.enableDesc")}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {saving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
@@ -134,7 +137,7 @@ export default function ApiServicePage() {
                 checked={config.enabled}
                 disabled={saving}
                 onCheckedChange={(enabled) => void persist({ enabled })}
-                aria-label="启用 API 网关"
+                aria-label={t("wbStats.gateway.enableAria")}
               />
             </DemoAction>
           </div>
@@ -142,19 +145,19 @@ export default function ApiServicePage() {
 
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3 px-5 py-4">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">监听地址</span>
+            <span className="text-xs text-muted-foreground">{t("wbStats.gateway.bindAddr")}</span>
             <Select value={config.bind_addr} onValueChange={onBindAddrChange} disabled={saving}>
-              <SelectTrigger size="sm" className="w-52" aria-label="监听地址">
+              <SelectTrigger size="sm" className="w-52" aria-label={t("wbStats.gateway.bindAddrAria")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={LOOPBACK}>127.0.0.1（仅本机）</SelectItem>
-                <SelectItem value={LAN}>0.0.0.0（局域网）</SelectItem>
+                <SelectItem value={LOOPBACK}>{t("wbStats.gateway.loopback")}</SelectItem>
+                <SelectItem value={LAN}>{t("wbStats.gateway.lan")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">监听端口</span>
+            <span className="text-xs text-muted-foreground">{t("wbStats.gateway.port")}</span>
             <DemoAction>
               <Input
                 className="h-8 w-28"
@@ -165,15 +168,15 @@ export default function ApiServicePage() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") commitPort();
                 }}
-                aria-label="监听端口"
+                aria-label={t("wbStats.gateway.portAria")}
               />
             </DemoAction>
           </div>
           <span className="flex items-center gap-1.5 text-xs">
-            状态：
+            {t("wbStats.gateway.status")}
             <span className={cn("inline-flex items-center gap-1.5 font-medium", running ? "text-emerald-600" : "text-muted-foreground")}>
               <span className={cn("size-2 rounded-full", running ? "bg-emerald-500" : "bg-muted-foreground/50")} />
-              {running ? "运行中" : "已停止"}
+              {running ? t("wbStats.gateway.running") : t("wbStats.gateway.stopped")}
             </span>
           </span>
         </div>
@@ -182,7 +185,7 @@ export default function ApiServicePage() {
       {/* 接入地址（按版本） */}
       <Card className="mb-6 gap-0 py-0">
         <div className="border-b border-border/60 px-5 py-3">
-          <span className="text-sm font-semibold">接入地址（按版本）</span>
+          <span className="text-sm font-semibold">{t("wbStats.gateway.addrByVersion")}</span>
         </div>
         <div className="divide-y divide-border/60">
           {REGIONS.map((region) => (
@@ -191,14 +194,16 @@ export default function ApiServicePage() {
               <div className="mt-2 flex flex-wrap items-center gap-3">
                 <span className="text-xs text-muted-foreground">Base URL</span>
                 <code className="rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs">{baseUrl}</code>
-                <Button variant="ghost" size="sm" onClick={() => void copyText(baseUrl, "Base URL 已复制")}>
+                <Button variant="ghost" size="sm" onClick={() => void copyText(baseUrl, t("wbStats.gateway.baseUrlCopied"))}>
                   <Copy />
-                  复制
+                  {t("wbStats.gateway.copy")}
                 </Button>
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                 <span>API Key</span>
-                <code className="font-mono">{representativeKey(keys, region)}</code>
+                <code className="font-mono">
+                  {representativeKey(keys, region) ?? t("wbStats.gateway.keyPlaceholder")}
+                </code>
               </div>
             </div>
           ))}
@@ -215,17 +220,17 @@ export default function ApiServicePage() {
       <Dialog open={riskOpen} onOpenChange={setRiskOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>允许局域网访问</DialogTitle>
+            <DialogTitle>{t("wbStats.gateway.allowLanTitle")}</DialogTitle>
             <DialogDescription>
-              局域网内任何设备都可消耗你的额度，请确认可信网络后再开启。网关仍要求携带有效 API Key。
+              {t("wbStats.gateway.allowLanDesc")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRiskOpen(false)}>
-              取消
+              {t("wbStats.gateway.cancel")}
             </Button>
             <Button variant="destructive" onClick={confirmLan}>
-              确认开启
+              {t("wbStats.gateway.confirmOpen")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -234,7 +239,7 @@ export default function ApiServicePage() {
       {loading && (
         <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="animate-spin" />
-          加载网关数据…
+          {t("wbStats.gateway.loadingData")}
         </div>
       )}
     </div>

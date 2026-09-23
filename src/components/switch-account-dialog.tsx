@@ -18,7 +18,9 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import * as api from "@/lib/api";
+import { decodeError } from "@/lib/error-code";
 import { REGIONS, regionLabel } from "@/lib/region";
+import { useT, type Translate } from "@/lib/i18n";
 import type { AccountMeta, MigrateResult, Region, Session } from "@/lib/types";
 
 interface Props {
@@ -55,6 +57,7 @@ interface SwitchDefaults {
 
 /** 切换账号弹窗：可勾选当前账号的会话复制到目标账号（路径 B）。 */
 export function SwitchAccountDialog({ open, onOpenChange, account, onDone, region, copySessionsByDefault = false }: Props) {
+  const t = useT();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [copySessions, setCopySessions] = useState(false);
@@ -184,7 +187,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
   async function doSwitch() {
     if (!account) return;
     setBusy(true);
-    setProgress("正在切换账号…");
+    setProgress(t("wbAccounts.dialog.switchProgress"));
     setError("");
     const parts: string[] = [];
     const warnings: string[] = [];
@@ -194,7 +197,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
       // 至少勾选一个迁移范围时才发请求：后端对空范围返回 400「未指定任何迁移范围」，
       // 两者都关时**完全不要调用**，否则用户会看到一个莫名其妙的错误。
       if (migrateMemory || migrateConnectors) {
-        setProgress("正在迁移账号数据…");
+        setProgress(t("wbAccounts.dialog.migrateProgress"));
         // 只请求勾选的分区；未请求的分区不会出现在响应里（见 summarizeMigration）。
         const mig = await api.migrateAccountData(account.id, {
           region,
@@ -202,10 +205,10 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
           memory: migrateMemory,
           connectors: migrateConnectors,
         });
-        parts.push(...summarizeMigration(mig, warnings));
+        parts.push(...summarizeMigration(mig, warnings, t));
       }
 
-      setProgress("正在切换账号…");
+      setProgress(t("wbAccounts.dialog.switchProgress"));
       const res = await api.switchAccount({
         accountId: account.id,
         region,
@@ -214,23 +217,26 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
         sourceRegion: sourceRegion === region ? undefined : sourceRegion,
         copySessionIds: copySessions ? [...selected] : undefined,
       });
-      const nickname = account.nickname || account.email || account.uid || "该账号";
+      const nickname =
+        account.nickname || account.email || account.uid || t("wbAccounts.common.unknownAccount");
       if (res.sessionCopy?.copied.length) {
-        parts.push(`已复制 ${res.sessionCopy.copied.length} 个会话`);
+        parts.push(t("wbAccounts.dialog.copiedSessions", { n: res.sessionCopy.copied.length }));
       }
       if (res.sessionCopy?.skipped?.length) {
-        parts.push(`跳过 ${res.sessionCopy.skipped.length} 个已存在副本`);
+        parts.push(t("wbAccounts.dialog.skippedSessions", { n: res.sessionCopy.skipped.length }));
       }
-      if (res.backup) parts.push(`备份: ${res.backup}`);
+      if (res.backup) parts.push(t("wbAccounts.dialog.backup", { path: res.backup }));
 
-      const description = parts.length ? parts.join("；") : "WorkBuddy 已重启为目标账号。";
+      const description = parts.length
+        ? parts.join(t("wbAccounts.dialog.listSeparator"))
+        : t("wbAccounts.dialog.switchedDefault");
       if (warnings.length) {
         // 部分迁移失败但未阻断切换：明确降级为警告，避免用户误以为全部成功。
-        toast.warning(`已切换至「${nickname}」，但部分迁移未完成`, {
-          description: `${warnings.join("；")}。${description}`,
+        toast.warning(t("wbAccounts.dialog.switchedWarn", { name: nickname }), {
+          description: `${warnings.join(t("wbAccounts.dialog.listSeparator"))}。${description}`,
         });
       } else {
-        toast.success(`已切换至「${nickname}」`, { description });
+        toast.success(t("wbAccounts.dialog.switchedOk", { name: nickname }), { description });
       }
       onOpenChange(false);
       onDone?.();
@@ -255,18 +261,35 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
   /** 权限自检：确认完全磁盘访问是否生效。 */
   const [permCheck, setPermCheck] = useState<string | null>(null);
   async function runPermissionCheck() {
-    setPermCheck("检测中…");
+    setPermCheck(t("wbAccounts.dialog.permissionChecking"));
     try {
       const res = await api.checkAuthPermission();
-      setPermCheck(res.ok ? `✓ ${res.message}` : `✗ ${res.error}（${res.dir}）`);
+      setPermCheck(
+        res.ok
+          ? `✓ ${res.message}`
+          : t("wbAccounts.dialog.permissionFailDir", { error: res.error ?? "", dir: res.dir ?? "" }),
+      );
     } catch (e) {
-      setPermCheck(`✗ ${api.asError(e)}`);
+      setPermCheck(t("wbAccounts.dialog.permissionFail", { error: api.asError(e) }));
     }
+  }
+
+  /**
+   * 判定「是否因缺少完全磁盘访问权限而失败」。
+   *
+   * ⚠️ **不能按当前界面语言去找中文关键词**：文案会随语言切换，一旦变成英文，
+   * `error.includes("无权限")` 永远为假 ⇒ 授权引导整块**静默失效**。
+   * 因此以**结构化错误码**（`permission.denied`，见 `lib/error-code.ts`）为准，
+   * 中文子串只作为**旧版本后端**的兼容兜底。
+   */
+  function permissionDenied(raw: string): boolean {
+    const decoded = decodeError(raw);
+    return decoded.code === "permission.denied" || decoded.text.includes("无权限");
   }
 
   // 出现「无权限」错误时，自动每 2s 轮询一次授权状态；用户拖入 app 授权成功后自动恢复
   useEffect(() => {
-    if (!error.includes("无权限")) return;
+    if (!permissionDenied(error)) return;
     let cancelled = false;
     let timer: number | undefined;
     const check = async () => {
@@ -274,7 +297,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
         const res = await api.checkAuthPermission();
         if (res.ok) {
           if (!cancelled) {
-            setPermCheck("✓ 授权成功，可以重新切换了");
+            setPermCheck(t("wbAccounts.dialog.permissionOk"));
             setError("");
           }
           return;
@@ -289,24 +312,27 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [error]);
+  }, [error, t]);
 
   const copyCount = copySessions ? selected.size : 0;
   const targetRegion: Region = region ?? "cn";
   const crossRegion = sourceRegion !== targetRegion;
-  const needsPermission = error.includes("无权限");
+  const needsPermission = permissionDenied(error);
   const sessionsEmpty = !loadingSessions && sessions.length === 0;
   const copyHint = loadingSessions
-    ? "正在加载会话…"
+    ? t("wbAccounts.dialog.copyHintLoading")
     : error && sessionsEmpty
-      ? "无法加载会话列表，暂不能复制"
+      ? t("wbAccounts.dialog.copyHintErrorEmpty")
       : sessionsEmpty
         ? currentUid
-          ? "当前账号暂无会话，无法复制"
-          : "未检测到当前登录账号，无法列出会话"
+          ? t("wbAccounts.dialog.copyHintEmptyCurrent")
+          : t("wbAccounts.dialog.copyHintNoCurrent")
         : crossRegion
-          ? `把${regionLabel(sourceRegion)}当前账号勾选的会话以新 id 复制到${regionLabel(targetRegion)}目标账号`
-          : "将当前账号勾选的会话以新 id 复制给目标账号（云端归属目标）";
+          ? t("wbAccounts.dialog.copyHintCross", {
+              from: regionLabel(sourceRegion),
+              to: regionLabel(targetRegion),
+            })
+          : t("wbAccounts.dialog.copyHintSame");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -315,18 +341,18 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
         className="flex max-h-[min(90vh,calc(100vh-2rem))] min-w-0 flex-col overflow-hidden"
       >
         <DialogHeader className="shrink-0">
-          <DialogTitle>切换到「{account?.nickname || account?.email || account?.uid || "该账号"}」</DialogTitle>
+          <DialogTitle>{t("wbAccounts.dialog.switchTitle", { name: account?.nickname || account?.email || account?.uid || t("wbAccounts.common.unknownAccount") })}</DialogTitle>
           <DialogDescription>
-            切换会关闭并重启 WorkBuddy，认证文件将写入目标账号。
+            {t("wbAccounts.dialog.switchDesc")}
           </DialogDescription>
         </DialogHeader>
 
         {busy && (
           <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 rounded-lg bg-background/85 backdrop-blur-sm">
             <Loader2 className="size-8 animate-spin text-primary" />
-            <p className="text-sm font-medium">{progress || "正在切换账号…"}</p>
+            <p className="text-sm font-medium">{progress || t("wbAccounts.dialog.switchProgress")}</p>
             <p className="max-w-xs text-center text-xs text-muted-foreground">
-              正在处理中，请勿关闭窗口
+              {t("wbAccounts.dialog.switchProcessing")}
             </p>
           </div>
         )}
@@ -334,11 +360,14 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
         <div className="min-h-0 space-y-3 overflow-x-hidden overflow-y-auto">
           <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">数据来源版本</div>
+              <div className="text-sm font-medium">{t("wbAccounts.dialog.sourceVersion")}</div>
               <div className="text-xs text-muted-foreground">
                 {sourceRegion === targetRegion
-                  ? `与目标一致（${regionLabel(targetRegion)}），同版本内搬运`
-                  : `从${regionLabel(sourceRegion)}当前登录账号搬到${regionLabel(targetRegion)}`}
+                  ? t("wbAccounts.dialog.sourceSame", { region: regionLabel(targetRegion) })
+                  : t("wbAccounts.dialog.sourceCross", {
+                      from: regionLabel(sourceRegion),
+                      to: regionLabel(targetRegion),
+                    })}
               </div>
             </div>
             <Tabs
@@ -347,7 +376,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
                 if (next === "cn" || next === "global") setSourceRegion(next);
               }}
             >
-              <TabsList className="h-auto" aria-label="数据来源版本">
+              <TabsList className="h-auto" aria-label={t("wbAccounts.dialog.sourceVersionAria")}>
                 {REGIONS.map((r) => (
                   <TabsTrigger key={r} value={r} className="whitespace-nowrap">
                     {regionLabel(r)}
@@ -359,7 +388,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
 
           <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">复制会话到目标账号</div>
+              <div className="text-sm font-medium">{t("wbAccounts.dialog.copySessions")}</div>
               <div
                 className={
                   sessionsEmpty
@@ -379,11 +408,14 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
 
           <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">迁移长期记忆</div>
+              <div className="text-sm font-medium">{t("wbAccounts.dialog.migrateMemory")}</div>
               <div className="text-xs text-muted-foreground">
                 {crossRegion
-                  ? `把${regionLabel(sourceRegion)}当前账号的长期记忆合并到${regionLabel(targetRegion)}目标账号；按内容去重，只补差集，改写前自动备份原文`
-                  : "合并当前账号的长期记忆到目标账号；按内容去重，只补差集，改写前自动备份原文"}
+                  ? t("wbAccounts.dialog.migrateMemoryDescCross", {
+                      from: regionLabel(sourceRegion),
+                      to: regionLabel(targetRegion),
+                    })
+                  : t("wbAccounts.dialog.migrateMemoryDescSame")}
               </div>
             </div>
             <Switch checked={migrateMemory} onCheckedChange={setMigrateMemory} />
@@ -391,11 +423,14 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
 
           <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">迁移连接器配置</div>
+              <div className="text-sm font-medium">{t("wbAccounts.dialog.migrateConnectors")}</div>
               <div className="text-xs text-muted-foreground">
                 {crossRegion
-                  ? `把${regionLabel(sourceRegion)}当前账号的连接器配置合并到${regionLabel(targetRegion)}目标账号；同名条目递归合并、重复项去重，改写前自动备份原文`
-                  : "合并当前账号的连接器配置到目标账号；同名条目递归合并、重复项去重，改写前自动备份原文"}
+                  ? t("wbAccounts.dialog.migrateConnectorsDescCross", {
+                      from: regionLabel(sourceRegion),
+                      to: regionLabel(targetRegion),
+                    })
+                  : t("wbAccounts.dialog.migrateConnectorsDescSame")}
               </div>
             </div>
             <Switch checked={migrateConnectors} onCheckedChange={setMigrateConnectors} />
@@ -407,14 +442,16 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
               <div className="max-h-[min(20rem,45vh)] overflow-y-auto pr-1">
                 {loadingSessions ? (
                   <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-                    <Loader2 className="animate-spin" /> 加载会话…
+                    <Loader2 className="animate-spin" /> {t("wbAccounts.dialog.loadingSessions")}
                   </div>
                 ) : sessions.length === 0 ? (
                   <p className="py-4 text-center text-sm text-muted-foreground">
-                    {currentUid ? "当前账号暂无会话" : "未检测到当前登录账号，无法列出会话"}
+                    {currentUid
+                      ? t("wbAccounts.dialog.noSessionsCurrent")
+                      : t("wbAccounts.dialog.noSessionsNoCurrent")}
                   </p>
                 ) : (
-                  buildSessionTree(sessions).map((kind) => {
+                  buildSessionTree(sessions, t).map((kind) => {
                     const kindOpen = expanded.has(kind.key);
                     const kindSel = selectionState(kind.sessions, selected);
                     return (
@@ -424,14 +461,17 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
                             allOn={kindSel.allOn}
                             someOn={kindSel.someOn}
                             onChange={() => toggleFolder(kind.sessions.map((s) => s.id))}
-                            ariaLabel={`选择${kind.label}`}
+                            ariaLabel={t("wbAccounts.dialog.selectKind", { label: kind.label })}
                           />
                           <button
                             type="button"
                             className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-accent/50"
                             onClick={() => toggleExpanded(kind.key)}
                             aria-expanded={kindOpen}
-                            aria-label={`${kindOpen ? "折叠" : "展开"}${kind.label}`}
+                            aria-label={t(
+                              kindOpen ? "wbAccounts.dialog.collapse" : "wbAccounts.dialog.expand",
+                              { label: kind.label },
+                            )}
                           >
                             <span className="min-w-0 flex-1 truncate text-sm font-medium">
                               {kind.label}
@@ -467,14 +507,14 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
                                     allOn={folderSel.allOn}
                                     someOn={folderSel.someOn}
                                     onChange={() => toggleFolder(folder.sessions.map((s) => s.id))}
-                                    ariaLabel={`选择文件夹 ${folder.label}`}
+                                    ariaLabel={t("wbAccounts.dialog.selectFolder", { label: folder.label })}
                                   />
                                   <button
                                     type="button"
                                     className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-accent/50"
                                     onClick={() => toggleExpanded(folder.key)}
                                     aria-expanded={folderOpen}
-                                    aria-label={`${folderOpen ? "折叠" : "展开"}文件夹 ${folder.label}`}
+                                    aria-label={t(folderOpen ? "wbAccounts.dialog.collapseFolder" : "wbAccounts.dialog.expandFolder", { label: folder.label })}
                                   >
                                     <Folder className="size-3.5 shrink-0 text-muted-foreground" />
                                     <span className="min-w-0 flex-1 truncate text-sm">
@@ -515,30 +555,27 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
                 {needsPermission && (
                   <div className="mt-2 space-y-2">
                     <div className="rounded-md border bg-muted/60 p-3 text-xs text-muted-foreground">
-                      <p className="mb-1 font-medium text-foreground">如何授权（只需 3 步）：</p>
+                      <p className="mb-1 font-medium text-foreground">{t("wbAccounts.dialog.permissionTitle")}</p>
                       <ol className="list-decimal space-y-1 pl-4">
-                        <li>点击下方「打开完全磁盘访问」</li>
-                        <li>
-                          把 <b>BuddySwitch.app</b> 从 Finder 拖进面板列表（即使没提示框也直接拖），
-                          打开它的开关
-                        </li>
-                        <li>授权后这里会自动检测到，无需其他操作</li>
+                        <li>{t("wbAccounts.dialog.permissionStep1")}</li>
+                        <li>{t("wbAccounts.dialog.permissionStep2")}</li>
+                        <li>{t("wbAccounts.dialog.permissionStep3")}</li>
                       </ol>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button variant="outline" size="sm" onClick={openPermissionSettings}>
                         <ExternalLink />
-                        打开完全磁盘访问
+                        {t("wbAccounts.dialog.openFullDisk")}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void api.revealAppInFinder()}
                       >
-                        在 Finder 中显示
+                        {t("wbAccounts.dialog.showInFinder")}
                       </Button>
                       <Button variant="secondary" size="sm" onClick={runPermissionCheck}>
-                        立即检测
+                        {t("wbAccounts.dialog.checkNow")}
                       </Button>
                     </div>
                   </div>
@@ -551,10 +588,10 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
 
         <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            取消
+            {t("wbAccounts.dialog.cancel")}
           </Button>
           <Button onClick={doSwitch} disabled={busy || (copySessions && copyCount === 0)}>
-            {busy ? "切换中…" : "确认切换"}
+            {busy ? t("wbAccounts.card.switching") : t("wbAccounts.dialog.confirmSwitch")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -613,6 +650,7 @@ function SessionPickRow({
   indentClass: string;
   onToggle: () => void;
 }) {
+  const t = useT();
   return (
     <label
       className={`flex cursor-pointer items-center gap-2.5 rounded-md py-1.5 pr-2 hover:bg-accent/50 ${indentClass}`}
@@ -628,7 +666,7 @@ function SessionPickRow({
       </span>
       {session.hasHistory && (
         <Badge variant="outline" className="shrink-0 text-[10px]">
-          有正文
+          {t("wbAccounts.dialog.hasBody")}
         </Badge>
       )}
     </label>
@@ -653,28 +691,28 @@ function isNoop(section: { changed?: boolean; skipped?: boolean } | undefined): 
  *
  * 分区失败（如只读文件、JSON 损坏）不影响切换本身，因此在界面降级为警告而非错误。
  */
-function summarizeMigration(mig: MigrateResult, warnings: string[]): string[] {
+function summarizeMigration(mig: MigrateResult, warnings: string[], t: Translate): string[] {
   const parts: string[] = [];
 
   if (hasError(mig.memory)) {
-    warnings.push(`记忆迁移失败（${mig.memory.error}）`);
+    warnings.push(t("wbAccounts.dialog.memoryFail", { error: mig.memory.error }));
   } else if (!isNoop(mig.memory) && mig.memory) {
     const { appended, skippedDuplicate } = mig.memory;
     parts.push(
       skippedDuplicate > 0
-        ? `迁移记忆 +${appended} 行（去重 ${skippedDuplicate} 行）`
-        : `迁移记忆 +${appended} 行`,
+        ? t("wbAccounts.dialog.migratedMemory", { n: appended, d: skippedDuplicate })
+        : t("wbAccounts.dialog.migratedMemorySimple", { n: appended }),
     );
   }
 
   if (hasError(mig.connectors)) {
-    warnings.push(`连接器迁移失败（${mig.connectors.error}）`);
+    warnings.push(t("wbAccounts.dialog.connectorFail", { error: mig.connectors.error }));
   } else if (!isNoop(mig.connectors) && mig.connectors) {
     const { addedKeys, droppedDuplicateElements } = mig.connectors;
     parts.push(
       droppedDuplicateElements > 0
-        ? `迁移连接器 +${addedKeys} 键（去重 ${droppedDuplicateElements} 项）`
-        : `迁移连接器 +${addedKeys} 键`,
+        ? t("wbAccounts.dialog.migratedConnectors", { k: addedKeys, d: droppedDuplicateElements })
+        : t("wbAccounts.dialog.migratedConnectorsSimple", { k: addedKeys }),
     );
   }
 
@@ -683,21 +721,23 @@ function summarizeMigration(mig: MigrateResult, warnings: string[]): string[] {
   for (const section of [mig.memory, mig.connectors]) {
     if (section && !hasError(section) && section.backup) backups.push(section.backup);
   }
-  if (backups.length) parts.push(`备份: ${backups.join(" / ")}`);
+  if (backups.length) {
+    parts.push(t("wbAccounts.dialog.backup", { path: backups.join(" / ") }));
+  }
 
   return parts;
 }
 
 /** WorkBuddy 侧栏文件夹名：cwd 最后一段。 */
-function sessionFolderLabel(cwd: string): string {
+function sessionFolderLabel(cwd: string, t: Translate): string {
   const normalized = cwd.trim().replace(/[\\/]+$/, "");
-  if (!normalized) return "未分组";
+  if (!normalized) return t("wbAccounts.dialog.ungrouped");
   const parts = normalized.split(/[\\/]/);
   return parts[parts.length - 1] || normalized;
 }
 
 /** 按工作目录分组，文件夹顺序跟会话一样按最近活动排。 */
-function groupSessionsByFolder(sessions: Session[]): FolderGroup[] {
+function groupSessionsByFolder(sessions: Session[], t: Translate): FolderGroup[] {
   const groups = new Map<string, Session[]>();
   const order: string[] = [];
   for (const session of sessions) {
@@ -712,24 +752,29 @@ function groupSessionsByFolder(sessions: Session[]): FolderGroup[] {
   }
   return order.map((key) => ({
     key,
-    label: key === "__none__" ? "未分组" : sessionFolderLabel(key),
+    label: key === "__none__" ? t("wbAccounts.dialog.ungrouped") : sessionFolderLabel(key, t),
     sessions: groups.get(key) ?? [],
   }));
 }
 
 /** 对齐 WorkBuddy 侧栏：任务（playground）平铺，空间按文件夹分组。 */
-function buildSessionTree(sessions: Session[]): KindGroup[] {
+function buildSessionTree(sessions: Session[], t: Translate): KindGroup[] {
   const tasks = sessions.filter((s) => s.isPlayground);
   const spaces = sessions.filter((s) => !s.isPlayground);
   const groups: KindGroup[] = [];
   if (tasks.length > 0) {
-    groups.push({ key: "task", label: "任务", count: tasks.length, sessions: tasks });
+    groups.push({
+      key: "task",
+      label: t("wbAccounts.dialog.task"),
+      count: tasks.length,
+      sessions: tasks,
+    });
   }
   if (spaces.length > 0) {
-    const folders = groupSessionsByFolder(spaces);
+    const folders = groupSessionsByFolder(spaces, t);
     groups.push({
       key: "space",
-      label: "空间",
+      label: t("wbAccounts.dialog.space"),
       count: folders.length,
       sessions: spaces,
       folders,

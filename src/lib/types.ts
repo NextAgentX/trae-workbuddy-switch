@@ -229,7 +229,7 @@ export interface TravelStatus {
 }
 
 /**
- * 六类定时任务的排程配置（全局单份，无需 region）。
+ * 定时任务的排程配置（全局单份，无需 region；也不需要「当前产品」——两个产品各占一条任务）。
  *
  * 对照 `buddy-switch-core::modules::schedule::ScheduleConfig` 的扁平序列化（`schedule_to_value`）：
  * 每类任务各有独立的 `*_hours`（0-23 的整数列表）与独立的 `*_enabled` 开关。
@@ -247,7 +247,9 @@ export interface ScheduleConfig {
   school_hours: number[];
   /** 夜猫子（猫猫领取）的小时点。 */
   cat_hours: number[];
-  /** 自动签到开关。 */
+  /** Trae 分区自动签到的小时点（第二条产品线，签的是 Trae 自己的区域账号库）。 */
+  trae_checkin_hours: number[];
+  /** 自动签到开关（签 WorkBuddy 的账号）。 */
   checkin_enabled: boolean;
   /** 派猫猫旅行开关。 */
   travel_enabled: boolean;
@@ -259,6 +261,14 @@ export interface ScheduleConfig {
   school_enabled: boolean;
   /** 夜猫子任务开关。 */
   cat_enabled: boolean;
+  /**
+   * Trae 自动签到开关（签 Trae 的区域账号库）。
+   *
+   * ⚠️ **默认 `false`**（后端的默认值，与本产品其他六类不同）：它是本产品新增的能力，
+   * 且会对用户没授权过的外部服务发请求 —— 默认打开等于升级后凭空拿凭据去签到。
+   * 界面因此**不得**把它显示成默认开启。
+   */
+  trae_checkin_enabled: boolean;
   /** 活跃上报每账号每天的对话次数（后端将 0 / 负数归一为 1）。 */
   activity_report_count: number;
 }

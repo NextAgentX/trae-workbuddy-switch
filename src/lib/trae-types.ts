@@ -1,3 +1,5 @@
+import { t } from "@/lib/i18n";
+
 /**
  * Trae 模块前端类型。
  *
@@ -64,6 +66,18 @@ export type TraeProgramId = "trae_work" | "trae_code";
 export type TraeVariantId = TraeRegionId | "trae_work" | "trae_cn" | TraeProgramId;
 
 /**
+ * 程序位的展示名（`TraeWork` / `TraeCode`）。
+ *
+ * ⚠️ 与 {@link traeVariantLabel} 的区别：本函数**只接程序位标识**，返回的就是客户端
+ * 自己的名字。`TraeWork` / `TraeCode` 是品牌名，中英两语相同 —— 之所以仍然过词表，
+ * 是为了让「程序位有哪些、各自叫什么」只有**一处**可查，将来新增程序位时
+ * `zh.ts` 的 `TranslationKey` 会编译期提醒补英文条目。
+ */
+export function traeProgramLabel(program: TraeProgramId): string {
+  return t(program === "trae_code" ? "trae.program.traeCode" : "trae.program.traeWork");
+}
+
+/**
  * `TraeVariantId` → 展示名。
  *
  * 区域 → `国内版` / `国际版`；程序位 → 客户端的官方别名写法。
@@ -75,14 +89,14 @@ export type TraeVariantId = TraeRegionId | "trae_work" | "trae_cn" | TraeProgram
 export function traeVariantLabel(variant: TraeVariantId): string {
   switch (variant) {
     case "cn":
-      return "国内版";
+      return t("shared.region.version.cn");
     case "global":
-      return "国际版";
+      return t("shared.region.version.global");
     case "trae_cn":
     case "trae_code":
-      return "TraeCode";
+      return t("trae.program.traeCode");
     default:
-      return "TraeWork";
+      return t("trae.program.traeWork");
   }
 }
 
@@ -105,11 +119,11 @@ export function traeVariantLabel(variant: TraeVariantId): string {
 export function traeRegionLabelOf(variant: TraeVariantId): string {
   switch (variant) {
     case "global":
-      return "国际版";
+      return t("shared.region.version.global");
     case "cn":
     case "trae_work":
     case "trae_cn":
-      return "国内版";
+      return t("shared.region.version.cn");
     default:
       return traeVariantLabel(variant);
   }
@@ -369,7 +383,20 @@ export interface TraeProfileInfo {
 /** 快照总览（`get_trae_profiles`）。 */
 export interface TraeProfilesOverview {
   profiles: TraeProfileInfo[];
+  /**
+   * 当前登录账号的**身份**（uid）—— 卡片上「是不是当前账号」的相等比较用它。
+   *
+   * ⚠️ 不要拿它直接当**展示文本**（那是一串 16 位数字）；给人看的是
+   * {@link currentAccountName}，后者查不到时由界面回落回本字段。
+   */
   currentAccount: string | null;
+  /**
+   * 当前登录账号的**展示名**（账号库里的 `name`）。
+   *
+   * `null` = 账号库里没有这个 uid（用户刚在客户端登录、尚未采集）—— 这是**正常状态**，
+   * 不是错误：此时界面回落显示 uid。键**始终存在**，`null` 与「键缺失」是两件事。
+   */
+  currentAccountName: string | null;
   dataDir: string | null;
   clientRunning: boolean;
   coreEntryCount: number;

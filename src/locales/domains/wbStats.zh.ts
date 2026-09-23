@@ -73,6 +73,7 @@ export const zh = {
   "wbStats.token.noStats": "该来源暂无可用统计数据，请点击刷新重试。",
   "wbStats.token.trendSummary": "合计 {total} Token · {calls} 次调用",
   "wbStats.token.srSummary": "{date} 使用 {total} Token，{calls} 次调用",
+  "wbStats.token.coverage": "数据覆盖至 {date}",
 
   // ---- 积分统计 ----
   "wbStats.credit.allAccounts": "所有账号",
@@ -189,6 +190,8 @@ export const zh = {
   "wbStats.gateway.refreshFail": "刷新失败",
   "wbStats.gateway.refresh": "刷新",
   "wbStats.gateway.noModels": "暂无模型数据。",
+  "wbStats.gateway.modelTitle": "{name} · 上下文 {context} · 最大输出 {max}",
+  "wbStats.gateway.free": "免费",
   "wbStats.gateway.createKey": "创建 API Key",
   "wbStats.gateway.noKeys": "尚未创建 API Key。",
   "wbStats.gateway.revoked": "已吊销",
@@ -242,6 +245,11 @@ export const zh = {
   "wbStats.gateway.codeCopied": "代码已复制",
   "wbStats.gateway.streamNote": "建议开启流式（stream）；非流式请求会由网关聚合后一次性返回，首字节延迟较长。",
   "wbStats.gateway.noKeyHint": "sk-wb-…（请先在上方创建 Key）",
+  // 可复制配置片段里的字段标签（各客户端片段共用；片段本身是给外部工具粘贴的，故键名保持英文习惯）
+  "wbStats.gateway.snippet.apiBase": "API 地址",
+  "wbStats.gateway.snippet.apiKey": "API 密钥",
+  "wbStats.gateway.snippet.modelPick": "在模型列表中选择，如 GLM-5.3",
+  "wbStats.gateway.snippet.modelPickPlain": "在模型列表中选择",
 
   // ---- 表格表头 ----
   "wbStats.table.name": "名称",
@@ -253,6 +261,7 @@ export const zh = {
 
   // ---- 积分统计（补全） ----
   "wbStats.credit.trendUsageLabel": "{date} 消耗",
+  "wbStats.credit.updatedPrefix": "当前数据更新于",
   "wbStats.credit.filterByDetail": "按账号筛选积分明细",
   "wbStats.credit.bothRegions": "（国内版 + 国际版）",
   "wbStats.credit.refresh": "刷新统计",

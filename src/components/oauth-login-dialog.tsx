@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import type { AccountMeta, Region } from "@/lib/types";
 import { useAccountsStore } from "@/stores/accounts";
 
@@ -24,6 +25,7 @@ interface Props {
 
 /** OAuth 扫码登录采集：发起 → 打开浏览器 → 轮询采集结果 → 入库。 */
 export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
+  const t = useT();
   const reconcileAccounts = useAccountsStore((s) => s.reconcileAccounts);
 
   const [busy, setBusy] = useState(false);
@@ -57,7 +59,7 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
             await reconcileAccounts(region);
             if (!cancelled) setResult(res.result);
           } else if (!cancelled) {
-            setError(res.error || "登录失败");
+            setError(res.error || t("wbAccounts.dialog.oauthLoginFail"));
           }
           if (timer !== undefined) window.clearInterval(timer);
           return;
@@ -96,16 +98,16 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>OAuth 扫码登录</DialogTitle>
+          <DialogTitle>{t("wbAccounts.dialog.oauthTitle")}</DialogTitle>
           <DialogDescription>
-            在浏览器中打开验证链接，扫码授权后将自动采集账号并入库。
+            {t("wbAccounts.dialog.oauthDesc")}
           </DialogDescription>
         </DialogHeader>
 
         {!loginId && !result && (
           <div className="space-y-3">
             <Button onClick={start} disabled={busy} className="w-full">
-              {busy ? "正在发起登录…" : "开始扫码登录"}
+              {busy ? t("wbAccounts.dialog.oauthStarting") : t("wbAccounts.dialog.oauthStart")}
             </Button>
           </div>
         )}
@@ -133,7 +135,7 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
               </AlertDescription>
             </Alert>
             <p className="text-sm text-muted-foreground">
-              正在等待扫码授权，请在浏览器完成操作…
+              {t("wbAccounts.dialog.oauthWaiting")}
             </p>
           </div>
         )}
@@ -141,7 +143,7 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
         {result && (
           <Alert>
             <AlertDescription>
-              已采集账号：{result.nickname || result.email || result.id}
+              {t("wbAccounts.dialog.oauthCollected", { name: result.nickname || result.email || result.id })}
             </AlertDescription>
           </Alert>
         )}
@@ -154,10 +156,10 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            关闭
+            {t("wbAccounts.dialog.oauthClose")}
           </Button>
           {result && (
-            <Button onClick={() => onOpenChange(false)}>完成</Button>
+            <Button onClick={() => onOpenChange(false)}>{t("wbAccounts.dialog.oauthDone")}</Button>
           )}
         </DialogFooter>
       </DialogContent>

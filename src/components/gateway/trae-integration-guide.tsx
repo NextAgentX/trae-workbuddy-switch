@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { copyText } from "@/lib/clipboard";
+import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /** Trae 接入指引覆盖的客户端（Trae 无 region，故比 WorkBuddy 少一个维度）。 */
@@ -17,7 +18,13 @@ const TOOLS = [
 
 type ToolKey = (typeof TOOLS)[number]["key"];
 
-function snippetFor(tool: ToolKey, baseUrl: string, key: string, model: string): string {
+/**
+ * 生成可粘贴的配置片段。
+ *
+ * 同 `integration-guide.tsx`：`t` 只管字段标签，片段里的键名（`apiProvider`、
+ * `apiBase` 等）保持英文 —— 那是外部工具读取的契约。
+ */
+function snippetFor(t: Translate, tool: ToolKey, baseUrl: string, key: string, model: string): string {
   switch (tool) {
     case "cursor":
       return [
@@ -48,7 +55,11 @@ function snippetFor(tool: ToolKey, baseUrl: string, key: string, model: string):
         `    apiKey: ${key}`,
       ].join("\n");
     case "cherry":
-      return [`API 地址: ${baseUrl}`, `API 密钥: ${key}`, `模型: ${model}`].join("\n");
+      return [
+        `${t("trae.gateway.guide.snippet.apiBase")}: ${baseUrl}`,
+        `${t("trae.gateway.guide.snippet.apiKey")}: ${key}`,
+        `${t("trae.gateway.guide.snippet.model")}: ${model}`,
+      ].join("\n");
     default:
       return "";
   }
@@ -77,14 +88,15 @@ export function TraeIntegrationGuide({
   keyPrefix?: string;
   className?: string;
 }) {
+  const t = useT();
   const [tool, setTool] = useState<ToolKey>("cursor");
   const [copied, setCopied] = useState(false);
 
-  const key = keyPrefix ? `${keyPrefix}…` : "sk-trae-…（请先在上方创建 Key）";
-  const snippet = snippetFor(tool, baseUrl, key, model);
+  const key = keyPrefix ? `${keyPrefix}…` : t("trae.gateway.guide.noKey");
+  const snippet = snippetFor(t, tool, baseUrl, key, model);
 
   async function onCopy() {
-    await copyText(snippet, "代码已复制");
+    await copyText(snippet, t("trae.gateway.guide.copied"));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   }
@@ -92,10 +104,10 @@ export function TraeIntegrationGuide({
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">接入指引</span>
+        <span className="text-sm font-semibold">{t("trae.gateway.guide.title")}</span>
         <Button variant="outline" size="sm" onClick={() => void onCopy()}>
           {copied ? <Check /> : <Copy />}
-          复制代码
+          {t("trae.gateway.guide.copy")}
         </Button>
       </div>
 
@@ -114,7 +126,7 @@ export function TraeIntegrationGuide({
             {snippet}
           </pre>
           <p className="mt-2 text-xs text-muted-foreground">
-            Trae 上游只支持流式；请求 `stream: false` 时由本网关在本地聚合后一次性返回，首字节延迟较长。
+            {t("trae.gateway.guide.streamNote")}
           </p>
         </div>
       </Tabs>

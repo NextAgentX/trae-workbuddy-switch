@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { t as translate, useT } from "@/lib/i18n";
 import { GITHUB_RELEASE_URL, openReleaseUrl } from "@/lib/update";
 import type { UpdateInfo } from "@/lib/types";
 
@@ -22,7 +23,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 15_000;
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
-      reject(new Error("检查更新超时，请检查网络连接后重试"));
+      reject(new Error(translate("wbSettings.update.timeoutError")));
     }, timeoutMs);
 
     promise.then(resolve, reject).finally(() => window.clearTimeout(timer));
@@ -74,9 +75,10 @@ export function UpdateInstallDialog({
   onOpenChange,
   update,
 }: UpdateInstallDialogProps) {
+  const t = useT();
   const [stage, setStage] = useState<UpdateStage>("checking");
   const [error, setError] = useState<string | null>(null);
-  const [targetVersion, setTargetVersion] = useState(update?.latest ?? "新版本");
+  const [targetVersion, setTargetVersion] = useState(update?.latest ?? t("wbSettings.update.fallbackVersion"));
   const [received, setReceived] = useState(0);
   const [total, setTotal] = useState(0);
   const [retry, setRetry] = useState(0);
@@ -94,12 +96,12 @@ export function UpdateInstallDialog({
     setTotal(0);
     setDownloadUrl(null);
     setRestarting(false);
-    setTargetVersion(update?.latest ?? "新版本");
+    setTargetVersion(update?.latest ?? t("wbSettings.update.fallbackVersion"));
 
     async function install() {
       try {
         if (api.isWebui()) {
-          throw new Error("浏览器 webui 模式不能直接安装桌面更新包");
+          throw new Error(t("wbSettings.update.webuiError"));
         }
 
         const { check } = await import("@tauri-apps/plugin-updater");
@@ -114,7 +116,7 @@ export function UpdateInstallDialog({
         if (cancelled) return;
         if (!candidate) {
           if (update?.hasUpdate) {
-            setError("发现新版本，但 GitHub Release 暂无可用的签名更新包");
+            setError(t("wbSettings.update.noSignaturePackage"));
             setStage("error");
           } else {
             setStage("latest");
@@ -175,7 +177,7 @@ export function UpdateInstallDialog({
       await api.relaunchApp();
     } catch (e) {
       setRestarting(false);
-      setError(`重启失败：${api.asError(e)}`);
+      setError(t("wbSettings.update.restartFailed", { error: api.asError(e) }));
       setStage("error");
     }
   }
@@ -191,25 +193,25 @@ export function UpdateInstallDialog({
       <DialogContent showCloseButton={!busy && !restarting}>
         <DialogHeader>
           <DialogTitle>
-            {stage === "checking" && "正在检查更新"}
-            {stage === "downloading" && `正在升级到 v${targetVersion}`}
-            {stage === "latest" && "当前已是最新版本"}
-            {stage === "success" && "更新已安装"}
-            {stage === "error" && "拉取更新失败"}
+            {stage === "checking" && t("wbSettings.update.titleChecking")}
+            {stage === "downloading" && t("wbSettings.update.titleUpgrading", { version: targetVersion })}
+            {stage === "latest" && t("wbSettings.update.titleLatest")}
+            {stage === "success" && t("wbSettings.update.titleSuccess")}
+            {stage === "error" && t("wbSettings.update.titleError")}
           </DialogTitle>
           <DialogDescription>
-            {stage === "checking" && "正在检查 GitHub Release 中的签名更新包，请稍候。"}
-            {stage === "downloading" && "请不要关闭应用，更新包下载完成后会安装到本机。"}
-            {stage === "latest" && "没有发现高于当前版本的签名更新包。"}
-            {stage === "success" && "更新包已安装，可以立即重启应用完成升级。"}
-            {stage === "error" && "自动更新未完成，你仍然可以从 GitHub Release 页面手动下载。"}
+            {stage === "checking" && t("wbSettings.update.descChecking")}
+            {stage === "downloading" && t("wbSettings.update.descDownloading")}
+            {stage === "latest" && t("wbSettings.update.descLatest")}
+            {stage === "success" && t("wbSettings.update.descSuccess")}
+            {stage === "error" && t("wbSettings.update.descError")}
           </DialogDescription>
         </DialogHeader>
 
         {stage === "checking" && (
           <div className="flex items-center gap-2 rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
-            正在连接公开 Release 更新源…
+            {t("wbSettings.update.connecting")}
           </div>
         )}
 
@@ -218,10 +220,10 @@ export function UpdateInstallDialog({
             <div className="flex items-center justify-between text-sm">
               <span className="flex items-center gap-2">
                 <Loader2 className="size-4 animate-spin text-primary" />
-                下载更新包
+                {t("wbSettings.update.downloadingLabel")}
               </span>
               <span className="font-mono text-xs text-muted-foreground">
-                {percent === null ? "下载中…" : `${percent}%`}
+                {percent === null ? t("wbSettings.update.downloading") : `${percent}%`}
               </span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -237,7 +239,7 @@ export function UpdateInstallDialog({
             )}
             {downloadUrl && (
               <div className="border-t pt-2 text-xs">
-                <div className="text-muted-foreground">下载地址（点击可手动下载）</div>
+                <div className="text-muted-foreground">{t("wbSettings.update.downloadUrlLabel")}</div>
                 <button
                   type="button"
                   className="mt-1 flex w-full items-start gap-1 break-all text-left text-primary underline-offset-2 hover:underline"
@@ -253,13 +255,13 @@ export function UpdateInstallDialog({
 
         {stage === "success" && (
           <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800">
-            v{targetVersion} 已准备完成，重启应用后生效。
+            {t("wbSettings.update.readyToRestart", { version: targetVersion })}
           </div>
         )}
 
         {stage === "error" && (
           <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
-            <p className="text-destructive">{error || "未知更新错误"}</p>
+            <p className="text-destructive">{error || t("wbSettings.update.unknownError")}</p>
             {downloadUrl && (
               <button
                 type="button"
@@ -279,28 +281,28 @@ export function UpdateInstallDialog({
             <>
               <Button variant="outline" onClick={() => void openRelease()}>
                 <ExternalLink />
-                打开 GitHub Release
+                {t("wbSettings.update.openRelease")}
               </Button>
               <Button onClick={() => setRetry((value) => value + 1)}>
                 <RefreshCw />
-                重试
+                {t("wbSettings.update.retry")}
               </Button>
             </>
           )}
           {stage === "success" && (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={restarting}>
-                立即关闭
+                {t("wbSettings.update.closeNow")}
               </Button>
               <Button onClick={() => void restartApp()} disabled={restarting}>
                 {restarting ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                {restarting ? "正在重启…" : "立即重启"}
+                {restarting ? t("wbSettings.update.restarting") : t("wbSettings.update.restartNow")}
               </Button>
             </>
           )}
           {(stage === "latest" || stage === "error") && (
             <Button variant={stage === "error" ? "ghost" : "default"} onClick={() => onOpenChange(false)}>
-              关闭
+              {t("wbSettings.common.close")}
             </Button>
           )}
         </DialogFooter>

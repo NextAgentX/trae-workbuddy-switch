@@ -1,13 +1,19 @@
 // Region 描述符（前端侧，对照架构设计 A-3.1 RegionSpec）。
 // 仅承载 UI 展示与文案所需字段，业务差异全部由后端 region 参数决定。
 
+import { t } from "@/lib/i18n";
 import type { Region, RegionFilter } from "./types";
 
 export interface RegionDescriptor {
   region: Region;
   /** 展示名：WorkBuddy / WorkBuddy AI */
   displayName: string;
-  /** 中文版本名：国内版 / 国际版 */
+  /**
+   * 版本名：**读取时才翻译**（表内只存文案键，见 {@link REGION_DESCRIPTORS}）。
+   *
+   * ⚠️ 本表在模块加载时就定型，把中文写进表里会让语言切换对它失效 ——
+   * 因此表里只存键，展示名由 getter 在**每次读取时**调 `t()` 现取。
+   */
   versionLabel: string;
   /** 认证文件 basename */
   authFilename: string;
@@ -15,7 +21,7 @@ export interface RegionDescriptor {
   authEnv: string;
   /** 账号库文件名 */
   accountsFilename: string;
-  /** 网关 Key 归属展示名 */
+  /** 网关 Key 归属展示名（同 `versionLabel`：读取时才翻译）。 */
   gatewayLabel: string;
 }
 
@@ -23,20 +29,28 @@ export const REGION_DESCRIPTORS: Record<Region, RegionDescriptor> = {
   cn: {
     region: "cn",
     displayName: "WorkBuddy",
-    versionLabel: "国内版",
+    get versionLabel() {
+      return t("shared.region.version.cn");
+    },
     authFilename: "workbuddy-desktop.info",
     authEnv: "WORKBUDDY_AUTH_FILE",
     accountsFilename: "accounts.json",
-    gatewayLabel: "国内版 (WorkBuddy)",
+    get gatewayLabel() {
+      return t("shared.region.gateway.cn");
+    },
   },
   global: {
     region: "global",
     displayName: "WorkBuddy AI",
-    versionLabel: "国际版",
+    get versionLabel() {
+      return t("shared.region.version.global");
+    },
     authFilename: "workbuddy-desktop-ai.info",
     authEnv: "WORKBUDDY_AI_AUTH_FILE",
     accountsFilename: "accounts.global.json",
-    gatewayLabel: "国际版 (WorkBuddy AI)",
+    get gatewayLabel() {
+      return t("shared.region.gateway.global");
+    },
   },
 };
 
@@ -60,7 +74,7 @@ export function regionLabel(region: Region): string {
 
 /** 查询范围文案：cn/global 复用 `regionLabel()`，all 固定「合并」。 */
 export function regionFilterLabel(filter: RegionFilter): string {
-  return filter === "all" ? "合并" : regionLabel(filter);
+  return filter === "all" ? t("shared.region.filter.all") : regionLabel(filter);
 }
 
 /** 另一个 region。 */
