@@ -15,6 +15,8 @@
 
 **A multi-account manager for WorkBuddy / TraeWork**: OAuth QR-code sign-in, one-click login-state switching, credit-expiry monitoring with automatic check-in, token usage statistics — and it can expose your model quota to other local tools through an OpenAI / Anthropic compatible endpoint.
 
+> ⚠️ **Disclaimer**: this project is an **unofficial, third-party tool released under a noncommercial license** (source-available). It is not affiliated with, authorized by, sponsored by or endorsed by WorkBuddy, CodeBuddy, Trae / TraeWork or their respective rights holders. It reads and writes authentication data of third-party clients on your machine, sends automated requests on the schedule you configure, and can forward your model quota to other tools through a local endpoint. Before using it, read the [Disclaimer](#disclaimer) in full, assess the risks yourself and make sure your usage complies with the applicable terms of service.
+
 One interface, three forms:
 
 | Form | How to get it | Notes |
@@ -319,6 +321,62 @@ If Buddy Switch has been useful to you, you can buy the author a drink ☕
 </table>
 
 
+## Acknowledgements
+
+This project drew on the following open-source projects during its development. Thanks to their authors:
+
+- [changexbc/workbuddy-switch](https://github.com/changexbc/workbuddy-switch) — for the WorkBuddy account data format and the general approach to multi-account switching.
+- [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) — for the idea of exposing WorkBuddy model quota as an OpenAI-compatible API service.
+
+Each of those projects is governed by its own license. This project is an independent implementation with no affiliation, partnership or endorsement relationship with any of them, and all names and trademarks belong to their respective owners.
+
+## Disclaimer
+
+By using this project you acknowledge that you have read, understood and agreed to all of the terms below. If you do not agree, stop using it and uninstall it immediately.
+
+### 1. Unofficial third-party tool
+
+- This project is a community-maintained **source-available tool** released under a noncommercial license. It is **not** an official product of WorkBuddy, CodeBuddy, CodeBuddy CN, Trae, TraeWork or any of their affiliates, and it has no affiliation, partnership, authorization, sponsorship or endorsement relationship with any of them.
+- All product names, trademarks, service marks and logos appearing here are the property of their respective owners. They are used only to identify the clients this tool works with, and this project claims no rights over them.
+- This project does not contain, embed or redistribute any source code, binaries or private assets of those third-party clients. It only reads and writes configuration and data files that those clients already keep on your machine.
+
+### 2. Terms of service and compliance are your responsibility
+
+- Managing multiple accounts, switching login state, batch or scheduled check-in, and forwarding quota **may not comply with** the terms of service, subscription agreements, employer policies or laws of your jurisdiction that apply to you.
+- Whether your usage is compliant is **yours to determine**. Any account restriction, quota clawback, ban, breach claim or legal dispute arising from the use of this project is borne entirely by you; the author accepts no liability.
+- Do not use this tool for any purpose that violates applicable laws, regulations or terms of service.
+
+### 3. Data writes and backups
+
+- Switching accounts, cloning sessions, migrating long-term memory and connector configuration, and writing Trae login state all **directly modify data files of third-party clients** on your machine (see [Data and privacy](#data-and-privacy)).
+- The project attempts to back up data before rewriting it, but a backup can fail for reasons such as an unwritable path, insufficient disk space or the target file being locked. **The automatic backup is not a reliability guarantee of any kind.**
+- **Keep your own independent backups of anything important.** The author accepts no liability for any data loss, corruption, inconsistency or abnormal login state.
+
+### 4. Risks of automated behaviour
+
+- Automatic check-in, Cat Travel, token keep-alive, automatic rotation and scheduled tasks **send requests to the official services on the schedule you configure**.
+- The targets, frequency and timing of those requests are entirely determined by you. Any risk-control decision, rate limiting, CAPTCHA, human-verification challenge or other platform-side measure triggered by that traffic is your responsibility.
+
+### 5. API gateway exposure risks
+
+- The gateway binds to `127.0.0.1` by default. Once you switch it to `0.0.0.0`, or expose it through a reverse proxy, tunnel or port mapping, **anyone who can reach that address may consume your model quota and read the responses**.
+- A gateway API key is returned in plaintext once, at creation time; the server stores only its prefix and hash. **If a key leaks, revoke it in the UI immediately.**
+- Whether to expose the gateway, and which network and authentication protections to apply, is entirely your responsibility.
+
+### 6. Provided "as is"
+
+- This project is provided "as is" under the [PolyForm Noncommercial License 1.0.0](./LICENSE), **without warranty of any kind, express or implied**, including but not limited to the implied warranties of merchantability, fitness for a particular purpose and non-infringement.
+- This project depends on the internal data structures and endpoints of third-party clients, which may change in any release and render part or all of this tool non-functional. **No compatibility with any specific client version is guaranteed.**
+- Regardless of the theory of liability — contract, tort (including negligence) or otherwise — the author is not liable for any direct, indirect, incidental, special or punitive loss arising from the use of, or inability to use, this project.
+
 ## License
 
-[MIT](./LICENSE)
+This project is licensed under the **[PolyForm Noncommercial License 1.0.0](./LICENSE)**: **noncommercial use is permitted, commercial use is not licensed.**
+
+Permitted: copying, downloading, reading and modifying the source, distributing the original or modified versions for noncommercial purposes, and use for personal research, experiment, study, private entertainment, hobby projects and amateur pursuits. Use by charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations and government institutions is also permitted, regardless of the source of funding.
+
+**Commercial use requires prior written authorization from the author**, including but not limited to: selling this software or modified/derivative versions; use in paid products or paid services (including subscription and metered billing); offering it as a SaaS or hosted service; bundling it into a commercial product; and use in for-profit business activities (including internal commercial projects).
+
+For commercial licensing, please contact the author via this repository's Issues.
+
+> **Version note**: This project adopted the license above on 2026-09-22. **Versions released before that date remain under the MIT license they shipped with** — rights granted under MIT are irrevocable, and this change does not affect rights you already acquired under earlier versions.
