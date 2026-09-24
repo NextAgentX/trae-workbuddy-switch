@@ -56,6 +56,10 @@ buddy-switch version      # 版本号
 - 切换账号前会先备份原认证文件；Trae 切换登录态前会先保存快照
 - 网关 API Key 只保存前缀与哈希，明文仅在创建时返回一次
 
+## 参与贡献
+
+**欢迎 PR 与 Issue** —— 报 Bug、补文档、适配新版客户端、改进界面都可以。提交前的检查项与几条硬性要求（不要提交本地数据与来源不明的代码、贡献按同一许可分发）见[贡献指南](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/CONTRIBUTING.md)。
+
 ## 支持这个项目
 
 如果 Buddy Switch 帮到了你，可以请作者喝杯饮料 ☕
@@ -71,4 +75,4 @@ buddy-switch version      # 版本号
 
 ## 许可
 
-[MIT](./LICENSE)
+[PolyForm Noncommercial License 1.0.0](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/LICENSE) —— **个人非商业使用许可，商业使用不被授权**；白话说明与常见问题见[许可说明](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/docs/LICENSING.md)；如需商业授权，请通过主仓库 Issues 联系作者。

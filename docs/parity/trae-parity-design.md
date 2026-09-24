@@ -191,7 +191,7 @@ WorkBuddy 的 `gateway/*` 五组件是 store + region 耦合的，不能直接�
 
 | 编号 | 能力 | 裁定 | 取数路径 / 落地 |
 |:--|:--|:--|:--|
-| G-A03 | 自动签到定时 ↔ 跳过已签到 | **保持现状**（已按 B 落地） | `TraeAccountsPage.tsx:189-202` → `save_trae_settings{checkinSkipChecked}`；文案须强调「批量签到策略」 |
+| G-A03 | 自动签到定时 ↔ 跳过已签到 | **2026-09-22 改为真做**（原裁定「保持现状 / 语义替身」作废） | 新增排程任务 `trae_checkin`（`schedule.rs` 的 `define_schedule_tasks!` 一行 + `trae::handlers::run_scheduled_checkin`）：到点触发 + 进程启动补跑，两个区域各签一轮；开关与小时表在 Trae 设置页「自动签到」组，账号页工具栏另有同名开关（与 WB 同位同义）。⚠️ **默认关闭**（新增能力、会对外发请求，故 opt-in）。`TraeAccountsPage.tsx` → `save_trae_settings{checkinSkipChecked}` 仍保留，但语义收窄为「批量签到策略」 |
 | G-A06 | 账号卡**积分包进度条** | **可行，落地** | 源：`user_entitlement_pack_list`（每包 `entitlement_base_info.quota.credits_limit`、`usage.credits_amount`、`expire_time`、包名）。`credits::calc_remaining_credits`（`credits.rs:572-648`）当前只算聚合与**最早到期**、**丢弃逐包明细** → 扩展为同时返回 `Vec<CreditPackage>`，持久化进 `remaining.json` 新字段 `packages`，经 `credits_overview_for` 透出 |
 | G-T05 | 「Token 活动」整年热力网格 | **可行，前端即可** | 源：`LogEntry.ts` + 已有 `by_date → daily`（`token_stats.rs:256,284`）；热力网格直接渲染 `daily`（空日由前端补齐），**无需新后端字段** |
 | G-T06 | 「用量分布」按项目 / 按模型 Top8 | **拆分** | 按模型 Top8 = **A**（已实现 `token_stats.rs` 的 `models`）；**按项目 = C**（§2.2） |

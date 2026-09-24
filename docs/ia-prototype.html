@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buddy Switch · 交互原型（目标方案 vs 现状）</title>
+<style>
+:root{
+  --bg:#1b1b24; --surface:#26262f; --surface-2:#2f2f3a; --surface-3:#3a3a48;
+  --sidebar:#1f1f29;
+  --border:rgba(255,255,255,.10); --border-2:rgba(255,255,255,.20);
+  --text:#e8e8f0; --dim:#a3a3b8; --faint:#71718a;
+  --primary:#25c9a6; --primary-dim:rgba(37,201,166,.16);
+  --danger:#f0705f; --danger-dim:rgba(240,112,95,.15);
+  --amber:#e8a33d; --amber-dim:rgba(232,163,61,.15);
+  --r:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;height:100vh;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+.app{display:flex;flex-direction:column;height:100vh}
+
+/* ---------- 任务条 ---------- */
+.taskbar{display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--border);font-size:13px;flex:none;flex-wrap:wrap}
+.taskbar .lbl{font-weight:500}
+.taskbar b{color:var(--primary);font-weight:500}
+.taskbar .spacer{flex:1}
+.pill{padding:3px 10px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;color:var(--dim)}
+.pill.ok{background:var(--primary-dim);border-color:rgba(37,201,166,.4);color:var(--primary)}
+.pill.bad{background:var(--danger-dim);border-color:rgba(240,112,95,.4);color:var(--danger)}
+.modesw{display:inline-flex;gap:2px;padding:2px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px}
+.modesw button{padding:4px 12px;border-radius:6px;font-size:12px;color:var(--dim)}
+.modesw button.on{background:var(--surface-3);color:var(--text)}
+.mini{padding:4px 10px;border:1px solid var(--border);border-radius:7px;font-size:12px;color:var(--dim)}
+.mini:hover{border-color:var(--border-2);color:var(--text)}
+
+/* ---------- 顶栏 ---------- */
+.topbar{display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;background:var(--sidebar);border-bottom:1px solid var(--border);flex:none}
+.brand{display:flex;align-items:center;gap:8px;font-weight:500;letter-spacing:-.01em;margin-right:4px}
+.brand .dot{width:18px;height:18px;border-radius:5px;background:var(--primary)}
+.menuwrap{position:relative}
+.scope-trigger{display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid var(--border-2);border-radius:999px;font-size:13px}
+.scope-trigger:hover{background:var(--surface-2)}
+.scope-trigger .sub{color:var(--faint);font-size:11px}
+.menu{position:absolute;top:calc(100% + 6px);left:0;z-index:60;width:290px;background:var(--surface);border:1px solid var(--border-2);border-radius:12px;padding:6px;box-shadow:0 12px 32px rgba(0,0,0,.5)}
+.menu-item{display:flex;gap:10px;align-items:flex-start;width:100%;padding:8px 10px;border-radius:8px;text-align:left}
+.menu-item:hover{background:var(--surface-2)}
+.menu-item.on{background:var(--primary-dim)}
+.menu-item .mi-title{font-size:13px;display:flex;align-items:center;gap:6px}
+.menu-item .mi-sub{font-size:11px;color:var(--faint);margin-top:2px}
+.menu-item .check{margin-left:auto;color:var(--primary);font-size:12px}
+.sdot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:6px}
+.sdot.on{background:var(--primary)}
+.sdot.off{background:var(--surface-3)}
+.sdot.absent{border:1px solid var(--faint);background:none}
+.topbar .right{margin-left:auto;display:flex;gap:4px}
+.topbar .right button{padding:6px 10px;border-radius:8px;font-size:12px;color:var(--dim)}
+.topbar .right button:hover{background:var(--surface-2);color:var(--text)}
+
+/* ---------- 主体 ---------- */
+.body{display:flex;flex:1;min-height:0}
+.rail{width:220px;flex:none;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:12px 10px;gap:4px}
+.rail.target{width:240px}
+.rail .prod{display:grid;grid-template-columns:auto auto;gap:2px;padding:3px;margin-bottom:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px}
+.rail .prod button{display:flex;align-items:center;gap:5px;padding:5px 8px;border-radius:7px;font-size:12px;color:var(--dim);white-space:nowrap}
+.rail .prod button.on{background:var(--surface-3);color:var(--text)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;font-size:13px;color:var(--dim);text-decoration:none}
+.nav a:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.nav a.on{background:rgba(255,255,255,.07);color:var(--text);font-weight:500}
+.nav a.on::before{content:"";width:2px;height:14px;background:var(--primary);border-radius:2px;margin-left:-6px}
+.rail .foot{margin-top:auto;border-top:1px solid var(--border);padding-top:10px;display:flex;flex-direction:column;gap:6px}
+.rail .foot button{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;font-size:12px;color:var(--dim);text-align:left}
+.rail .foot button:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.rail .ver{font-size:11px;color:var(--faint);padding:0 8px;display:flex;align-items:center;gap:6px}
+
+.content{flex:1;min-width:0;overflow-y:auto;padding:26px 30px 60px}
+.wrap{max-width:1080px}
+h1{font-size:26px;font-weight:600;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px;margin-top:5px}
+.sect{margin-top:22px}
+
+/* ---------- 通用控件 ---------- */
+.seg{display:inline-flex;gap:2px;padding:3px;background:var(--surface-2);border:1px solid var(--border);border-radius:9px}
+.seg button{padding:5px 11px;border-radius:7px;font-size:12px;color:var(--dim);white-space:nowrap}
+.seg button.on{background:var(--surface-3);color:var(--text);font-weight:500}
+.params{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+.params .grp{display:flex;align-items:center;gap:7px}
+.params .grp>span.l{font-size:11px;color:var(--faint)}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px dashed var(--border-2);border-radius:999px;font-size:12px;color:var(--dim)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.metric .k{font-size:12px;color:var(--dim)}
+.metric .v{font-size:24px;font-weight:500;margin-top:3px;font-variant-numeric:tabular-nums}
+.metric .d{font-size:11px;color:var(--faint);margin-top:2px}
+
+/* 账号卡 */
+.acct{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 15px;margin-top:10px}
+.acct .av{width:36px;height:36px;border-radius:50%;background:var(--primary-dim);color:var(--primary);display:flex;align-items:center;justify-content:center;font-weight:500;flex:none}
+.acct .nm{font-size:13px}
+.acct .mt{font-size:11px;color:var(--faint);margin-top:2px}
+.acct .sp{flex:1}
+.acct .act{display:flex;gap:6px;align-items:center}
+.btn{padding:6px 12px;border:1px solid var(--border-2);border-radius:8px;font-size:12px;color:var(--dim)}
+.btn:hover{color:var(--text);border-color:var(--faint)}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:#0d1a17;font-weight:500}
+
+/* 区域 Tab（现状·账号页） */
+.rtabs{display:flex;gap:8px;margin-top:16px}
+.rtab{flex:1;max-width:280px;text-align:left;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+.rtab.on{background:var(--primary-dim);border-color:rgba(37,201,166,.45)}
+.rtab .r1{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:500}
+.rtab .r2{font-size:11px;color:var(--faint);margin-top:3px;padding-left:15px}
+
+/* 图表 */
+.bars{display:flex;align-items:flex-end;gap:8px;height:120px;margin-top:14px}
+.bars .b{flex:1;background:var(--primary);border-radius:4px 4px 0 0;opacity:.85;min-height:4px}
+.bars .b.alt{background:#4a7fd4;opacity:.7}
+.xaxis{display:flex;gap:8px;margin-top:6px}
+.xaxis span{flex:1;text-align:center;font-size:10px;color:var(--faint)}
+
+/* 表 */
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+th{text-align:left;color:var(--faint);font-weight:400;padding:8px 10px;border-bottom:1px solid var(--border)}
+td{padding:9px 10px;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+
+/* 设置二级导航 */
+.set2{display:flex;gap:16px;margin-top:20px;align-items:flex-start}
+.set2 nav{width:180px;flex:none;display:flex;flex-direction:column;gap:2px}
+.set2 nav button{padding:7px 11px;border-radius:8px;font-size:13px;color:var(--dim);text-align:left}
+.set2 nav button:hover{background:var(--surface-2);color:var(--text)}
+.set2 nav button.on{background:var(--surface-2);color:var(--text);font-weight:500}
+.set2 .panel{flex:1;min-width:0}
+.row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)}
+.row:last-child{border-bottom:none}
+.row .rk{font-size:13px}
+.row .rd{font-size:11px;color:var(--faint);margin-top:2px;max-width:520px}
+.sw{width:40px;height:22px;border-radius:999px;background:var(--surface-3);position:relative;flex:none;transition:background .15s}
+.sw.on{background:var(--primary)}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
+.sw.on::after{left:21px}
+
+/* 提示条 */
+.alert{display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:12.5px;margin-top:14px;line-height:1.55}
+.alert.danger{background:var(--danger-dim);border:1px solid rgba(240,112,95,.35);color:#f7b3a8}
+.alert.amber{background:var(--amber-dim);border:1px solid rgba(232,163,61,.35);color:#f0cd97}
+.alert.info{background:var(--surface-2);border:1px solid var(--border);color:var(--dim)}
+.alert .ico{flex:none;font-weight:600}
+
+/* 注释标签 */
+.anno{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--amber);background:var(--amber-dim);border:1px dashed rgba(232,163,61,.4);border-radius:6px;padding:2px 7px}
+
+/* 抽屉 */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:80}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:340px;background:var(--surface);border-left:1px solid var(--border-2);z-index:81;padding:18px;overflow-y:auto}
+.drawer h2{font-size:15px;font-weight:500;margin-bottom:4px}
+.drawer .dsub{font-size:11px;color:var(--faint);margin-bottom:16px}
+.kv{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script>
+const SCOPES = {
+  "wb-cn":      { name:"WorkBuddy 国内版",  product:"WorkBuddy", region:"国内版", login:"alice@thinkyeah.com", state:"on" },
+  "wb-global":  { name:"WorkBuddy 国际版",  product:"WorkBuddy", region:"国际版", login:"carol@gmail.com",     state:"on" },
+  "trae-cn":    { name:"TraeWork 国内版",   product:"TraeWork",  region:"国内版", login:"dev_01",              state:"on" },
+  "trae-global":{ name:"TraeWork 国际版",   product:"TraeWork",  region:"国际版", login:null,                  state:"off" },
+};
+const MODULES = [
+  { id:"accounts", label:"账号管理" },
+  { id:"token",    label:"Token 统计" },
+  { id:"credits",  label:"积分统计" },
+  { id:"api",      label:"API 服务" },
+  { id:"settings", label:"设置" },
+];
+const RANGES = [["today","今日"],["7d","7 天"],["30d","30 天"],["month","本月"]];
+const SOURCES = [["workbuddy","WorkBuddy"],["cli","CodeBuddy CLI"],["ide","CodeBuddy IDE"],["ai","WorkBuddy AI"]];
+const SETTINGS = [["checkin","自动签到"],["rotate","自动轮换"],["switch","切换行为"],["versions","版本账号"],["gateway","网关"],["schedule","计划任务"],["perm","权限检查"]];
+
+const ACCOUNTS = {
+  "wb-cn":      [["alice@thinkyeah.com","积分 1,240 · 今日已签到"],["bob@thinkyeah.com","积分 860 · 未签到"],["ops@thinkyeah.com","积分 0 · 已过期"]],
+  "wb-global":  [["carol@gmail.com","积分 320 · 未签到"]],
+  "trae-cn":    [["dev_01","分组 默认 · 今日已签到"],["dev_02","分组 测试 · 未签到"]],
+  "trae-global":[["intl_user","分组 默认 · 未签到"]],
+};
+const BARS = { today:[30,55,20,70,45], "7d":[42,68,35,80,58,90,64], "30d":[50,62,48,74,55,68,60], month:[55,70,52,66,78,58,72] };
+const BARS_GLOBAL = { today:[12,18,9,22,15], "7d":[16,24,13,28,20,26,19], "30d":[18,22,16,25,20,23,21], month:[20,25,17,23,26,19,24] };
+
+const state = {
+  mode:"target",            // target | current
+  scope:"wb-cn",
+  product:"workbuddy",      // 现状：产品 Tab
+  wbRegion:"cn",            // 现状：账号页区域（组件内 state，切页即丢）
+  statsRegion:"cn",         // 现状：统计页区域（各页 localStorage）
+  traeLine:"cn",            // 现状：Trae ?line=
+  module:"accounts",
+  range:"30d",
+  source:"workbuddy",
+  merge:"single",
+  section:"checkin",
+  menuOpen:false,
+  appSettings:false,
+  clicks:0,
+  done:false,
+  _flash:false,
+};
+
+const COUNT = new Set(["set-scope","set-product","set-module","set-wbregion","set-statsregion","set-traeline","set-range"]);
+
+function curScopeKey(){
+  if (state.mode === "target") return state.scope;
+  if (state.product === "trae") return state.traeLine === "global" ? "trae-global" : "trae-cn";
+  return state.wbRegion === "global" ? "wb-global" : "wb-cn";
+}
+function isTrae(){ return state.mode === "target" ? state.scope.startsWith("trae") : state.product === "trae"; }
+
+function checkTask(){
+  if (state.mode === "target") {
+    state.done = state.scope === "wb-global" && state.module === "token" && state.range === "7d";
+  } else {
+    state.done = state.product === "workbuddy" && state.statsRegion === "global" && state.module === "token" && state.range === "7d";
+  }
+}
+/** 现状模式下的静默错位：账号页已切到国际版，统计页仍读自己的 localStorage。 */
+function misaligned(){
+  return state.mode === "current" && state.module === "token"
+    && state.wbRegion === "global" && state.statsRegion === "cn";
+}
+
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+/* ---------------- 顶栏 ---------------- */
+function topbar(){
+  const right = `
+    <div class="right">
+      <button data-act="noop">刷新</button>
+      <button data-act="open-app-settings">设置</button>
+      <button data-act="noop">帮助</button>
+    </div>`;
+
+  if (state.mode === "current") {
+    return `<div class="topbar">
+      <div class="brand"><span class="dot"></span>Buddy Switch</div>
+      <span class="pill">顶栏没有作用域入口</span>
+      ${right}
+    </div>`;
+  }
+  const s = SCOPES[state.scope];
+  const menu = state.menuOpen ? `
+    <div class="menu" data-menu>
+      ${Object.entries(SCOPES).map(([k,v]) => {
+        const on = k === state.scope;
+        const dot = v.state === "on" ? "on" : (v.login ? "on" : "absent");
+        const sub = v.login ? "已登录: " + v.login : (v.state === "on" ? "未登录" : "未检测到");
+        return `<button class="menu-item ${on?"on":""}" data-act="set-scope" data-v="${k}">
+          <span class="sdot ${dot}"></span>
+          <span style="flex:1">
+            <span class="mi-title">${esc(v.name)}</span>
+            <span class="mi-sub">${esc(sub)}</span>
+          </span>
+          ${on ? '<span class="check">●</span>' : ""}
+        </button>`;
+      }).join("")}
+    </div>` : "";
+  return `<div class="topbar">
+    <div class="brand"><span class="dot"></span>Buddy Switch</div>
+    <div class="menuwrap" data-menu>
+      <button class="scope-trigger" data-act="scope-menu">
+        <span class="sdot ${s.state==="on"?"on":"absent"}"></span>
+        ${esc(s.name)}
+        <span class="sub">${s.login ? esc(s.login) : "未登录"}</span>
+        <span style="color:var(--faint)">▾</span>
+      </button>
+      ${menu}
+    </div>
+    ${right}
+  </div>`;
+}
+
+/* ---------------- 侧栏 ---------------- */
+function rail(){
+  const navItems = MODULES.map(m => `<a class="${state.module===m.id?"on":""}" data-act="set-module" data-v="${m.id}">${m.label}</a>`).join("");
+
+  if (state.mode === "current") {
+    return `<aside class="rail">
+      <div class="prod">
+        <button class="${state.product==="workbuddy"?"on":""}" data-act="set-product" data-v="workbuddy">WorkBuddy</button>
+        <button class="${state.product==="trae"?"on":""}" data-act="set-product" data-v="trae">TraeWork</button>
+      </div>
+      <div class="nav" data-nav>${navItems}</div>
+      <div class="foot">
+        <span class="anno">侧栏随产品整体替换</span>
+        <button data-act="open-app-settings">应用级设置</button>
+        <div class="ver"><span class="sdot on"></span>v0.0.0</div>
+      </div>
+    </aside>`;
+  }
+  return `<aside class="rail target">
+    <div class="nav" data-nav>${navItems}</div>
+    <div class="foot">
+      <div class="ver"><span class="sdot on"></span>v0.0.0</div>
+    </div>
+  </aside>`;
+}
+
+/* ---------------- 页面 ---------------- */
+function accountsPage(){
+  const key = state.mode === "target" ? state.scope : curScopeKey();
+  const list = ACCOUNTS[key] || [];
+  const trae = isTrae();
+
+  let selector = "";
+  if (state.mode === "target") {
+    const s = SCOPES[state.scope];
+    selector = `<div class="params"><span class="chip"><span class="sdot on"></span>当前作用域：${esc(s.name)} · ${esc(s.login||"未登录")}</span>
+      <span class="anno">区域已上移顶栏，本页不再重复</span></div>`;
+  } else if (trae) {
+    selector = `<div class="rtabs">
+      ${[["cn","TraeWork 国内版","dev_01"],["global","TraeWork 国际版","未登录"]].map(([k,n,who]) =>
+        `<button class="rtab ${state.traeLine===k?"on":""}" data-act="set-traeline" data-v="${k}">
+          <div class="r1"><span class="sdot ${k==="cn"?"on":"absent"}"></span>${n}</div>
+          <div class="r2">${who==="未登录"?"未登录":"已登录: "+who}</div>
+        </button>`).join("")}
+      </div>
+      <div class="params"><span class="anno">TraeVariantBar · 走 URL ?line=，跨页保持</span></div>`;
+  } else {
+    selector = `<div class="rtabs">
+      ${[["cn","国内版","WorkBuddy","alice@thinkyeah.com"],["global","国际版","WorkBuddy AI","carol@gmail.com"]].map(([k,vn,dn,who]) =>
+        `<button class="rtab ${state.wbRegion===k?"on":""}" data-act="set-wbregion" data-v="${k}">
+          <div class="r1"><span class="sdot on"></span>${vn} <span style="color:var(--faint);font-weight:400">${dn}</span></div>
+          <div class="r2">已登录: ${who}</div>
+        </button>`).join("")}
+      </div>
+      <div class="params"><span class="anno">组件内 useState · 离开本页即丢失</span></div>`;
+  }
+
+  const cards = list.map(([n, meta]) => `
+    <div class="acct">
+      <div class="av">${esc(n[0].toUpperCase())}</div>
+      <div><div class="nm">${esc(n)}</div><div class="mt">${esc(meta)}</div></div>
+      <div class="sp"></div>
+      <div class="act">
+        ${trae ? `<div class="seg">
+          <button class="on" data-act="noop">TraeWork</button>
+          <button data-act="noop">TraeCode</button>
+        </div>` : ""}
+        <button class="btn pri" data-act="noop">切换</button>
+        <button class="btn" data-act="noop">启动</button>
+      </div>
+    </div>`).join("");
+
+  return `<div class="wrap">
+    <h1>账号管理</h1>
+    <p class="sub">管理 ${isTrae()?"TraeWork":"WorkBuddy"} 的登录账号、切换与签到状态。</p>
+    ${selector}
+    <div class="sect">${cards || '<div class="card">该作用域下暂无账号</div>'}</div>
+    ${trae ? '<div class="params"><span class="anno">程序位留在卡片上（操作目标，不是数据域）· 两种方案一致</span></div>' : ""}
+  </div>`;
+}
+
+function statsPage(kind){
+  const title = kind === "token" ? "Token 统计" : "积分统计";
+  const key = state.mode === "target" ? state.scope
+    : (state.statsRegion === "global" ? "wb-global" : "wb-cn");
+
+  let params = "";
+  if (state.mode === "target") {
+    params = `<div class="params">
+      <div class="grp"><span class="l">时间范围</span><div class="seg">
+        ${RANGES.map(([k,l]) => `<button class="${state.range===k?"on":""}" data-act="set-range" data-v="${k}">${l}</button>`).join("")}
+      </div></div>
+      <div class="grp"><span class="l">范围</span><div class="seg">
+        <button class="${state.merge==="single"?"on":""}" data-act="set-merge" data-v="single">仅本作用域</button>
+        <button class="${state.merge==="all"?"on":""}" data-act="set-merge" data-v="all">合并全部</button>
+      </div></div>
+      <div class="grp"><span class="l">来源</span><div class="seg">
+        ${SOURCES.map(([k,l]) => `<button class="${state.source===k?"on":""}" data-act="set-source" data-v="${k}">${l}</button>`).join("")}
+      </div></div>
+    </div>`;
+  } else {
+    params = `<div class="params">
+      <div class="grp"><span class="l">统计范围</span><div class="seg">
+        ${[["cn","国内版"],["global","国际版"],["all","合并"]].map(([k,l]) =>
+          `<button class="${state.statsRegion===k?"on":""}" data-act="set-statsregion" data-v="${k}">${l}</button>`).join("")}
+      </div><span class="anno">RegionBar · 各页独立 localStorage</span></div>
+      <div class="grp"><span class="l">时间范围</span><div class="seg">
+        ${RANGES.map(([k,l]) => `<button class="${state.range===k?"on":""}" data-act="set-range" data-v="${k}">${l}</button>`).join("")}
+      </div></div>
+      <div class="grp"><span class="l">来源</span><div class="seg">
+        ${SOURCES.map(([k,l]) => `<button class="${state.source===k?"on":""}" data-act="set-source" data-v="${k}">${l}</button>`).join("")}
+      </div></div>
+    </div>`;
+  }
+
+  const global = key === "wb-global" || state.merge === "all";
+  const data = global ? BARS_GLOBAL[state.range] : BARS[state.range];
+  const scale = state.merge === "all" && state.mode === "target" ? 1.18 : 1;
+  const max = Math.max(...data);
+  const m1 = kind === "token" ? "输入 Tokens" : "已消耗积分";
+  const m2 = kind === "token" ? "输出 Tokens" : "剩余积分";
+  const m3 = kind === "token" ? "缓存命中率" : "即将过期";
+
+  const labels = data.length === 5 ? ["00","04","08","12","20"] : ["周一","周二","周三","周四","周五","周六","周日"];
+
+  return `<div class="wrap">
+    <h1>${title}</h1>
+    <p class="sub">${esc(SCOPES[key].name)} · ${RANGES.find(r=>r[0]===state.range)[1]}${state.mode==="target"&&state.merge==="all"?" · 合并全部":""}</p>
+    ${params}
+    ${misaligned() ? `<div class="alert danger"><span class="ico">!</span><div>
+      <b>状态错位</b>：你在账号管理页切到了「国际版」，但本页仍显示「国内版」——
+      账号页的区域是组件内 state，统计页读各自独立的 localStorage，两者不共享。
+      它<b>不报错</b>，只会让你在错误的数据上做判断。要看到国际版，必须在本页再切一次。
+    </div></div>` : ""}
+    <div class="sect grid3">
+      <div class="card metric"><div class="k">${m1}</div><div class="v">${Math.round(data.reduce((a,b)=>a+b,0)*scale*12/10)}K</div><div class="d">较上一周期 +12%</div></div>
+      <div class="card metric"><div class="k">${m2}</div><div class="v">${Math.round(data.reduce((a,b)=>a+b,0)*scale*4/10)}K</div><div class="d">较上一周期 -3%</div></div>
+      <div class="card metric"><div class="k">${m3}</div><div class="v">${kind==="token"?"62%":"84"}</div><div class="d">${kind==="token"?"缓存读取占比":"7 天内过期"}</div></div>
+    </div>
+    <div class="card sect">
+      <div style="font-size:13px;font-weight:500">用量趋势</div>
+      <div class="bars">${data.map((v,i)=>`<div class="b ${i%2?"alt":""}" style="height:${Math.round(v/max*100)}%"></div>`).join("")}</div>
+      <div class="xaxis">${labels.map(l=>`<span>${l}</span>`).join("")}</div>
+    </div>
+  </div>`;
+}
+
+function apiPage(){
+  return `<div class="wrap">
+    <h1>API 服务</h1>
+    <p class="sub">把模型额度以 OpenAI / Anthropic 兼容接口提供给本机工具。</p>
+    <div class="sect card">
+      <div class="row"><div><div class="rk">网关</div><div class="rd">本地监听 127.0.0.1:8787</div></div><div class="sw on" data-act="noop"></div></div>
+      <div class="row"><div><div class="rk">Base URL</div><div class="rd">http://127.0.0.1:8787/v1</div></div><button class="btn" data-act="noop">复制</button></div>
+    </div>
+    <div class="sect card">
+      <div style="font-size:13px;font-weight:500;margin-bottom:8px">API Key（按作用域归属分组）</div>
+      <table>
+        <tr><th>Key</th><th>归属</th><th>创建时间</th><th>状态</th></tr>
+        <tr><td>sk-wb-8f2a…</td><td>国内版</td><td>2026-09-01</td><td>启用</td></tr>
+        <tr><td>sk-wb-31c9…</td><td>国际版</td><td>2026-09-12</td><td>启用</td></tr>
+      </table>
+      <div class="params"><span class="anno">网关是全局单例，作用域只影响 Key 归属 · 本页不做全局作用域切换</span></div>
+    </div>
+  </div>`;
+}
+
+function settingsPage(){
+  const panels = {
+    checkin:[["每日自动签到","在设定的时间窗口内自动完成签到"],["跳过已签到账号","本次运行中已签到的账号不再重复请求"]],
+    rotate:[["自动轮换","按额度余量自动切换到最优账号"],["轮换冷却","两次轮换之间的最小间隔（分钟）"]],
+    switch:[["切换前备份","改写认证文件前先写入 backups/"],["切换后重启客户端","切换完成后自动拉起目标客户端"]],
+    versions:[["国内版路径","自动探测到的客户端安装路径"],["国际版路径","自动探测到的客户端安装路径"]],
+    gateway:[["监听地址","127.0.0.1（仅本机）"],["端口","8787"]],
+    schedule:[["定时任务","按 cron 执行签到与轮换"],["失败重试","网络失败时的重试次数"]],
+    perm:[["认证文件可写","检查 ~/.workbuddy 下文件的写权限"],["客户端目录可读","检查会话日志目录"]],
+  };
+  return `<div class="wrap">
+    <h1>设置</h1>
+    <p class="sub">${isTrae()?"TraeWork":"WorkBuddy"} 的产品级设置。</p>
+    <div class="set2">
+      <nav>${SETTINGS.map(([k,l]) => `<button class="${state.section===k?"on":""}" data-act="set-section" data-v="${k}">${l}</button>`).join("")}</nav>
+      <div class="panel card">
+        <div style="font-size:13px;font-weight:500;margin-bottom:4px">${SETTINGS.find(s=>s[0]===state.section)[1]}</div>
+        ${panels[state.section].map(([k,d],i) => `<div class="row">
+          <div><div class="rk">${k}</div><div class="rd">${d}</div></div>
+          <div class="sw ${i===0?"on":""}" data-act="noop"></div>
+        </div>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+function page(){
+  switch (state.module) {
+    case "accounts": return accountsPage();
+    case "token":    return statsPage("token");
+    case "credits":  return statsPage("credits");
+    case "api":      return apiPage();
+    case "settings": return settingsPage();
+  }
+}
+
+/* ---------------- 渲染 ---------------- */
+function render(){
+  const taskDone = state.done;
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="taskbar">
+      <span class="pill">任务</span>
+      <span>在 <b>WorkBuddy 国际版</b> 下查看 <b>近 7 天</b> 的 Token 用量</span>
+      <span class="pill ${taskDone?"ok":""}">已点击 ${state.clicks} 次</span>
+      ${taskDone ? '<span class="pill ok">已完成</span>' : ""}
+      <button class="mini" data-act="reset-task">重置任务</button>
+      <span class="spacer"></span>
+      <span class="pill" style="color:var(--faint)">${state.mode==="target"?"目标方案":"现状"}</span>
+      <div class="modesw">
+        <button class="${state.mode==="target"?"on":""}" data-act="set-mode" data-v="target">目标方案</button>
+        <button class="${state.mode==="current"?"on":""}" data-act="set-mode" data-v="current">现状</button>
+      </div>
+    </div>
+    ${topbar()}
+    <div class="body">
+      ${rail()}
+      <main class="content">${page()}</main>
+    </div>
+    ${state.appSettings ? `
+      <div class="scrim" data-act="close-app-settings"></div>
+      <aside class="drawer">
+        <h2>应用级设置</h2>
+        <div class="dsub">${state.mode==="target"?"入口在顶栏（溢出菜单）":"入口在侧栏底部"}</div>
+        ${[["外观","深色"],["语言","简体中文"],["开机自启","开"],["自动更新","开"]].map(([k,v]) =>
+          `<div class="kv"><span style="font-size:13px">${k}</span><span style="font-size:12px;color:var(--dim)">${v}</span></div>`).join("")}
+        <button class="btn" style="margin-top:18px" data-act="close-app-settings">关闭</button>
+      </aside>` : ""}
+  `;
+
+  if (state._flash) {
+    const nav = app.querySelector("[data-nav]");
+    if (nav) nav.animate([{opacity:.2},{opacity:1}], {duration:340, easing:"ease-out"});
+    state._flash = false;
+  }
+}
+
+/* ---------------- 交互 ---------------- */
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-act]");
+  if (btn) {
+    const act = btn.dataset.act;
+    const v = btn.dataset.v;
+    if (COUNT.has(act)) { state.clicks++; }
+    switch (act) {
+      case "set-mode": state.mode = v; state.clicks = 0; state.menuOpen = false; state.appSettings = false; break;
+      case "set-scope": state.scope = v; state.menuOpen = false; break;
+      case "scope-menu": state.menuOpen = !state.menuOpen; break;
+      case "set-product": if (state.product !== v) { state.product = v; state._flash = true; } break;
+      case "set-module": state.module = v; break;
+      case "set-wbregion": state.wbRegion = v; break;
+      case "set-statsregion": state.statsRegion = v; break;
+      case "set-traeline": state.traeLine = v; break;
+      case "set-range": state.range = v; break;
+      case "set-merge": state.merge = v; break;
+      case "set-source": state.source = v; break;
+      case "set-section": state.section = v; break;
+      case "open-app-settings": state.appSettings = true; break;
+      case "close-app-settings": state.appSettings = false; break;
+      case "reset-task":
+        state.clicks = 0;
+        state.module = "accounts"; state.range = "30d"; state.merge = "single";
+        state.scope = "wb-cn"; state.product = "workbuddy";
+        state.wbRegion = "cn"; state.statsRegion = "cn"; state.traeLine = "cn";
+        state.menuOpen = false; state.appSettings = false;
+        break;
+    }
+    checkTask();
+    render();
+    return;
+  }
+  if (state.menuOpen && !e.target.closest("[data-menu]")) { state.menuOpen = false; render(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && (state.menuOpen || state.appSettings)) {
+    state.menuOpen = false; state.appSettings = false; render();
+  }
+});
+
+checkTask();
+render();
+</script>
+</body>
+</html>
