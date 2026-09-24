@@ -406,7 +406,21 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # ⚠️ `fetch-depth: 0` + `fetch-tags: true` 是**生成变更说明的硬前提**。
+      # checkout 默认只拉当前提交（`depth: 1`）且不带其他 tag，于是
+      # `git log <上个 tag>..<本次 tag>` 会因为缺对象直接 `exit 128`
+      # （tag 推送触发的 checkout **只**取被推的那一个 tag）。
+      # 缺了它，`Generate release notes` 会走兜底分支：不报错、但正文没有变更清单。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # 变更说明用 Node 脚本生成（与 scripts/ 下其他 .mjs 同一套运行时）。
+      # 与 `build` / `publish-*` 各 job 显式声明版本号保持一致，不吃 runner 预装版本。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - uses: actions/download-artifact@v4
         with:
@@ -427,7 +441,30 @@ jobs:
       - name: Merge updater manifests
         run: python3 scripts/merge-update-manifests.py artifacts
 
+      # Release 正文（「本次发布了什么」）—— 完全由提交本身推导：
+      # `<上一个 tag>..<本次 tag>` 之间的提交，按 Conventional Commits 前缀分组，
+      # 每组一行一项（只取提交首行，不搬提交正文 —— 正文是写给维护者的）。
+      #
+      # 为什么不用 `softprops/action-gh-release` 的 `generate_release_notes: true`：
+      # GitHub 那套生成的原料是 **Pull Request**（标题/标签/贡献者），而本仓是**直接
+      # 推 main**，实测那种情况下它只会给出一行 `**Full Changelog**: ...compare/...`
+      # —— 字面上「没有变化内容」。本仓提交恰好严格遵循 Conventional Commits
+      # （见 AGENTS.md → Git Commit Language），故自己分组更贴合。
+      # 细节与取舍 → `scripts/gen-release-notes.mjs` 头部注释。
+      #
+      # 脚本**不会**因为生成失败而让本步骤变红（失败退化为一段兜底说明 + `::warning::`
+      # 注解，退出码仍为 0）：说明缺失是**降级**，发布失败是**事故**，前者不该挡住后者。
+      # 需要人工措辞时，提交 `docs/releases/<tag>.md` —— 脚本会整篇采用、不做自动拼装。
+      - name: Generate release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/gen-release-notes.mjs --tag "$TAG" --out release-notes.md
+
+      # 用 `body_path` 而不是 `body`：正文是多行 Markdown，且含 `-` 开头的行，
+      # 走文件传递可完全避开 YAML / 表达式对换行与特殊字符的处理。
+      # ⚠️ `release-notes.md` 落在仓库根目录，**不会**被 `files: artifacts/*` 带进资产。
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          body_path: release-notes.md
