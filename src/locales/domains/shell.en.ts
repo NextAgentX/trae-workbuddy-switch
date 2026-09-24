@@ -84,4 +84,12 @@ export const en = {
 
   // ---- Shared fallbacks ----
   "common.unknownError": "Unknown error",
+
+  // ---- Top-level error boundary (see components/error-boundary.tsx) ----
+  "app.error.title": "Something went wrong",
+  "app.error.description":
+    "A rendering error was caught. The UI stopped here to avoid showing a garbled screen. Copy the details below and report them; reloading usually gets you back in.",
+  "app.error.reload": "Reload",
+  "app.error.copy": "Copy error details",
+  "app.error.copied": "Copied",
 };

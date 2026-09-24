@@ -157,8 +157,10 @@ export const en = {
   "trae.page.accounts.emptyImportHint": "Only for older clients or installs that still keep credentials in plaintext; usually unreadable since 1.107.x",
   "trae.page.accounts.emptyImportTry": "Try importing from this machine",
   "trae.page.accounts.emptyDetectedDir": "Detected sign-in directory:",
+  "trae.page.accounts.emptyExpectedDir": "Client data directory (expected location):",
   "trae.page.accounts.emptyNoDataDir": "No client data directory detected yet",
   "trae.page.accounts.emptyDirNote": "This file no longer stores plaintext credentials in newer clients; it only confirms where the client data directory is.",
+  "trae.page.accounts.emptyLaunchClient": "Launch the client",
 
   // =====================================================================
   // TraeSettingsPage.tsx — Settings page

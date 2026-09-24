@@ -134,6 +134,9 @@ export const zh = {
   "trae.comp.oauth.done": "完成",
   "trae.comp.oauth.retry": "重新发起登录",
   "trae.comp.oauth.retryBusy": "正在发起登录…",
+  "trae.comp.oauth.launch": "启动 {variant} 客户端",
+  "trae.comp.oauth.launchBusy": "正在启动 {variant} 客户端…",
+  "trae.comp.oauth.launchOk": "已启动 {variant} 客户端。等它写完设备凭证（首次启动还会弹出登录页，按提示登录一次），再点「重新发起登录」。",
 
   // =====================================================================
   // trae-import-accounts-dialog.tsx —— 导入账号

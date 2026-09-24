@@ -151,8 +151,25 @@ export interface TraeProgramStatus {
   running: boolean;
   version: string | null;
   path: string | null;
+  /**
+   * 客户端**最近被用过**的 userData 目录（后端 `platform::select_data_dir_for`，按活跃度）。
+   *
+   * ⚠️ 它不是「登录态在哪个目录」—— 需要后者时用 {@link TraeProgramStatus.writeDataDir}。
+   */
   dataDir: string | null;
   dataDirExists: boolean;
+  /**
+   * **写侧** userData 目录（后端 `platform::detect_data_dir_for`：候选表里**首个存在**的）。
+   *
+   * 与 {@link TraeProgramStatus.dataDir} 语义不同且**真机上不同值**：那是「客户端最近在用
+   * 哪个」，这是「切换器**正在操作**哪个」—— 快照读写 / 保存守卫 / `overview_for().dataDir`
+   * 用的都是它，即「登录态在哪」。
+   *
+   * 真机现场：`TRAE SOLO CN` 有登录态却更旧、更活跃的是 `TRAE SOLO`（**国际版**），
+   * 于是拿 `dataDir` 展示会让国内版页签写出国际版目录。
+   */
+  writeDataDir: string | null;
+  writeDataDirExists: boolean;
 }
 
 /**
@@ -182,8 +199,12 @@ export interface TraeVariantStatus {
   running: boolean;
   version: string | null;
   path: string | null;
+  /** 主程序「最近被用过」的目录（见 {@link TraeProgramStatus.dataDir} 的告诫）。 */
   dataDir: string | null;
   dataDirExists: boolean;
+  /** 主程序的**写侧**目录 —— 「客户端环境」行要核对「登录态在哪」时用它。 */
+  writeDataDir: string | null;
+  writeDataDirExists: boolean;
   /** 该区域下的程序位（卡片上每个账号要渲染的切换控件）。 */
   programs: TraeProgramStatus[];
 }

@@ -127,6 +127,9 @@ export const en = {
   "trae.comp.oauth.done": "Done",
   "trae.comp.oauth.retry": "Restart sign-in",
   "trae.comp.oauth.retryBusy": "Starting sign-in…",
+  "trae.comp.oauth.launch": "Launch the {variant} client",
+  "trae.comp.oauth.launchBusy": "Launching the {variant} client…",
+  "trae.comp.oauth.launchOk": "The {variant} client has been launched. Wait for it to write its device credential (a first launch also shows a sign-in page — sign in there once), then click “Restart sign-in”.",
 
   // =====================================================================
   // trae-import-accounts-dialog.tsx —— Import accounts

@@ -30,6 +30,9 @@ function programStub(
     path: null,
     dataDir: null,
     dataDirExists: false,
+    // 写侧目录（见 `TraeProgramStatus.writeDataDir`）：后端不可用时与 `dataDir` 同样置空。
+    writeDataDir: null,
+    writeDataDirExists: false,
   };
 }
 
@@ -62,6 +65,9 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     path: null,
     dataDir: null,
     dataDirExists: false,
+    // 写侧目录（见 `TraeProgramStatus.writeDataDir`）：后端不可用时与 `dataDir` 同样置空。
+    writeDataDir: null,
+    writeDataDirExists: false,
     programs: [
       programStub("trae_work", "TraeWork", "trae.program.traeWork", "trae_work"),
       programStub("trae_code", "TraeCode", "trae.program.traeCode", "trae_cn"),
@@ -79,6 +85,9 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     path: null,
     dataDir: null,
     dataDirExists: false,
+    // 写侧目录（见 `TraeProgramStatus.writeDataDir`）：后端不可用时与 `dataDir` 同样置空。
+    writeDataDir: null,
+    writeDataDirExists: false,
     programs: [
       programStub("trae_work", "TraeWork AI", "trae.program.traeWorkGlobal", "global"),
       programStub("trae_code", "Trae AI", "trae.program.traeCodePending", null),

@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { displayText } from "@/lib/display-text";
 import type { ImportPreviewAccount, Region } from "@/lib/types";
 import { useT, type Translate } from "@/lib/i18n";
 
@@ -27,7 +28,14 @@ interface Props {
 
 /** 导入预览账号展示名（脱敏展示：昵称/邮箱/uid）。 */
 function previewLabel(a: ImportPreviewAccount, t: Translate): string {
-  return a.nickname || a.email || a.uid || t("wbAccounts.dialog.importItemFallback", { index: a.index + 1 });
+  // 必须归一：`||` 链会把**对象**原样返回，而调用方直接把它当 React 子节点渲染
+  // ⇒ React 抛「Objects are not valid as a React child」⇒ 整棵树卸载（issue #2）。
+  return (
+    displayText(a.nickname) ||
+    displayText(a.email) ||
+    displayText(a.uid) ||
+    t("wbAccounts.dialog.importItemFallback", { index: a.index + 1 })
+  );
 }
 
 /** 导入账号弹框：选 JSON 文件 → 后端解析预览 → 勾选账号 → 导入合并。 */

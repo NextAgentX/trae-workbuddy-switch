@@ -122,12 +122,16 @@ export interface CopyResult {
   id: string;
   newId: string;
   jsonlCopied: boolean;
+  /** 是否成功写入目标账号的 sessions 索引行；false 表示索引库不可写（已降级为只复制 jsonl 正文）。 */
+  sessionRowWritten?: boolean;
   mappingWritten: boolean;
   backup: string;
   /** 命中去重账本：该会话此前已复制到目标账号且副本仍存活，本次跳过。 */
   deduplicated?: boolean;
   /** 本次是否成功写入去重账本（仅未去重时出现）。 */
   ledgerWritten?: boolean;
+  /** 降级警告（如「目标索引不可写，已复制正文，请重启 WorkBuddy 重建索引」）。 */
+  warning?: string;
 }
 
 export interface SwitchResult {

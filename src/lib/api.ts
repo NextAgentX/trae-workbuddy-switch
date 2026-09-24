@@ -44,6 +44,7 @@ import type {
   UpdateInfo,
 } from "./types";
 import { demoModeEnabled, demoUnavailableMessage } from "./demo-mode";
+import { displayText } from "./display-text";
 import { localizeCodedStrings, localizeError } from "./error-code";
 import { t } from "./i18n";
 import { screenshotDemoResponse } from "./screenshot-demo";
@@ -251,6 +252,8 @@ const ROUTES: Record<string, Route> = {
   delete_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/delete" },
   // 打开 Trae 数据目录（非 Windows 返回结构化 Unsupported）。
   open_trae_data_dir: { method: "POST", path: "/api/trae/open-data-dir" },
+  // 启动该变体的 Trae 客户端（OAuth 网页登录的前置动作：客户端首次启动才写出设备凭证）。
+  trae_launch_client: { method: "POST", path: "/api/trae/launch-client" },
   get_trae_gateway_logs: { method: "GET", path: "/api/trae/gateway/logs" },
   clear_trae_gateway_logs: { method: "POST", path: "/api/trae/gateway/logs/clear" },
 };
@@ -313,12 +316,57 @@ function regionArg(region?: Region): Record<string, unknown> {
   return region ? { region } : {};
 }
 
+/**
+ * 把 `AccountMeta` 的展示字段收敛成 `string | null`（规则见 `lib/display-text.ts`）。
+ *
+ * 后端已经归一过一遍（Rust `account::display_str`，含回归护栏），这里是**第二道闸**：
+ * `AccountMeta` 会流进十几处字符串拼接与 JSX 子节点（`{name}` / `{remark}` /
+ * `email.split("@")` / `remark.trim()`），只要有一处漏了脏值就可能让整棵树崩掉。
+ * 在这一层收口，比在十几个消费点各防一次可靠 —— 新增消费点自动被覆盖。
+ *
+ * ⚠️ **时间戳字段刻意不参与归一**：`types.ts` 声明为 `number | null`，
+ * `account-card.tsx` 按 `typeof === "number"` 判定过期，字符串化会让过期提示静默消失。
+ */
+function normalizeAccountMeta(account: AccountMeta): AccountMeta {
+  return {
+    ...account,
+    // `id` 在类型上是非空 `string`；脏值退化成空串，后续按 id 的操作会**响亮失败**
+    //（后端回「账号不存在」），而不是把 `[object Object]` 撒进 key 与请求参数。
+    id: displayText(account.id) ?? "",
+    uid: displayText(account.uid),
+    nickname: displayText(account.nickname),
+    email: displayText(account.email),
+    enterpriseName: displayText(account.enterpriseName),
+    needsReloginReason: displayText(account.needsReloginReason),
+    remark: displayText(account.remark),
+  };
+}
+
+/** 同 {@link normalizeAccountMeta}，作用于 `status.current`（区域 Tab 与徽标 tooltip 都读它）。 */
+function normalizeAppStatus(status: AppStatus): AppStatus {
+  if (!status?.current) return status;
+  return {
+    ...status,
+    current: {
+      uid: displayText(status.current.uid),
+      nickname: displayText(status.current.nickname),
+      email: displayText(status.current.email),
+    },
+  };
+}
+
 export function getStatus(region?: Region): Promise<AppStatus> {
-  return call("get_status", region ? { region } : undefined);
+  return call<AppStatus>("get_status", region ? { region } : undefined).then(normalizeAppStatus);
 }
 
 export function getAccounts(region?: Region): Promise<{ accounts: AccountMeta[] }> {
-  return call("get_accounts", region ? { region } : undefined);
+  return call<{ accounts: AccountMeta[] }>(
+    "get_accounts",
+    region ? { region } : undefined,
+  ).then((result) => ({
+    ...result,
+    accounts: (result.accounts ?? []).map(normalizeAccountMeta),
+  }));
 }
 
 export function getCodebuddyCliStatus(): Promise<CodeBuddyCliStatus> {
@@ -375,11 +423,16 @@ export function oauthStart(region?: Region): Promise<OAuthStartResult> {
 }
 
 export function oauthStatus(loginId: string, region?: Region): Promise<OAuthPollResult> {
-  return call("oauth_status", { loginId, ...regionArg(region) });
+  return call<OAuthPollResult>("oauth_status", { loginId, ...regionArg(region) }).then((poll) =>
+    poll.result ? { ...poll, result: normalizeAccountMeta(poll.result) } : poll,
+  );
 }
 
 export function importLocal(region?: Region): Promise<{ ok: boolean; account: AccountMeta }> {
-  return call("import_local", region ? { region } : undefined);
+  return call<{ ok: boolean; account: AccountMeta }>(
+    "import_local",
+    region ? { region } : undefined,
+  ).then((result) => ({ ...result, account: normalizeAccountMeta(result.account) }));
 }
 
 export function exportAccounts(accountIds: string[], region?: Region): Promise<{ ok: boolean; accounts: AccountRecord[] }> {
@@ -430,7 +483,9 @@ export function setAccountRemark(
   remark: string,
   region?: Region,
 ): Promise<AccountMeta> {
-  return call("set_account_remark", { accountId, remark, ...regionArg(region) });
+  return call<AccountMeta>("set_account_remark", { accountId, remark, ...regionArg(region) }).then(
+    normalizeAccountMeta,
+  );
 }
 
 /** 读取账号切换与账号列表展示配置（全局单份）。 */
@@ -452,6 +507,15 @@ export function switchProgress(): Promise<{ running: boolean; progress: string |
 export function listSessions(region?: Region): Promise<{
   sessions: Session[];
   current: string | null;
+  /**
+   * 会话来源：`db`=正常索引；`scan`=索引库不可读已降级扫描 projects 目录；
+   * `empty`=库与 projects 皆空（账号确实没有会话）；
+   * `no-dir`=数据目录里连 `workbuddy.db` / `projects/` 都不存在（客户端刚重装 / 重置过），
+   * 必须与 `empty` 区分显示，否则会把「数据目录空了」误导成「账号没有会话」。
+   */
+  source?: "db" | "scan" | "empty" | "no-dir";
+  /** 降级 / 异常提示（索引库不可读、扫描结果不完整等）。普通场景为 null。 */
+  warning?: string | null;
 }> {
   return call("list_sessions", region ? { region } : undefined);
 }
@@ -688,7 +752,9 @@ export function getRotateLogs(): Promise<{ logs: RotateLog[] }> {
 }
 
 export function refreshAccountToken(accountId: string, region?: Region): Promise<AccountMeta> {
-  return call("refresh_account_token", { accountId, ...regionArg(region) });
+  return call<AccountMeta>("refresh_account_token", { accountId, ...regionArg(region) }).then(
+    normalizeAccountMeta,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,6 +1332,19 @@ export function openTraeDataDir(
   variant?: TraeVariantId | null,
 ): Promise<{ ok?: boolean; path?: string }> {
   return call("open_trae_data_dir", variantArgs(variant));
+}
+
+/**
+ * 启动**该变体**的 Trae 客户端。
+ *
+ * 客户端从没启动过时没有 icube 设备凭证，OAuth 网页登录必然以 `dataDirMissing` 失败；
+ * 这个动作让用户一键跨过前置条件。**成功只表示已发起启动**，
+ * 凭证是否已就绪要由用户点登录后再判（见 Rust 侧 `handlers::launch_client_for`）。
+ */
+export function launchTraeClient(
+  variant?: TraeVariantId | null,
+): Promise<{ ok?: boolean; path?: string; variant?: string }> {
+  return call("trae_launch_client", variantArgs(variant));
 }
 
 /** 最近 N 条网关请求日志（元数据）。 */

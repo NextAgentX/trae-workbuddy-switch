@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/product-marks";
 import { cn } from "@/lib/utils";
 import { demoModeEnabled } from "@/lib/demo-mode";
+import { displayText } from "@/lib/display-text";
 import { useT, type Translate } from "@/lib/i18n";
 import type { AccountMeta, CreditExpiry, CreditResource, TravelStatus } from "@/lib/types";
 
@@ -86,12 +87,17 @@ function creditResources(credit?: CreditExpiry): CreditResource[] {
 }
 
 function accountIdentity(account: AccountMeta): string {
-  if (account.email) {
-    const [local, domain] = account.email.split("@");
-    if (!domain) return account.email;
+  // 先归一再看：脏值（对象）会让下面的 `split` 直接抛 TypeError，
+  // 而渲染期的 TypeError 会顺着错误边界外的路径把整棵树带走（issue #2）。
+  const email = displayText(account.email);
+  if (email) {
+    const [local, domain] = email.split("@");
+    if (!domain) return email;
     return `${local.slice(0, 1)}${"*".repeat(Math.max(3, local.length - 1))}@${domain}`;
   }
-  return account.uid ? `UID · ${account.uid}` : `ID · ${account.id}`;
+  const uid = displayText(account.uid);
+  if (uid) return `UID · ${uid}`;
+  return `ID · ${displayText(account.id) ?? "—"}`;
 }
 
 const chipClass = "rounded-md px-1.5 py-0 text-[11px] font-medium";
@@ -251,23 +257,46 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
    * 不拦的话「按 Esc 取消」会被那次 blur 反向提交成一次保存。
    */
   const skipCommitRef = useRef(false);
-  const name = account.nickname || account.uid || t("wbAccounts.card.unnamed");
+  /**
+   * 从「更多操作」菜单进入备注编辑时置位，用来**取消这一次菜单关闭的焦点归还**。
+   *
+   * Radix 菜单关闭时会把焦点还给触发按钮（`onCloseAutoFocus` 的默认行为，且发生在
+   * 关闭动画之后 —— 实测约 150ms）。而编辑框那时**已经拿到焦点**，焦点被顶掉会补发
+   * 一次 `onBlur`，被当成「用户点了别处」提交一次（草稿与已保存值相同 ⇒ 直接退出编辑态），
+   * 表现为**编辑框闪一下就没了**。
+   *
+   * 只在「本次关闭确实是为了进入编辑态」时拦截，其他菜单项（刷新 Token / 删除账号）
+   * 仍按 Radix 默认行为把焦点还给触发按钮。
+   */
+  const keepRemarkFocusRef = useRef(false);
+  /**
+   * 兜底归一（第三道闸）。
+   *
+   * 后端与 `lib/api.ts` 都已归一，但本组件是**纯展示**的，也可能被 demo 数据、
+   * 测试或未来的新调用方直接喂进来。而 `name` / `remark` 会**直接当 React 子节点
+   * 渲染** —— 对象会让 React 抛错并卸载整棵树 ⇒ 窗口一片白（issue #2）。
+   * 宁可显示「未命名账号」，也不能崩。
+   */
+  const name = displayText(account.nickname) || displayText(account.uid) || t("wbAccounts.card.unnamed");
   const expired = typeof account.expiresAt === "number" && account.expiresAt < Date.now();
-  const remark = account.remark?.trim() || "";
+  const remark = displayText(account.remark)?.trim() || "";
+  const identity = accountIdentity(account);
 
   useEffect(() => {
     if (!remarkEditing) return;
-    // 延后一帧：从「更多操作」菜单进入时，Radix 会在菜单关闭时把焦点还给触发按钮，
-    // 同一帧内聚焦会被它抢走，表现为「点了编辑但光标不在输入框里」。
+    // 等 DOM 提交后再聚焦。从菜单进入时菜单关闭还会再跑一次焦点归还，
+    // 那一次已由 `onCloseAutoFocus` 拦掉（见 keepRemarkFocusRef）。
     const timer = window.setTimeout(() => remarkInputRef.current?.focus(), 0);
     return () => window.clearTimeout(timer);
   }, [remarkEditing]);
 
-  function beginRemarkEdit() {
-    if (featuresDisabled || !onSaveRemark || remarkSaving) return;
+  /** 进入备注编辑态；返回 `true` 表示确实进入了（调用方据此决定要不要拦焦点）。 */
+  function beginRemarkEdit(): boolean {
+    if (featuresDisabled || !onSaveRemark || remarkSaving) return false;
     skipCommitRef.current = false;
     setRemarkDraft(remark);
     setRemarkEditing(true);
+    return true;
   }
 
   function cancelRemarkEdit() {
@@ -374,7 +403,16 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                   <Ellipsis />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuContent
+                align="end"
+                className="w-40"
+                onCloseAutoFocus={(event) => {
+                  if (!keepRemarkFocusRef.current) return;
+                  keepRemarkFocusRef.current = false;
+                  // 焦点留给刚渲染出来的备注输入框，别还给触发按钮（见 keepRemarkFocusRef）。
+                  event.preventDefault();
+                }}
+              >
                 <DropdownMenuItem disabled={featuresDisabled || !onRefresh} onSelect={() => onRefresh?.(account)}>
                   <RefreshCw />{t("wbAccounts.card.refreshToken")}
                 </DropdownMenuItem>
@@ -383,7 +421,13 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                     <CircleCheck />{t("wbAccounts.card.manualCheckin")}
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuItem disabled={featuresDisabled || !onSaveRemark} onSelect={beginRemarkEdit}>
+                <DropdownMenuItem
+                  disabled={featuresDisabled || !onSaveRemark}
+                  onSelect={() => {
+                    // 见 keepRemarkFocusRef：这一次菜单关闭不要把焦点抢回去。
+                    keepRemarkFocusRef.current = beginRemarkEdit();
+                  }}
+                >
                   <StickyNote />{t("wbAccounts.card.editRemark")}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -479,7 +523,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             <div className={cn("flex size-12 shrink-0 items-center justify-center rounded-full text-base font-semibold ring-4 ring-white/65", avatarClass)}>{name.charAt(0).toUpperCase()}</div>
             <div className="min-w-0 flex-1">
               <h3 className="truncate text-sm font-semibold leading-5" title={name}>{name}</h3>
-              <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground" title={account.email || account.uid || account.id}>{accountIdentity(account)}</p>
+              <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground" title={identity}>{identity}</p>
               <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">{statusChips}</div>
             </div>
           </div>

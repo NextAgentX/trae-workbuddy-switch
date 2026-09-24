@@ -78,6 +78,15 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
   const [error, setError] = useState("");
   const [currentUid, setCurrentUid] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
+  /** 降级 / 异常提示（索引库不可读、扫描结果不完整）。普通场景为 null。 */
+  const [sessionWarning, setSessionWarning] = useState<string | null>(null);
+  /**
+   * 会话列表的来源：`db` / `scan` / `empty` / `no-dir`（见 `api.listSessions`）。
+   *
+   * `no-dir` 必须与 `empty` 分开显示 —— 前者是**数据目录空了**（客户端刚重装 / 重置），
+   * 后者才是**账号没有会话**；混为一谈会把用户引向错误结论（2026-09-23 现场）。
+   */
+  const [sessionSource, setSessionSource] = useState<string | null>(null);
   /**
    * 数据**来源**版本（会话 / 记忆 / 连接器取自哪一版的当前登录账号）。
    * 缺省等于目标 `region` —— 即同版本内切换，行为与改造前完全一致。
@@ -111,50 +120,67 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
     };
   }, []);
 
-  // 打开时加载当前账号会话
+  /**
+   * 打开弹窗时复位一次性状态 —— 其中包含「数据来源版本回到目标版本」。
+   *
+   * ★ **`sourceRegion` 绝不能出现在本 effect 的依赖里**：本 effect 会把来源版本重置成
+   * 目标版本，一旦被 `sourceRegion` 触发，用户刚点的「国际版」会在下一帧被弹回
+   * 「国内版」—— 症状是「点了没反应」，于是跨版本迁移整条路都走不通
+   * （2026-09-24 用户报障现场）。复位只发生在「打开」这一刻，之后来源版本由用户掌控。
+   */
   useEffect(() => {
-    if (open && account) {
-      if (!defaultsRef.current.applied) {
-        defaultsRef.current.applied = true;
-        defaultsRef.current.selectAll = copySessionsByDefault;
-        setCopySessions(copySessionsByDefault);
-      }
-      setMigrateMemory(false);
-      setMigrateConnectors(false);
-      setSelected(new Set());
-      setExpanded(new Set());
-      setError("");
-      setSourceRegion(region ?? "cn");
-      setLoadingSessions(true);
-      // 首次进入时 `sourceRegion` 可能还是上一次的选择，重置后会再跑一次本 effect；
-      // 用 cancelled 丢弃那次过期请求，避免短暂显示「另一个版本」的会话。
-      let cancelled = false;
-      api
-        .listSessions(sourceRegion)
-        .then((res) => {
-          if (cancelled) return;
-          setSessions(res.sessions);
-          setCurrentUid(res.current);
-          // 「复制会话常开」：默认全选，用户仍可逐条取消。
-          if (defaultsRef.current.selectAll) {
-            defaultsRef.current.selectAll = false;
-            setSelected(new Set(res.sessions.map((session) => session.id)));
-          }
-        })
-        .catch((e) => {
-          if (!cancelled) setError(api.asError(e));
-        })
-        .finally(() => {
-          if (!cancelled) setLoadingSessions(false);
-        });
-      return () => {
-        cancelled = true;
-      };
+    if (!open) return;
+    setMigrateMemory(false);
+    setMigrateConnectors(false);
+    setSelected(new Set());
+    setExpanded(new Set());
+    setError("");
+    setSourceRegion(region ?? "cn");
+    setSessionSource(null);
+  }, [open, account, region]);
+
+  // 加载会话：打开时取一次；此后每次改「数据来源版本」都要重取。
+  useEffect(() => {
+    if (!open || !account) return;
+    if (!defaultsRef.current.applied) {
+      defaultsRef.current.applied = true;
+      defaultsRef.current.selectAll = copySessionsByDefault;
+      setCopySessions(copySessionsByDefault);
     }
+    // 换了来源版本后，已勾选的 id 属于**另一个版本**的数据，必须清空
+    // （否则会拿 A 版的会话 id 去 B 版复制）。
+    setSelected(new Set());
+    setLoadingSessions(true);
+    // 首次进入时 `sourceRegion` 可能还是上一次的选择，复位后会再跑一次本 effect；
+    // 用 cancelled 丢弃那次过期请求，避免短暂显示「另一个版本」的会话。
+    let cancelled = false;
+    api
+      .listSessions(sourceRegion)
+      .then((res) => {
+        if (cancelled) return;
+        setSessions(res.sessions);
+        setCurrentUid(res.current);
+        setSessionWarning(res.warning ?? null);
+        setSessionSource(res.source ?? null);
+        // 「复制会话常开」：默认全选，用户仍可逐条取消。
+        if (defaultsRef.current.selectAll) {
+          defaultsRef.current.selectAll = false;
+          setSelected(new Set(res.sessions.map((session) => session.id)));
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(api.asError(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSessions(false);
+      });
+    return () => {
+      cancelled = true;
+    };
     // 刻意**不**把 `copySessionsByDefault` 放进依赖：它决定的是「打开瞬间的初值」，
     // 任何在弹窗开着时发生的值变化都不该反过来改动用户当前的选择。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, account, region, sourceRegion]);
+  }, [open, account, sourceRegion]);
 
   function toggleSession(id: string) {
     setSelected((prev) => {
@@ -224,6 +250,13 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
       }
       if (res.sessionCopy?.skipped?.length) {
         parts.push(t("wbAccounts.dialog.skippedSessions", { n: res.sessionCopy.skipped.length }));
+      }
+      // 收集复制阶段每条副本的降级警告（如「索引不可写，已复制正文」）。
+      const sessionWarnings = (res.sessionCopy?.copied ?? [])
+        .map((c) => c.warning)
+        .filter((w): w is string => Boolean(w));
+      if (sessionWarnings.length) {
+        warnings.push(...sessionWarnings);
       }
       if (res.backup) parts.push(t("wbAccounts.dialog.backup", { path: res.backup }));
 
@@ -319,13 +352,18 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
   const crossRegion = sourceRegion !== targetRegion;
   const needsPermission = permissionDenied(error);
   const sessionsEmpty = !loadingSessions && sessions.length === 0;
+  // 空列表的成因必须分开说，否则会把用户引向错误结论：
+  //   no-dir → 该版本的数据目录空了（客户端刚重装 / 重置）；empty → 该版本账号确实没有会话。
+  const sourceLabel = regionLabel(sourceRegion);
   const copyHint = loadingSessions
     ? t("wbAccounts.dialog.copyHintLoading")
     : error && sessionsEmpty
       ? t("wbAccounts.dialog.copyHintErrorEmpty")
       : sessionsEmpty
         ? currentUid
-          ? t("wbAccounts.dialog.copyHintEmptyCurrent")
+          ? sessionSource === "no-dir"
+            ? t("wbAccounts.dialog.copyHintNoData", { region: sourceLabel })
+            : t("wbAccounts.dialog.copyHintEmptyCurrent", { region: sourceLabel })
           : t("wbAccounts.dialog.copyHintNoCurrent")
         : crossRegion
           ? t("wbAccounts.dialog.copyHintCross", {
@@ -398,6 +436,13 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone, regio
               >
                 {copyHint}
               </div>
+              {/* 降级警告：索引库不可读 / 不完整。仍允许勾选（降级扫描已列出
+                   projects 下的 jsonl），但必须明确告诉用户数据可能缺失。 */}
+              {sessionWarning && (
+                <div className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+                  {sessionWarning}
+                </div>
+              )}
             </div>
             <Switch
               checked={copySessions}

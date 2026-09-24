@@ -10,6 +10,7 @@ import {
   Loader2,
   QrCode,
   RefreshCw,
+  Rocket,
   Rows3,
   UserPlus,
   XCircle,
@@ -49,7 +50,7 @@ import {
   saveSchedulePatch,
   SCHEDULE_CONFIG_KEY,
 } from "@/lib/schedule-config";
-import { isAutoDetected, traeProductLabel } from "@/lib/trae-client";
+import { isAutoDetected } from "@/lib/trae-client";
 import { traeVariantLabel } from "@/lib/trae-types";
 import {
   TRAE_VARIANT_FALLBACK,
@@ -593,8 +594,55 @@ export default function TraeAccountsPage() {
         logins[program.variant]?.userId === account.userId,
     }));
   }
-  // 探测到的是哪条产品线。同机装多个 Trae 时，用户靠这个确认切换器管的是哪一个。
-  const productLabel = traeProductLabel(env);
+  /**
+   * **当前区域**的探测结果（含该区域的 `dataDir` / `dataDirExists`）。
+   *
+   * 与 `env`（`get_trae_env`）的区别是本质的：`env` 走后端 `detect_data_dir()`，
+   * 那是**横跨全部产品线**的全局探测，只适合「环境自检」。拿它在区域页里显示目录，
+   * 会出现「国际版页签写着 `TRAE SOLO CN`」，而且本机一个候选都不存在时它会回落到
+   * 候选表首项 ⇒ 把一个**不存在**的路径说成「已探测的登录态目录」。
+   * 按区域取的是后端 `platform::select_data_dir_for(variant)`，不存在就是 `null`。
+   */
+  const regionStatus = variantStatuses.find((item) => item.variant === variant);
+
+  /**
+   * 「客户端环境」那一行要用的**本区域**客户端状态。
+   *
+   * ## ★ 为什么不能再用 `env`（`get_trae_env`）—— 用户报障现场
+   *
+   * `env` 是后端 `detect_data_dir()` / `detect_install()` 的**跨变体**全局探测
+   * （按活跃度、首个命中挑一条线），只适合「环境自检」。放在区域页上它会**报错产品线**：
+   * 本机实测国内版页签显示的是**国际版**客户端 —— `v1.107.1` +
+   * `C:\...\AppData\Roaming\TRAE SOLO`，而该目录属 `packageType = SOLO_I18N`
+   * （国际版）；真正装着登录态的是 `TRAE SOLO CN`（`SOLO_CN`）。
+   *
+   * ## 取「该区域的主程序」而不是区域级汇总
+   *
+   * 与状态条的登录态同源（`programs[0]`）。区域级汇总里的 `dataDir` 是**最近活跃**目录，
+   * 而本行要核对的是「登录态在哪」⇒ 用**写侧**目录 `writeDataDir`
+   * （与后端 `overview_for().dataDir` 同源）。本机两者不同值：
+   * `writeDataDir` = `TRAE SOLO CN`（有登录态）、`dataDir` = `TRAE SOLO`（国际版、更活跃）。
+   */
+  const clientStatus = regionStatus?.programs?.[0] ?? null;
+  const clientInstalled = clientStatus?.installed ?? regionStatus?.installed ?? false;
+  const clientVersion = clientStatus?.version ?? regionStatus?.version ?? null;
+  const clientPath = clientStatus?.path ?? regionStatus?.path ?? null;
+  const clientDataDir = clientStatus?.writeDataDir ?? regionStatus?.writeDataDir ?? null;
+  const clientDataDirExists =
+    clientStatus?.writeDataDirExists ?? regionStatus?.writeDataDirExists ?? false;
+  const clientRunning = clientStatus?.running ?? regionStatus?.running ?? false;
+
+  /**
+   * 探测到的是哪条产品线。同机装多个 Trae 时，用户靠这个确认切换器管的是哪一个。
+   *
+   * 取自**该区域主程序**的展示名（`TraeWork` / `TraeCode` / `TraeWork AI` / `Trae AI`），
+   * 不再从 `env` 推 —— 那是全局探测的结果，在国际版页签上会写着国内版的产品名。
+   */
+  const productLabel = clientStatus?.label ?? regionStatus?.variantLabel ?? null;
+  /**
+   * 「手工指定」标记：取自**应用级**设置 `settings.traePath`（`env.configuredPath`），
+   * 与区域无关，故仍看 `env`。
+   */
   const autoDetected = isAutoDetected(env);
   /** 当前产品线的展示名；拿不到探测结果时回落 `variant` 状态的展示名。 */
   const variantLabel = productLabel ?? traeVariantLabel(variant);
@@ -648,12 +696,22 @@ export default function TraeAccountsPage() {
       ) : accounts.length === 0 ? (
         /* 空态：与 WorkBuddy 的 `EmptyRegionCard` 同构（可能原因 + 期望产物 + 两个动作）。 */
         <EmptyTraeCard
-          installed={env?.installed ?? false}
-          dataDir={env?.dataDir ?? null}
+          // ⚠️ 三个字段都必须取**当前区域**那份（见 `EmptyTraeCard` 的 prop 文档）：
+          // `env`（`get_trae_env`）是横跨全部产品线的全局探测，在区域页里会张冠李戴
+          // —— 「装了」会取自另一条产品线，`dataDir` 会写成另一个客户端的目录。
+          installed={regionStatus?.installed ?? false}
+          dataDir={regionStatus?.dataDir ?? null}
+          dataDirExists={regionStatus?.dataDirExists ?? false}
           onRecheck={() => void loadAll()}
           onImport={() => void importLocal()}
           onOAuth={() => setOauthOpen(true)}
+          onLaunch={() =>
+            void run("launch-client", "trae.page.accounts.emptyLaunchClient", () =>
+              api.launchTraeClient(variant),
+            )
+          }
           importing={importing}
+          launching={busy === "launch-client"}
         />
       ) : (
         <>
@@ -713,14 +771,14 @@ export default function TraeAccountsPage() {
             <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-3.5 text-sm">
               <span className="flex items-center gap-2">
                 {t("trae.page.accounts.client")}
-                <span className={cn("font-medium", env?.installed ? "text-emerald-600" : "text-muted-foreground")}>
-                  {env?.installed
-                    ? env.version
-                      ? t("trae.page.accounts.installedVersion", { version: env.version })
+                <span className={cn("font-medium", clientInstalled ? "text-emerald-600" : "text-muted-foreground")}>
+                  {clientInstalled
+                    ? clientVersion
+                      ? t("trae.page.accounts.installedVersion", { version: clientVersion })
                       : t("trae.page.accounts.installed")
                     : t("trae.page.accounts.notInstalled")}
                 </span>
-                {env?.installed && productLabel && (
+                {clientInstalled && productLabel && (
                   <TooltipProvider delayDuration={400}>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -731,8 +789,8 @@ export default function TraeAccountsPage() {
                       </TooltipTrigger>
                       <TooltipContent className="max-w-md">
                         <div className="space-y-1 font-mono text-xs break-all">
-                          <div>{env.path ?? "—"}</div>
-                          {env.dataDir && <div className="text-muted-foreground">{env.dataDir}</div>}
+                          <div>{clientPath ?? "—"}</div>
+                          {clientDataDir && <div className="text-muted-foreground">{clientDataDir}</div>}
                         </div>
                       </TooltipContent>
                     </Tooltip>
@@ -741,9 +799,9 @@ export default function TraeAccountsPage() {
               </span>
               <span className="flex items-center gap-2">
                 {t("trae.page.accounts.runtime")}
-                <span className={cn("inline-flex items-center gap-1.5 font-medium", env?.running ? "text-emerald-600" : "text-muted-foreground")}>
-                  <span className={cn("size-2 rounded-full", env?.running ? "bg-emerald-500" : "bg-muted-foreground/50")} />
-                  {env?.running ? t("trae.page.accounts.running") : t("trae.page.accounts.notRunning")}
+                <span className={cn("inline-flex items-center gap-1.5 font-medium", clientRunning ? "text-emerald-600" : "text-muted-foreground")}>
+                  <span className={cn("size-2 rounded-full", clientRunning ? "bg-emerald-500" : "bg-muted-foreground/50")} />
+                  {clientRunning ? t("trae.page.accounts.running") : t("trae.page.accounts.notRunning")}
                 </span>
               </span>
               <span className="text-muted-foreground">
@@ -779,10 +837,10 @@ export default function TraeAccountsPage() {
                 </span>
               )}
             </div>
-            {env?.dataDir && (
+            {clientDataDir && (
               <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-                {t("trae.page.accounts.dataDirLabel")}<code className="font-mono">{env.dataDir}</code>
-                {!env.dataDirExists && <span className="ml-2 text-amber-600 dark:text-amber-400">{t("trae.page.accounts.dataDirMissing")}</span>}
+                {t("trae.page.accounts.dataDirLabel")}<code className="font-mono">{clientDataDir}</code>
+                {!clientDataDirExists && <span className="ml-2 text-amber-600 dark:text-amber-400">{t("trae.page.accounts.dataDirMissing")}</span>}
               </div>
             )}
           </Card>
@@ -1198,17 +1256,31 @@ export default function TraeAccountsPage() {
 function EmptyTraeCard({
   installed,
   dataDir,
+  dataDirExists,
   onRecheck,
   onImport,
   onOAuth,
+  onLaunch,
   importing,
+  launching,
 }: {
   installed: boolean;
+  /**
+   * **当前区域**的客户端数据目录（后端 `platform::select_data_dir_for`）。
+   *
+   * 不能传 `get_trae_env` 那份 —— 它走 `detect_data_dir()`（**横跨全部产品线**
+   * 的全局探测），在区域页里会显示**另一条产品线**的目录名
+   * （实测：国际版页签显示 `TRAE SOLO CN`），且本机一个候选都不存在时它会
+   * 回落到候选表首项，把一个**根本不存在**的路径说成「已探测」。
+   */
   dataDir: string | null;
+  dataDirExists: boolean;
   onRecheck: () => void;
   onImport: () => void;
   onOAuth: () => void;
+  onLaunch: () => void;
   importing: boolean;
+  launching: boolean;
 }) {
   const t = useT();
   return (
@@ -1245,6 +1317,13 @@ function EmptyTraeCard({
               <QrCode />
               {t("trae.page.accounts.oauthLogin")}
             </Button>
+            {/* 启动客户端是「客户端从没启动过 ⇒ 没有设备凭证」的唯一解。
+                放在这里而不是只放在 OAuth 弹窗里：本空态的「尝试从本机导入」
+                同样依赖客户端数据目录，两个入口的前置条件是一样的。 */}
+            <Button size="sm" variant="outline" onClick={onLaunch} disabled={launching}>
+              {launching ? <Loader2 className="animate-spin" /> : <Rocket />}
+              {t("trae.page.accounts.emptyLaunchClient")}
+            </Button>
             <Button size="sm" variant="outline" onClick={onRecheck}>
               <RefreshCw />
               {t("trae.page.accounts.emptyRecheck")}
@@ -1262,15 +1341,26 @@ function EmptyTraeCard({
           </div>
 
           <div className="mt-4">
-            <p className="text-sm font-medium text-foreground/80">{t("trae.page.accounts.emptyDetectedDir")}</p>
+            {/* 目录不存在时不许写「已探测」——拿一个并不存在的路径当「探测结果」
+                会把用户引向「文件在、只是读不出」，而真相是客户端从没启动过。 */}
+            <p className="text-sm font-medium text-foreground/80">
+              {dataDirExists ? t("trae.page.accounts.emptyDetectedDir") : t("trae.page.accounts.emptyExpectedDir")}
+            </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <code className="min-w-0 break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
                 {dataDir ? `${dataDir}\\User\\globalStorage\\storage.json` : t("trae.page.accounts.emptyNoDataDir")}
               </code>
+              {!dataDirExists && (
+                <span className="text-xs text-amber-600 dark:text-amber-400">
+                  {t("trae.page.accounts.dataDirMissing")}
+                </span>
+              )}
             </div>
-            <p className="mt-1.5 text-xs text-muted-foreground">
-              {t("trae.page.accounts.emptyDirNote")}
-            </p>
+            {dataDirExists && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                {t("trae.page.accounts.emptyDirNote")}
+              </p>
+            )}
           </div>
         </div>
       </div>

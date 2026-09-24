@@ -70,4 +70,12 @@ export const zh = {
 
   // ---- 通用兜底 ----
   "common.unknownError": "未知错误",
+
+  // ---- 顶层错误边界（渲染期异常兜底，见 components/error-boundary.tsx）----
+  "app.error.title": "界面出错了",
+  "app.error.description":
+    "已捕获一个界面渲染错误。为避免显示错乱，这里停住了。请复制下面的详情反馈给我们；也可以先重新加载界面继续使用。",
+  "app.error.reload": "重新加载界面",
+  "app.error.copy": "复制错误详情",
+  "app.error.copied": "已复制",
 } as const;

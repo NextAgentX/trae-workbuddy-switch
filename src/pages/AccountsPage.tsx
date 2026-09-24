@@ -38,6 +38,7 @@ import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
 import { SwitchAccountDialog } from "@/components/switch-account-dialog";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { displayText } from "@/lib/display-text";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import type {
   AccountMeta,
@@ -158,7 +159,13 @@ function regionPresence(status: AppStatus | null, accounts: AccountMeta[]): Regi
 
 function presenceText(presence: RegionPresence, status: AppStatus | null, t: Translate): string {
   if (presence === "logged-in") {
-    const name = status?.current?.nickname || status?.current?.email || status?.current?.uid || t("wbAccounts.common.unknownAccount");
+    // 归一是必须的：`t()` 的插值走 `String(params[name])`，脏值会原样变成
+    // 「已登录: [object Object]」（issue #2 用户截图里的那一行）。
+    const name =
+      displayText(status?.current?.nickname) ||
+      displayText(status?.current?.email) ||
+      displayText(status?.current?.uid) ||
+      t("wbAccounts.common.unknownAccount");
     return t("wbAccounts.page.statusLoggedIn", { name });
   }
   if (presence === "installed") return t("wbAccounts.common.notLoggedIn");
@@ -734,8 +741,12 @@ function RegionPanel({ region }: { region: Region }) {
     ? orderedAccounts.find((account) => hasExpiringSoonCredits(creditMap[account.id]))?.id
     : undefined;
   const cliCurrentAccountId = codebuddyCli?.activeAccountId;
+  // 归一同 `presenceText`：这个值会进 `t()` 的插值（徽标 tooltip 的「当前账号：…」）。
   const workbuddyCurrentName = current
-    ? current.nickname || current.email || current.uid || t("wbAccounts.common.unknownAccount")
+    ? displayText(current.nickname) ||
+      displayText(current.email) ||
+      displayText(current.uid) ||
+      t("wbAccounts.common.unknownAccount")
     : t("wbAccounts.common.notLoggedIn");
   const codebuddyCurrentName = codebuddyCli?.configured
     ? codebuddyCli.activeAccountName || t("wbAccounts.common.notDetected")
@@ -1118,9 +1129,9 @@ function RegionPanel({ region }: { region: Region }) {
             <DialogDescription>
               {t("wbAccounts.dialog.deleteDesc", {
                 name:
-                  deleteTarget?.nickname ||
-                  deleteTarget?.email ||
-                  deleteTarget?.id ||
+                  displayText(deleteTarget?.nickname) ||
+                  displayText(deleteTarget?.email) ||
+                  displayText(deleteTarget?.id) ||
                   t("wbAccounts.common.unknownAccount"),
               })}
             </DialogDescription>

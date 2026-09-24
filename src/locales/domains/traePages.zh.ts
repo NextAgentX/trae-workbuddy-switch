@@ -165,8 +165,10 @@ export const zh = {
   "trae.page.accounts.emptyImportHint": "仅适用于旧版客户端或凭据仍是明文的安装；1.107.x 起通常读不到",
   "trae.page.accounts.emptyImportTry": "尝试从本机导入",
   "trae.page.accounts.emptyDetectedDir": "已探测的登录态目录：",
+  "trae.page.accounts.emptyExpectedDir": "客户端数据目录（预期位置）：",
   "trae.page.accounts.emptyNoDataDir": "尚未探测到客户端数据目录",
   "trae.page.accounts.emptyDirNote": "该文件在新版客户端里已不再保存明文凭据；仅供确认客户端数据目录位置。",
+  "trae.page.accounts.emptyLaunchClient": "启动客户端",
 
   // =====================================================================
   // TraeSettingsPage.tsx —— 「设置」页

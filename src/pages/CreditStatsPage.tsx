@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { Bar, BarChart, CartesianGrid, Rectangle, XAxis, YAxis } from "recharts";
 import {
+  ArrowDown,
+  ArrowUp,
   CalendarDays,
   CalendarRange,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsUpDown,
   CircleAlert,
   CircleCheck,
   Loader2,
@@ -147,6 +152,12 @@ function accountLabel(account: { accountName?: string | null; accountId: string 
   return account.accountName || account.accountId;
 }
 
+/**
+ * 账号筛选项。`region` 只用于合并视图的归属徽标，由后端注入 `statistics.accounts[]`；
+ * `officialUsage.accounts[]` 不带该字段，故全页选项一律以 `statistics.accounts[]` 为来源。
+ */
+type AccountOption = { accountId: string; accountName?: string | null; region?: Region };
+
 function AccountFilterMenu({
   accounts,
   accountFilter,
@@ -154,7 +165,7 @@ function AccountFilterMenu({
   ariaLabel,
   allowAll = true,
 }: {
-  accounts: { accountId: string; accountName?: string | null; region?: Region }[];
+  accounts: AccountOption[];
   accountFilter: string | null;
   onAccountFilterChange: (accountId: string | null) => void;
   ariaLabel: string;
@@ -418,46 +429,48 @@ function buildStackedChart(
 function TrendChart({
   stats,
   officialUsage,
+  accountFilter,
+  onAccountFilterChange,
+  accountOptions,
 }: {
   stats: CreditStatistics;
   officialUsage?: CreditOfficialUsage;
+  /** 页面级共享的账号筛选（null = 所有账号），与「按模型分类」「积分明细」联动 */
+  accountFilter: string | null;
+  onAccountFilterChange: (accountId: string | null) => void;
+  accountOptions: AccountOption[];
 }) {
   const t = useT();
-  /** null = 所有账号汇总；本卡片独立，不影响其他卡片 */
-  const [accountFilter, setAccountFilter] = useState<string | null>(null);
   /** 本卡片独立的时间范围，不影响其他卡片 */
   const [range, setRange] = useState<RangeKey>("30d");
   const official = isOfficialUsageAvailable(officialUsage) ? officialUsage : undefined;
   const officialAvailable = Boolean(official);
-  const filterAccounts = official ? official.accounts : stats.accounts;
-  const activeFilterAccount =
-    accountFilter && filterAccounts.some((account) => account.accountId === accountFilter)
-      ? filterAccounts.find((account) => account.accountId === accountFilter)
-      : undefined;
-  const effectiveFilter = activeFilterAccount?.accountId ?? null;
+  // 账号筛选由页面统一校验后下发，三张卡片取值必然一致（见 CreditStatsPage 的 effectiveAccountFilter）。
+  const effectiveFilter = accountFilter;
   const officialAccount = effectiveFilter ? officialAccountFor(official, effectiveFilter) : undefined;
   const localAccount = effectiveFilter
     ? stats.accounts.find((account) => account.accountId === effectiveFilter)
     : undefined;
-  // 选中账号时切到该账号的逐日数据与汇总；否则用全部账号的聚合
-  const daily = official
-    ? (officialAccount ? officialAccount.daily ?? [] : official.daily)
-    : (localAccount ? localAccount.daily ?? [] : stats.daily);
-  const summary = official
-    ? (officialAccount
+  // 选中账号时切到该账号的逐日数据与汇总；否则用全部账号的聚合。
+  // ★ 「选了账号却查不到」必须回落到**空**，不能回落到**全量聚合** —— 否则界面会把
+  //   全账号的数字挂在某个具体账号名下（账号名与数字不同源）。这种账号确实可能存在：
+  //   统计的 `accounts[]` 由账号库 ∪ 快照/事件里的 accountId 组成，后者未必出现在官方用量里。
+  const daily = effectiveFilter
+    ? (official ? officialAccount?.daily ?? [] : localAccount?.daily ?? [])
+    : (official ? official.daily : stats.daily);
+  const summary = effectiveFilter
+    ? (official
         ? {
-            usageToday: officialAccount.usageToday ?? 0,
-            usage7Days: officialAccount.usage7Days ?? 0,
-            usageThisMonth: officialAccount.usageThisMonth ?? 0,
+            usageToday: officialAccount?.usageToday ?? 0,
+            usage7Days: officialAccount?.usage7Days ?? 0,
+            usageThisMonth: officialAccount?.usageThisMonth ?? 0,
           }
-        : official.summary)
-    : (localAccount
-        ? {
-            usageToday: localAccount.usageToday,
-            usage7Days: localAccount.usage7Days,
-            usageThisMonth: localAccount.usageThisMonth,
-          }
-        : stats.summary);
+        : {
+            usageToday: localAccount?.usageToday ?? 0,
+            usage7Days: localAccount?.usage7Days ?? 0,
+            usageThisMonth: localAccount?.usageThisMonth ?? 0,
+          })
+    : (official ? official.summary : stats.summary);
   const basePoints = chartPoints(daily, range);
   const hasDataSource = officialAvailable || Boolean(stats.coverageStartAt);
 
@@ -498,9 +511,9 @@ function TrendChart({
             </CardDescription>
             <div className="flex max-w-full flex-wrap items-center gap-1.5">
               <AccountFilterMenu
-                accounts={filterAccounts}
+                accounts={accountOptions}
                 accountFilter={effectiveFilter}
-                onAccountFilterChange={setAccountFilter}
+                onAccountFilterChange={onAccountFilterChange}
                 ariaLabel={t("wbStats.credit.filterByTrend")}
               />
               <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label={t("wbStats.credit.trendRangeAria")}>
@@ -795,20 +808,24 @@ function ModelBreakdownRows({ models }: { models: CreditOfficialUsageModel[] }) 
 
 function ModelBreakdown({
   officialUsage,
+  accountFilter,
+  onAccountFilterChange,
+  accountOptions,
 }: {
   officialUsage: CreditOfficialUsage;
+  /** 页面级共享的账号筛选（null = 所有账号），与「官方积分消耗」「积分明细」联动 */
+  accountFilter: string | null;
+  onAccountFilterChange: (accountId: string | null) => void;
+  accountOptions: AccountOption[];
 }) {
   const t = useT();
-  /** null = 所有账号汇总；本卡片独立，不影响其他卡片 */
-  const [accountFilter, setAccountFilter] = useState<string | null>(null);
   /** 本卡片独立的时间范围，不影响其他卡片 */
   const [range, setRange] = useState<RangeKey>("30d");
-  const filterAccounts = officialUsage.accounts;
-  const activeFilterAccount =
-    accountFilter && filterAccounts.some((account) => account.accountId === accountFilter)
-      ? filterAccounts.find((account) => account.accountId === accountFilter)
-      : undefined;
-  const effectiveFilter = activeFilterAccount?.accountId ?? null;
+  // 账号筛选由页面统一校验后下发；这里只按 ID 取该账号的逐日聚合。
+  const effectiveFilter = accountFilter;
+  const activeFilterAccount = effectiveFilter
+    ? officialUsage.accounts.find((account) => account.accountId === effectiveFilter)
+    : undefined;
   // 按选中账号 + 时间范围，从逐日模型聚合求和（全量，不受明细条数上限影响）
   const basePoints = chartPoints(
     effectiveFilter ? activeFilterAccount?.daily ?? [] : officialUsage.daily,
@@ -847,9 +864,9 @@ function ModelBreakdown({
             </Badge>
             <div className="flex flex-wrap items-center justify-end gap-1.5">
               <AccountFilterMenu
-                accounts={filterAccounts}
+                accounts={accountOptions}
                 accountFilter={effectiveFilter}
-                onAccountFilterChange={setAccountFilter}
+                onAccountFilterChange={onAccountFilterChange}
                 ariaLabel={t("wbStats.credit.filterByModel")}
               />
               <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label={t("wbStats.credit.modelRangeAria")}>
@@ -865,7 +882,8 @@ function ModelBreakdown({
                     onClick={() => setRange(option.key)}
                     aria-pressed={range === option.key}
                   >
-                    {option.label}
+                    {/* ★ 这里曾漏掉 `t()`，界面上直接渲染出 `wbStats.token.range.30d` 这样的键名。 */}
+                    {t(option.label)}
                   </button>
                 ))}
               </div>
@@ -888,6 +906,81 @@ function ModelBreakdown({
       )}
       </Card>
     </section>
+  );
+}
+
+/** 请求用量明细的可排序列。`time` 即后端下发的顺序（按请求时间倒序）。 */
+type RequestSortKey = "time" | "credit" | "model" | "client";
+type SortDirection = "asc" | "desc";
+
+/** 每页条数选项；默认 100，与后端「单账号明细上限」同量级。 */
+const REQUEST_PAGE_SIZES = [50, 100] as const;
+
+/**
+ * 请求时间字符串形如 `YYYY-MM-DD HH:MM:SS`（后端 `parse_request_time` 统一格式化）。
+ * 定宽 + 字典序即时间序，故直接比字符串；异常/缺失值退化为空串（排在最前）。
+ */
+function requestTimeKey(request: CreditOfficialUsageRequest): string {
+  return request.requestTime ?? "";
+}
+
+function compareRequests(
+  left: CreditOfficialUsageRequest,
+  right: CreditOfficialUsageRequest,
+  key: RequestSortKey,
+): number {
+  switch (key) {
+    case "credit":
+      return left.credit - right.credit;
+    case "model":
+      return left.model.localeCompare(right.model);
+    case "client":
+      return left.client.localeCompare(right.client);
+    case "time":
+    default:
+      return requestTimeKey(left).localeCompare(requestTimeKey(right));
+  }
+}
+
+/** 可点击排序的表头。`aria-sort` 挂在 `th` 上，按钮只负责触发。 */
+function SortableRequestHeader({
+  label,
+  columnKey,
+  sortKey,
+  sortDirection,
+  onSort,
+  ariaLabel,
+  align = "left",
+}: {
+  label: string;
+  columnKey: RequestSortKey;
+  sortKey: RequestSortKey;
+  sortDirection: SortDirection;
+  onSort: (key: RequestSortKey) => void;
+  ariaLabel: string;
+  align?: "left" | "right";
+}) {
+  const active = sortKey === columnKey;
+  const Icon = active ? (sortDirection === "asc" ? ArrowUp : ArrowDown) : ChevronsUpDown;
+  return (
+    <th
+      scope="col"
+      aria-sort={active ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+      className={cn("px-3 py-2.5 font-medium", align === "right" && "text-right")}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(columnKey)}
+        aria-label={ariaLabel}
+        className={cn(
+          "inline-flex cursor-pointer items-center gap-1 rounded-md transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          active && "font-semibold text-foreground",
+        )}
+      >
+        <span>{label}</span>
+        <Icon className={cn("size-3 shrink-0", !active && "opacity-45")} aria-hidden="true" />
+      </button>
+    </th>
   );
 }
 
@@ -930,6 +1023,27 @@ function OfficialUsageBreakdown({
   accountId: string | null;
 }) {
   const t = useT();
+  /** 默认按请求时间倒序（与后端下发顺序一致）；点表头可切到按消耗 / 模型 / 客户端排序。 */
+  const [sortKey, setSortKey] = useState<RequestSortKey>("time");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [pageSize, setPageSize] = useState<number>(REQUEST_PAGE_SIZES[1]);
+  const [page, setPage] = useState(1);
+
+  // 账号或排序方式一变，行集合与顺序都换了，旧页码没有意义 —— 回到第 1 页。
+  useEffect(() => {
+    setPage(1);
+  }, [accountId, sortKey, sortDirection, pageSize]);
+
+  const handleSort = (key: RequestSortKey) => {
+    if (key === sortKey) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    // 消耗列默认「从高到低」——排查「哪几笔最贵」的默认视角；其余列默认升序。
+    setSortDirection(key === "credit" ? "desc" : "asc");
+  };
+
   const officialAvailable = isOfficialUsageAvailable(officialUsage);
   const account = accountId ? officialAccountFor(officialUsage, accountId) : undefined;
 
@@ -966,6 +1080,18 @@ function OfficialUsageBreakdown({
     : officialUsage.accounts.some((item) => item.detailTruncated);
   const showAccount = !account;
 
+  // 排序在本地做：官方明细本身已全量下发（受后端单账号上限约束），无需再请求。
+  const sortedRequests = [...requests].sort((left, right) => {
+    const primary = compareRequests(left, right, sortKey);
+    if (primary !== 0) return sortDirection === "asc" ? primary : -primary;
+    // 同值并列时保持「新的在前」，便于肉眼核对。
+    return requestTimeKey(right).localeCompare(requestTimeKey(left));
+  });
+  const totalPages = Math.max(1, Math.ceil(sortedRequests.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * pageSize;
+  const pageRows = sortedRequests.slice(pageStart, pageStart + pageSize);
+
   return (
     <div className="min-w-0">
       {detailTruncated && (
@@ -981,29 +1107,113 @@ function OfficialUsageBreakdown({
           {totalRequests > 0 ? t("wbStats.credit.formatFail") : t("wbStats.credit.noRequests")}
         </div>
       ) : (
-        <div className="min-w-0 overflow-x-auto">
-          <table className="w-full min-w-[700px] text-left text-[11px]">
-            <thead className="sticky top-0 bg-muted/95 text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colTime")}</th>
-                {showAccount && <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colAccount")}</th>}
-                <th className="px-3 py-2.5 text-right font-medium">{t("wbStats.credit.colUsage")}</th>
-                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colModel")}</th>
-                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colClient")}</th>
-                <th className="px-3 py-2.5 font-medium">{t("wbStats.credit.colRequestId")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {requests.map((request) => (
-                <OfficialRequestRow
-                  key={`${request.requestId}-${request.requestTime}`}
-                  request={request}
-                  showAccount={showAccount}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="min-w-0 overflow-x-auto">
+            <table className="w-full min-w-[700px] text-left text-[11px]">
+              <thead className="sticky top-0 bg-muted/95 text-muted-foreground">
+                <tr>
+                  <SortableRequestHeader
+                    label={t("wbStats.credit.colTime")}
+                    columnKey="time"
+                    sortKey={sortKey}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    ariaLabel={t("wbStats.credit.sortBy", { column: t("wbStats.credit.colTime") })}
+                  />
+                  {showAccount && (
+                    <th scope="col" className="px-3 py-2.5 font-medium">{t("wbStats.credit.colAccount")}</th>
+                  )}
+                  <SortableRequestHeader
+                    label={t("wbStats.credit.colUsage")}
+                    columnKey="credit"
+                    sortKey={sortKey}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    ariaLabel={t("wbStats.credit.sortBy", { column: t("wbStats.credit.colUsage") })}
+                    align="right"
+                  />
+                  <SortableRequestHeader
+                    label={t("wbStats.credit.colModel")}
+                    columnKey="model"
+                    sortKey={sortKey}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    ariaLabel={t("wbStats.credit.sortBy", { column: t("wbStats.credit.colModel") })}
+                  />
+                  <SortableRequestHeader
+                    label={t("wbStats.credit.colClient")}
+                    columnKey="client"
+                    sortKey={sortKey}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    ariaLabel={t("wbStats.credit.sortBy", { column: t("wbStats.credit.colClient") })}
+                  />
+                  <th scope="col" className="px-3 py-2.5 font-medium">{t("wbStats.credit.colRequestId")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((request) => (
+                  <OfficialRequestRow
+                    key={`${request.requestId}-${request.requestTime}`}
+                    request={request}
+                    showAccount={showAccount}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2.5 text-[11px] text-muted-foreground sm:px-5">
+            <span>
+              {t("wbStats.credit.pageRange", {
+                from: formatCredits(pageStart + 1),
+                to: formatCredits(pageStart + pageRows.length),
+                total: formatCredits(sortedRequests.length),
+              })}
+            </span>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="hidden sm:inline">{t("wbStats.credit.pageSize")}</span>
+              <div className="flex gap-1 rounded-lg bg-muted p-1" aria-label={t("wbStats.credit.pageSizeAria")}>
+                {REQUEST_PAGE_SIZES.map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    className={cn(
+                      "cursor-pointer rounded-md px-2 py-0.5 tabular-nums transition-colors",
+                      pageSize === size ? "bg-background font-medium text-foreground shadow-sm" : "hover:text-foreground",
+                    )}
+                    onClick={() => setPageSize(size)}
+                    aria-pressed={pageSize === size}
+                  >
+                    {size}
+                  </button>
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="size-7 p-0"
+                disabled={currentPage <= 1}
+                onClick={() => setPage(currentPage - 1)}
+                aria-label={t("wbStats.credit.prevPage")}
+              >
+                <ChevronLeft className="size-3.5" />
+              </Button>
+              <span className="tabular-nums">
+                {t("wbStats.credit.pageIndicator", { page: currentPage, total: totalPages })}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="size-7 p-0"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage(currentPage + 1)}
+                aria-label={t("wbStats.credit.nextPage")}
+              >
+                <ChevronRight className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -1087,33 +1297,26 @@ function ResourcesByAccount({
 function SelectedAccountDetails({
   officialUsage,
   regionAccounts,
+  accountOptions,
+  accountFilter,
+  onAccountFilterChange,
   creditMap,
   creditLoadingMap,
 }: {
   officialUsage?: CreditOfficialUsage;
   /** 当前统计范围下的账号集合（cn / global 单版，或两版并集），已按归属标注。 */
   regionAccounts: CreditStatsAccount[];
+  accountOptions: AccountOption[];
+  /** 页面级共享的账号筛选（null = 所有账号），与「官方积分消耗」「按模型分类」联动 */
+  accountFilter: string | null;
+  onAccountFilterChange: (accountId: string | null) => void;
   creditMap: Record<string, CreditExpiry>;
   creditLoadingMap: Record<string, boolean>;
 }) {
   const t = useT();
   const [detailTab, setDetailTab] = useState<"credits" | "requests">("credits");
-  const official = isOfficialUsageAvailable(officialUsage) ? officialUsage : undefined;
-  // 账号选项集合随 region 变化；卡片内的时间范围与账号筛选控件本身不变。
-  const optionAccounts: { accountId: string; accountName?: string | null; region?: Region }[] = official
-    ? official.accounts
-    : regionAccounts;
-  const filterAccounts = optionAccounts;
-  /** 本卡片仅允许选择单个账号，默认第一个账号 */
-  const [accountFilter, setAccountFilter] = useState<string | null>(
-    () => filterAccounts[0]?.accountId ?? null,
-  );
-  const activeFilterAccount =
-    accountFilter && filterAccounts.some((account) => account.accountId === accountFilter)
-      ? filterAccounts.find((account) => account.accountId === accountFilter)
-      : undefined;
-  // 筛选失效（如账号列表刷新变化）时回退到第一个账号
-  const effectiveFilter = activeFilterAccount?.accountId ?? filterAccounts[0]?.accountId ?? null;
+  // 账号筛选由页面统一校验后下发；null = 所有账号（资源包与请求明细都按账号分组展示）。
+  const effectiveFilter = accountFilter;
   const visibleAccounts = effectiveFilter
     ? regionAccounts.filter((account) => account.accountId === effectiveFilter)
     : regionAccounts;
@@ -1127,10 +1330,6 @@ function SelectedAccountDetails({
     if (latest == null || account.lastSnapshotAt > latest) return account.lastSnapshotAt;
     return latest;
   }, null);
-
-  useEffect(() => {
-    setDetailTab("credits");
-  }, [effectiveFilter]);
 
   return (
     <div className="flex min-w-0 flex-col gap-12">
@@ -1150,11 +1349,10 @@ function SelectedAccountDetails({
                 )}
               </CardDescription>
               <AccountFilterMenu
-                accounts={filterAccounts}
+                accounts={accountOptions}
                 accountFilter={effectiveFilter}
-                onAccountFilterChange={setAccountFilter}
+                onAccountFilterChange={onAccountFilterChange}
                 ariaLabel={t("wbStats.credit.filterByDetail")}
-                allowAll={false}
               />
             </div>
             <div className="mt-3 flex max-w-full gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label={t("wbStats.credit.detailTypeAria")}>
@@ -1279,6 +1477,13 @@ export default function CreditStatsPage() {
   const [stats, setStats] = useState<CreditStatistics | null>(() => cachedFor(readPreferredRegion()) ?? null);
   const [loading, setLoading] = useState(() => !cachedFor(readPreferredRegion()));
   const [error, setError] = useState<string | null>(null);
+  /**
+   * 全页共享的账号筛选（null = 所有账号）。
+   *
+   * 三张卡片（官方积分消耗 / 按模型分类 / 积分明细）共用这一个值，任一处切换即全页同步，
+   * 避免「上面看 A 账号、下面看 B 账号」的割裂。
+   */
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
 
   const load = useCallback(
     async (target: RegionFilter, refresh = false) => {
@@ -1324,6 +1529,11 @@ export default function CreditStatsPage() {
     void load(region);
   }, [load, region]);
 
+  // 切换统计范围后账号集合会整体换掉（cn / global / 并集），沿用旧筛选没有意义，回到「所有账号」。
+  useEffect(() => {
+    setAccountFilter(null);
+  }, [region]);
+
   useEffect(() => {
     // 已有会话缓存且距上次刷新超过 30 分钟时，进入页面自动刷新一次统计
     const autoRefresh =
@@ -1365,6 +1575,30 @@ export default function CreditStatsPage() {
 
   const officialUsage = stats?.officialUsage;
   const official = isOfficialUsageAvailable(officialUsage) ? officialUsage : undefined;
+  /**
+   * 三张卡片共用的账号选项：**只此一处来源**。
+   *
+   * 取 `regionAccounts`（源自后端 `statistics.accounts[]`）而非 `officialUsage.accounts[]`：
+   * 前者带 `region` 归属徽标、且与账号管理页顺序一致；两者账号 ID 集合相同
+   * （后端把同一份账号库分别投影到统计与官方用量），所以选项不会漏账号。
+   * 选项与「有效性校验」同源，才能保证三张卡片拿到的取值完全一致。
+   */
+  const accountOptions = useMemo<AccountOption[]>(
+    () =>
+      regionAccounts.map((account) => ({
+        accountId: account.accountId,
+        accountName: account.accountName,
+        // 单版本视图里「归属」是冗余信息（每个账号都属于该版本），只在合并视图展示徽标 ——
+        // 合并视图里两版账号混在一起，不给徽标就分不清是哪个号的同名账号。
+        region: region === "all" ? account.region : undefined,
+      })),
+    [region, regionAccounts],
+  );
+  /** 页面级校验：筛选值不在当前范围内（如账号被删除、范围已切换）时回落「所有账号」。 */
+  const effectiveAccountFilter =
+    accountFilter && accountOptions.some((account) => account.accountId === accountFilter)
+      ? accountFilter
+      : null;
   const t = useT();
 
   return (
@@ -1500,11 +1734,17 @@ export default function CreditStatsPage() {
           <TrendChart
             stats={stats}
             officialUsage={officialUsage}
+            accountFilter={effectiveAccountFilter}
+            onAccountFilterChange={setAccountFilter}
+            accountOptions={accountOptions}
           />
 
           {official && (
             <ModelBreakdown
               officialUsage={official}
+              accountFilter={effectiveAccountFilter}
+              onAccountFilterChange={setAccountFilter}
+              accountOptions={accountOptions}
             />
           )}
 
@@ -1515,6 +1755,9 @@ export default function CreditStatsPage() {
           <SelectedAccountDetails
             officialUsage={officialUsage}
             regionAccounts={regionAccounts}
+            accountOptions={accountOptions}
+            accountFilter={effectiveAccountFilter}
+            onAccountFilterChange={setAccountFilter}
             creditMap={creditMap}
             creditLoadingMap={creditLoadingMap}
           />

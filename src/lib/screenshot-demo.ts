@@ -141,6 +141,14 @@ const usageSeeds: AccountUsageSeed[] = [
   },
 ];
 
+/**
+ * 演示数据的单账号明细上限，与后端 `OFFICIAL_USAGE_DETAIL_LIMIT` 保持一致。
+ *
+ * 夹具必须按同一上限生成行数，否则演示页会出现「提示说只截断了 N 条、实际却只给 100 行」
+ * 这种自相矛盾的状态（截图会被当成真实界面参考）。
+ */
+const DEMO_DETAIL_LIMIT = 3000;
+
 /** 积分包名称的键（三组账号用同一批名字，数值不同 —— 值留在 `creditPackageSeeds`）。 */
 const PACK_FISSION: TranslationKey = "shared.demo.pack.fission";
 const PACK_CREDITS: TranslationKey = "shared.demo.pack.credits";
@@ -300,12 +308,15 @@ function visibleRequests(accountIndex: number) {
   const flashCredits = [0.13, 0.04, 0.2, 1, 0.08, 3.99, 0.45, 8.5, 24.56];
   const kimiCredits = [86.4, 103.2, 112.8, 128.4, 74.6];
   const proCredits = [0.04, 0.13, 0.2, 0.45];
+  // 与后端一致：单账号最多下发 DEMO_DETAIL_LIMIT 条明细（按请求时间倒序取最近 N 条）。
+  const rowCount = Math.min(seed.requestCount, DEMO_DETAIL_LIMIT);
   const weightedModels = seed.models.flatMap((model) =>
-    Array.from({ length: Math.max(1, Math.round((model.requestCount / seed.requestCount) * 100)) }, () => model.model),
+    Array.from({ length: Math.max(1, Math.round((model.requestCount / seed.requestCount) * rowCount)) }, () => model.model),
   );
 
-  return Array.from({ length: 100 }, (_, rowIndex) => {
-    const daysAgo = Math.floor(rowIndex / 8);
+  return Array.from({ length: rowCount }, (_, rowIndex) => {
+    // 行数随账号规模放大后，日期要摊在 31 天窗口内（原来 100 行时 /8 只用到第 12 天）。
+    const daysAgo = Math.floor((rowIndex * 30) / rowCount);
     const hour = hours[(rowIndex + accountIndex * 2) % hours.length];
     const minute = (rowIndex * 7 + accountIndex * 11) % 60;
     const ts = new Date(atLocalTime(daysAgo, hour, minute));
@@ -359,7 +370,7 @@ function buildStatistics(): CreditStatistics {
     accountName: account.nickname ?? account.email ?? account.id,
     ok: true,
     requestCount: usageSeeds[index].requestCount,
-    detailTruncated: true,
+    detailTruncated: usageSeeds[index].requestCount > DEMO_DETAIL_LIMIT,
     usageToday: accountDaily[index][accountDaily[index].length - 1]?.usage ?? 0,
     usage7Days: sumRecent(accountDaily[index], 7),
     usageThisMonth: sumMonth(accountDaily[index]),
@@ -407,7 +418,7 @@ function buildStatistics(): CreditStatistics {
       accounts: officialAccounts,
       requests: accountSeeds.flatMap((_, index) => visibleRequests(index)),
       models: sumModels(daily),
-      detailLimitPerAccount: 100,
+      detailLimitPerAccount: DEMO_DETAIL_LIMIT,
       errors: [],
     },
   };
@@ -715,6 +726,10 @@ function demoTraeVariants(): TraeVariantsStatus {
     path: installed ? path : null,
     dataDir: installed ? dataDir : null,
     dataDirExists: installed,
+    // 演示数据里两个目录取同一个值（真实机器上它们可能分叉，见
+    // `TraeProgramStatus.writeDataDir` 的说明）—— 截图场景不需要复现那个分叉。
+    writeDataDir: installed ? dataDir : null,
+    writeDataDirExists: installed,
   });
 
   return {
@@ -730,6 +745,8 @@ function demoTraeVariants(): TraeVariantsStatus {
         path: "D:\\Programs\\TRAE SOLO CN\\TRAE SOLO CN.exe",
         dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
         dataDirExists: true,
+        writeDataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
+        writeDataDirExists: true,
         programs: [
           program(
             "trae_work",
@@ -763,6 +780,8 @@ function demoTraeVariants(): TraeVariantsStatus {
         path: "C:\\Users\\demo\\AppData\\Local\\Programs\\TRAE SOLO\\TRAE SOLO.exe",
         dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO",
         dataDirExists: true,
+        writeDataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO",
+        writeDataDirExists: true,
         programs: [
           program(
             "trae_work",

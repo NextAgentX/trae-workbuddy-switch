@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Rocket } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -79,6 +79,10 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
   const [port, setPort] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [result, setResult] = useState<TraeAccount | null>(null);
+  /** 正在启动客户端（与 `busy` 分开：启动与登录是两个独立动作，不该互相禁用）。 */
+  const [launching, setLaunching] = useState(false);
+  /** 启动客户端的结果提示（成功说清「还要再点一次登录」，失败说清原因）。 */
+  const [launchNote, setLaunchNote] = useState("");
   /** 剩余等待秒数（`null` 表示尚未进入等待态）。 */
   const [remaining, setRemaining] = useState<number | null>(null);
   /**
@@ -243,6 +247,30 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
     onOpenChange(false);
   }
 
+  /**
+   * 启动当前产品线的 Trae 客户端（「取不到设备凭证」时的下一步动作）。
+   *
+   * 客户端**首次启动**才会把 icube 设备凭证写进 `storage.json`，而 OAuth 授权 URL
+   * 的 `device_id` 必须与它同源（见 Rust 侧 `icube::device_identity_for` 的红线）。
+   * ⇒ 客户端从没启动过时，登录**必然**失败，且用户无法靠自己点「重试」解决。
+   *
+   * ⚠️ **启动成功 ≠ 可以立刻登录**：客户端写出凭证需要时间，而且它大概率会弹登录页
+   * 挡在前面。所以成功文案只说「已启动」，让用户自己再点一次登录 —— 不在这里替他
+   * 自动重试（那会把一个不可控的时序当成确定事件，失败时更难解释）。
+   */
+  async function launchClient() {
+    setLaunching(true);
+    setLaunchNote("");
+    try {
+      await api.launchTraeClient(variant);
+      setLaunchNote(t("trae.comp.oauth.launchOk", { variant: variantLabel }));
+    } catch (e) {
+      setLaunchNote(api.asError(e));
+    } finally {
+      setLaunching(false);
+    }
+  }
+
   async function start() {
     setBusy(true);
     setError("");
@@ -378,6 +406,34 @@ export function TraeOAuthLoginDialog({ open, onOpenChange, onSuccess }: Props) {
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
+        )}
+
+        {/*
+          「启动客户端」只在这种错误下出现：**没有回调端口** ⇒ 后端在取设备凭证那一步
+          就失败了，还没走到绑端口。
+          判据是**结构性的**（后端 `login_start_for` 先把身份拿到手，再绑固定端口），
+          不是拿错误文案去匹配「未找到…数据目录」——那属于「代理断言」，
+          文案一改就恒真，护栏却不会红（见验证纪律）。
+          端口类 / 回调类错误时端口必已绑定（`port !== null`）⇒ 本按钮不出现，
+          避免给出「启动客户端」这种错误建议。
+        */}
+        {error && !result && port === null && (
+          <div className="space-y-2">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => void launchClient()}
+              disabled={launching}
+            >
+              <Rocket />
+              {launching
+                ? t("trae.comp.oauth.launchBusy", { variant: variantLabel })
+                : t("trae.comp.oauth.launch", { variant: variantLabel })}
+            </Button>
+            {launchNote && (
+              <p className="text-xs text-muted-foreground">{launchNote}</p>
+            )}
+          </div>
         )}
 
         {/* 出错/超时后仍把回调地址摆出来：这是排查「回调没打回本机」的唯一抓手。 */}
