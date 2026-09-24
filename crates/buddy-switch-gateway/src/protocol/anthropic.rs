@@ -45,6 +45,8 @@ fn tool_result_to_text(content: Option<&Value>) -> String {
 /// - 顶层 `system` → `messages[0] {role:"system"}`
 /// - assistant `tool_use` block → `tool_calls`
 /// - user `tool_result` block → 独立 `{role:"tool",tool_call_id,content}` 消息
+/// - 同一条 user 消息里的文本块排在工具结果**之后**：`role:"tool"` 必须紧邻发起
+///   调用的 assistant 消息，否则上游判 `tool_call_sequence_broken`
 /// - `tools[{name,description,input_schema}]` → `tools[{type:"function",function:{...parameters}}]`
 /// - `tool_choice`（auto/any/tool）→ 上游字符串形态
 /// - `stop_sequences` → `stop`；强制 `stream:true`
@@ -176,10 +178,16 @@ pub fn to_upstream_request(body: &Value) -> Value {
                             messages.push(Value::Object(assistant));
                         }
                     } else {
+                        // 顺序不可交换：`role:"tool"` 必须**紧跟**发起该调用的
+                        // assistant 消息，中间插入任何消息都会被上游判
+                        // `tool_call_sequence_broken`（400，tool calls and tool
+                        // results do not match）。因此同一条 user 消息里的文本块
+                        // （Claude Code 的插话 / 中断说明）排在工具结果**之后**，
+                        // 作为本轮结果之后的新用户发言。
+                        messages.extend(tool_results);
                         if !text.is_empty() {
                             messages.push(json!({"role": "user", "content": text}));
                         }
-                        messages.extend(tool_results);
                     }
                 }
                 _ => {
@@ -372,7 +380,14 @@ impl<S> AnthropicSseStream<S> {
             }
         }
 
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        // `finish_reason` 的**空值形态**不是终止信号：上游 OpenAI 兼容实现常在中间分片里
+        // 写 `""`（而非标准的 `null`）。`as_str()` 对 `""` 会返回 `Some("")`，若直接据此
+        // `finalize`，转换流会在第一个分片就收尾，客户端表现为「流式对话刚开始就断了」。
+        if let Some(finish_reason) = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty())
+        {
             self.stop_reason = map_stop_reason(Some(finish_reason)).to_string();
             self.finalize();
         }
@@ -614,6 +629,35 @@ mod tests {
         assert_eq!(messages[2]["content"], "sunny");
     }
 
+    /// 同一条 user 消息里既有工具结果又有文本块时，文本必须排在结果**之后**。
+    ///
+    /// `role:"tool"` 必须紧邻发起调用的 assistant 消息；把文本块排到前面会让工具结果
+    /// 与 assistant 隔开，上游判 `tool_call_sequence_broken`（400）。
+    #[test]
+    fn tool_result_precedes_sibling_text_block() {
+        let anthropic = json!({
+            "model": "m",
+            "max_tokens": 10,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "sunny"},
+                    {"type": "text", "text": "顺带提一句"}
+                ]}
+            ]
+        });
+        let upstream = to_upstream_request(&anthropic);
+        let messages = upstream["messages"].as_array().unwrap();
+
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "toolu_1");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"], "顺带提一句");
+    }
+
     #[test]
     fn tool_choice_tool_maps_to_function_name_and_none_drops_tools() {
         let tool = json!({"model": "m", "tool_choice": {"type": "tool", "name": "foo"}, "messages": []});
@@ -761,5 +805,44 @@ mod tests {
         let text = collect_text(&events);
         assert!(text.contains("message_start"));
         assert!(text.contains("message_stop"));
+    }
+
+    /// 空值形态的 `finish_reason`（`""` 或 `null`）**不是**终止信号。
+    ///
+    /// 上游（OpenAI 兼容实现）在中间分片里把 `finish_reason` 写成空串而非 `null` 是常见
+    /// 现象。若把「键存在且能读成字符串」当成终止，转换流会在**第一个**分片就 `finalize`，
+    /// 客户端（Claude Code）看到的现象是「流式对话刚开始就断了」。
+    ///
+    /// 注意每个 SSE 帧必须是**独立的 chunk**：真实网络下逐帧到达。若把全部帧塞进同一个
+    /// chunk，`ingest` 的循环会无视 `finished` 继续处理后续帧，从而掩盖提前终止的缺陷。
+    #[tokio::test]
+    async fn stream_does_not_finalize_on_empty_finish_reason() {
+        let chunks = vec![
+            Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"\"}]}\n\n",
+            )),
+            Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\" there\"},\"finish_reason\":null}]}\n\n",
+            )),
+            Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+            Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
+        ];
+        let stream = AnthropicSseStream::new(futures_util::stream::iter(chunks), "m".to_string());
+        let events: Vec<Bytes> = stream.map(|item| item.unwrap()).collect().await;
+        let text = collect_text(&events);
+
+        assert!(text.contains("Hi"), "首个分片的内容必须送达：{text}");
+        assert!(
+            text.contains(" there"),
+            "空值 finish_reason 不得提前结束流，后续分片必须继续送达：{text}"
+        );
+        assert_eq!(
+            text.matches("\"stop_reason\":\"end_turn\"").count(),
+            1,
+            "只允许一个 message_delta 终止事件：{text}"
+        );
+        assert!(text.contains("message_stop"), "{text}");
     }
 }

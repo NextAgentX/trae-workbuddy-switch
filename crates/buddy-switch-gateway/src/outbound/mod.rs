@@ -151,7 +151,12 @@ fn normalize_effort_in_place(region: Region, model: &str, obj: &mut Map<String, 
 /// 规则（对照参考实现 `cleanupOrphanToolCalls`）：
 /// - 保留集 = `assistant.tool_calls[].id` ∩ `role=="tool"` 的 `tool_call_id`；
 /// - `assistant` 消息只要**批内任一** `id` 不在保留集 → 整批删除 `tool_calls`；
-/// - `role=="tool"` 且 `tool_call_id` 不在保留集 → **整条消息删除**。
+/// - `role=="tool"` 且 `tool_call_id` 不在**存活批次**内 → **整条消息删除**。
+///
+/// 「存活批次」而非「保留集」是必须的区分：批次 `[A,B]` 只有 `A` 有结果时，
+/// `保留集 = {A}`，但该批次因 `B` 是孤儿而**整批**被删——此时若按保留集放行，
+/// `A` 的 `role:"tool"` 结果就会悬空，上游照样判协议错误（400
+/// `tool_call_sequence_broken`）。删除与放行必须以同一套 id 为准。
 ///
 /// 无工具流量时不做任何改动。残留的孤儿对会被上游判协议错误（400），
 /// 因此这一步是「历史被截断/被裁剪」场景下的必要自愈。
@@ -185,39 +190,50 @@ fn cleanup_orphan_tool_calls(obj: &mut Map<String, Value>) {
 
     let keep: HashSet<String> = call_ids.intersection(&result_ids).cloned().collect();
 
-    messages.retain_mut(|message| {
+    // 第一趟：裁决每个 assistant 批次，并记录真正存活下来的 tool_call id。
+    let mut surviving: HashSet<String> = HashSet::new();
+    for message in messages.iter_mut() {
         let Some(wrapped) = message.as_object_mut() else {
-            return true;
+            continue;
         };
-        let role = wrapped
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        if role == "tool" {
-            let id = wrapped
-                .get("tool_call_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            return keep.contains(id.as_str());
-        }
-
-        let has_orphan = wrapped
+        let batch: Vec<String> = wrapped
             .get("tool_calls")
             .and_then(Value::as_array)
             .map(|calls| {
-                calls.iter().any(|call| {
-                    let id = call.get("id").and_then(Value::as_str).unwrap_or("");
-                    !keep.contains(id)
-                })
+                calls
+                    .iter()
+                    .map(|call| {
+                        call.get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                    .collect()
             })
-            .unwrap_or(false);
-        if has_orphan {
-            wrapped.remove("tool_calls");
+            .unwrap_or_default();
+        if batch.is_empty() {
+            continue;
         }
-        true
+        if batch.iter().any(|id| !keep.contains(id)) {
+            wrapped.remove("tool_calls");
+        } else {
+            surviving.extend(batch);
+        }
+    }
+
+    // 第二趟：工具结果只认存活批次。
+    messages.retain(|message| {
+        let Some(wrapped) = message.as_object() else {
+            return true;
+        };
+        if wrapped.get("role").and_then(Value::as_str) != Some("tool") {
+            return true;
+        }
+        let id = wrapped
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        surviving.contains(id)
     });
 }
 
@@ -484,6 +500,40 @@ mod tests {
     fn orphan_cleanup_is_noop_without_tool_traffic() {
         let value = cn(r#"{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}"#);
         assert_eq!(value["messages"].as_array().unwrap().len(), 1);
+    }
+
+    /// 部分孤儿批次：`[A,B]` 只有 `A` 有结果 → 批次整批删除，`A` 的结果必须一起删。
+    ///
+    /// 若按「保留集」（`{A}`）放行工具结果，就会留下悬空的 `role:"tool"` 消息，
+    /// 上游判 `tool_call_sequence_broken`（400）。
+    #[test]
+    fn partially_orphan_batch_does_not_leave_dangling_tool_result() {
+        let value = cn(
+            r#"{"model":"glm-5.2","messages":[
+                {"role":"user","content":"go"},
+                {"role":"assistant","content":null,"tool_calls":[
+                    {"id":"a","type":"function","function":{"name":"x","arguments":"{}"}},
+                    {"id":"b","type":"function","function":{"name":"y","arguments":"{}"}}
+                ]},
+                {"role":"tool","tool_call_id":"a","content":"result"}
+            ]}"#,
+        );
+        let messages = value["messages"].as_array().expect("数组");
+        assert_eq!(
+            messages.len(),
+            2,
+            "批次被整批删除后，其工具结果不得残留：{messages:?}"
+        );
+        assert!(
+            messages[1].get("tool_calls").is_none(),
+            "含孤儿 id 的 assistant 批次应整批删除 tool_calls"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message["role"] == json!("tool")),
+            "不得留下无主的工具结果：{messages:?}"
+        );
     }
 
     #[test]
