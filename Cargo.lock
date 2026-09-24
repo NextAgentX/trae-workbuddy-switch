@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-switch-core"
-version = "2026.9.211636"
+version = "2026.9.241700"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-switch-gateway"
-version = "2026.9.211636"
+version = "2026.9.241700"
 dependencies = [
  "anyhow",
  "axum",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-switch-rust"
-version = "2026.9.211636"
+version = "2026.9.241700"
 dependencies = [
  "buddy-switch-core",
  "buddy-switch-gateway",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-switch-server"
-version = "2026.9.211636"
+version = "2026.9.241700"
 dependencies = [
  "axum",
  "buddy-switch-core",

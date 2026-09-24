@@ -1,6 +1,6 @@
 {
   "name": "@nextagentx/buddy-switch",
-  "version": "2026.9.211636",
+  "version": "2026.9.241700",
   "description": "Buddy Switch（WorkBuddy 账号切换工具）：本地 webui（浏览器操作）+ 桌面 App（安装后运行 buddy-switch）",
   "bin": {
     "buddy-switch": "bin/buddy-switch.js"
@@ -10,10 +10,10 @@
     "scripts"
   ],
   "optionalDependencies": {
-    "@nextagentx/buddy-switch-darwin-arm64": "2026.9.211636",
-    "@nextagentx/buddy-switch-darwin-x64": "2026.9.211636",
-    "@nextagentx/buddy-switch-win32-x64": "2026.9.211636",
-    "@nextagentx/buddy-switch-linux-x64": "2026.9.211636"
+    "@nextagentx/buddy-switch-darwin-arm64": "2026.9.241700",
+    "@nextagentx/buddy-switch-darwin-x64": "2026.9.241700",
+    "@nextagentx/buddy-switch-win32-x64": "2026.9.241700",
+    "@nextagentx/buddy-switch-linux-x64": "2026.9.241700"
   },
   "scripts": {
     "postinstall": "node scripts/install.js"
@@ -28,5 +28,5 @@
     "switch",
     "cli"
   ],
-  "license": "MIT"
+  "license": "PolyForm-Noncommercial-1.0.0"
 }

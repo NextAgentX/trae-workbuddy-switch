@@ -19,7 +19,6 @@ src-tauri/target/
 
 # npm 包 postinstall 下载的平台二进制
 npm/bin/buddy-switch-*
-npm/bin/wb-switch-*
 
 # 本地运行时数据
 accounts.json
@@ -75,3 +74,8 @@ _*.png
 _*.mjs
 _*.cjs
 .verify-*.txt
+
+# Release 正文草稿（scripts/gen-release-notes.mjs 的默认输出；CI 里由 release job 现生成）
+/release-notes.md
+
+.key
