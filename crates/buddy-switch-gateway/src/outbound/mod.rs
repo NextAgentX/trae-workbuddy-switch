@@ -148,10 +148,16 @@ fn normalize_effort_in_place(region: Region, model: &str, obj: &mut Map<String, 
 
 /// 清理孤儿工具调用。
 ///
-/// 规则（对照参考实现 `cleanupOrphanToolCalls`）：
+/// 规则：前两条对齐参考实现 `cleanupOrphanToolCalls`；第 3 条**刻意收紧**（理由见下）：
 /// - 保留集 = `assistant.tool_calls[].id` ∩ `role=="tool"` 的 `tool_call_id`；
 /// - `assistant` 消息只要**批内任一** `id` 不在保留集 → 整批删除 `tool_calls`；
 /// - `role=="tool"` 且 `tool_call_id` 不在**存活批次**内 → **整条消息删除**。
+///
+/// ★ 第 3 条与参考实现是**刻意分歧**（勿按「对齐参考实现」改回）：参考实现按「保留集」
+/// 放行工具结果，在部分孤儿批次（`[A,B]` 只有 `A` 有结果）下会残留悬空的 `role:"tool"`，
+/// 与它自己头注释「反之 `role:tool` 也必须有对应的前置 `tool_call`……缺任一侧上游都会以
+/// HTTP 400 拒绝整个请求」相矛盾（其测试只断言 `tool_calls` 被删，从不断言那条 `tool`
+/// 消息的去向）。本项目改为与批次裁决同源的「存活批次」集合：删除与放行以同一套 id 为准。
 ///
 /// 「存活批次」而非「保留集」是必须的区分：批次 `[A,B]` 只有 `A` 有结果时，
 /// `保留集 = {A}`，但该批次因 `B` 是孤儿而**整批**被删——此时若按保留集放行，
