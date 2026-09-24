@@ -12,6 +12,7 @@
 
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -125,6 +126,9 @@ pub fn list_sessions_for_user(uid: &str) -> Value {
 }
 
 /// 按 region 列出某账号未删除的会话。
+///
+/// 归属匹配见 `USER_SCOPE_STRICT` / `USER_SCOPE_WIDENED`：当前账号的行**并上**「空归属」行，
+/// 避免客户端把 `user_id` 落成空串时被误判成「账号无会话」。
 pub fn list_sessions_for_user_for(region: Region, uid: &str) -> Value {
     let db = workbuddy_db_path_for(region);
     if !db.is_file() {
@@ -138,29 +142,65 @@ pub fn list_sessions_for_user_for(region: Region, uid: &str) -> Value {
     }
     let has_custom = column_exists(&conn, "sessions", "custom_title");
     let has_playground = column_exists(&conn, "sessions", "is_playground");
-    let sql = match (has_custom, has_playground) {
-        (true, true) => {
-            "SELECT id, cwd, title, custom_title, updated_at, is_playground FROM sessions \
-             WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC"
-        }
-        (true, false) => {
-            "SELECT id, cwd, title, custom_title, updated_at, 0 FROM sessions \
-             WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC"
-        }
-        (false, true) => {
-            "SELECT id, cwd, title, NULL, updated_at, is_playground FROM sessions \
-             WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC"
-        }
-        (false, false) => {
-            "SELECT id, cwd, title, NULL, updated_at, 0 FROM sessions \
-             WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC"
-        }
+    let columns = match (has_custom, has_playground) {
+        (true, true) => "id, cwd, title, custom_title, updated_at, is_playground",
+        (true, false) => "id, cwd, title, custom_title, updated_at, 0",
+        (false, true) => "id, cwd, title, NULL, updated_at, is_playground",
+        (false, false) => "id, cwd, title, NULL, updated_at, 0",
     };
-    let mut stmt = match conn.prepare(sql) {
-        Ok(s) => s,
-        Err(_) => return json!([]),
+    // 归属匹配 = 严格命中当前账号的行 **∪** 「空归属」行（见 `USER_SCOPE_*`）。
+    // 取并集而不是「严格为空才放宽」：后者在「既有当前账号的会话、又有旧空归属行」的库里
+    // 仍然看不到旧会话（用户现场：索引恢复后切换弹窗里依然列不出来）。
+    let mut sessions = query_session_rows(&conn, region, columns, USER_SCOPE_STRICT, uid);
+    if !uid.is_empty() {
+        for s in query_session_rows(&conn, region, columns, USER_SCOPE_WIDENED, uid) {
+            if !sessions.iter().any(|e| e.get("id") == s.get("id")) {
+                sessions.push(s);
+            }
+        }
+        // 两段各自按 updatedAt 倒序，合并后需重排，保持「最近活动在前」。
+        sessions.sort_by(|a, b| {
+            let ka = a.get("updatedAt").and_then(Value::as_i64).unwrap_or(0);
+            let kb = b.get("updatedAt").and_then(Value::as_i64).unwrap_or(0);
+            kb.cmp(&ka)
+        });
+    }
+    json!(sessions)
+}
+
+/// `sessions.user_id` 的归属过滤：`STRICT` 命中当前账号，`WIDENED` 额外纳入「空归属」行。
+///
+/// **为什么要纳入空归属行**：实测（2026-09-23，本机 18:47 的 Global 库备份）**116 条会话的
+/// `user_id` 全是空字符串** —— 这是客户端某些版本 / 迁移后的落库形态，不是损坏，也**不该**
+/// 被当成「账号没有会话」。严格过滤会让 UI 静默退化成「账号暂无会话」并**禁用复制**
+/// （用户现场报障：切换账号时无法复制会话）。
+///
+/// 取并集（而非「严格命中 0 行才放宽」）：库里同时存在当前账号的行与旧空归属行时，
+/// 旧会话同样必须列得出来。
+///
+/// 边界：**只纳入 `NULL` / 空串**（本机这份库里「没人认领」的行），**不会**把别的非空 uid
+/// 的会话列出来（负向对照见 `list_sessions_does_not_widen_to_other_accounts`）；
+/// 当前 uid 为空串时不做合并（两段会完全重叠）。
+const USER_SCOPE_STRICT: &str = "user_id = ?1";
+const USER_SCOPE_WIDENED: &str = "(user_id = ?1 OR user_id IS NULL OR user_id = '')";
+
+/// 按给定归属范围查会话行并映射成前端结构；任何一步失败都返回空表（**绝不报错**，
+/// 让上层能继续走降级扫描）。
+fn query_session_rows(
+    conn: &Connection,
+    region: Region,
+    columns: &str,
+    scope: &str,
+    uid: &str,
+) -> Vec<Value> {
+    let sql = format!(
+        "SELECT {columns} FROM sessions WHERE {scope} AND deleted_at IS NULL \
+         ORDER BY updated_at DESC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return Vec::new();
     };
-    let rows = stmt.query_map([uid], |row| {
+    let Ok(rows) = stmt.query_map([uid], |row| {
         Ok((
             row.get::<_, Option<String>>(0)?,
             row.get::<_, Option<String>>(1)?,
@@ -169,28 +209,86 @@ pub fn list_sessions_for_user_for(region: Region, uid: &str) -> Value {
             row.get::<_, Option<i64>>(4)?,
             row.get::<_, Option<i64>>(5)?,
         ))
-    });
+    }) else {
+        return Vec::new();
+    };
 
     let mut sessions: Vec<Value> = Vec::new();
-    if let Ok(iter) = rows {
-        for r in iter.flatten() {
-            let (cid, cwd, title, custom_title, updated_at, is_playground) = r;
-            let cid = cid.unwrap_or_default();
-            let cwd = cwd.unwrap_or_default();
-            if is_claw_workspace(&cwd) {
-                continue;
-            }
-            sessions.push(json!({
-                "id": cid,
-                "title": session_display_title(title, custom_title),
-                "cwd": cwd,
-                "updatedAt": updated_at.unwrap_or(0),
-                "hasHistory": find_project_jsonl_for(region, &cid).is_some(),
-                "isPlayground": is_playground.unwrap_or(0) != 0,
-            }));
+    for r in rows.flatten() {
+        let (cid, cwd, title, custom_title, updated_at, is_playground) = r;
+        let cid = cid.unwrap_or_default();
+        let cwd = cwd.unwrap_or_default();
+        if is_claw_workspace(&cwd) {
+            continue;
         }
+        sessions.push(json!({
+            "id": cid,
+            "title": session_display_title(title, custom_title),
+            "cwd": cwd,
+            "updatedAt": updated_at.unwrap_or(0),
+            "hasHistory": find_project_jsonl_for(region, &cid).is_some(),
+            "isPlayground": is_playground.unwrap_or(0) != 0,
+        }));
     }
-    json!(sessions)
+    sessions
+}
+
+/// 按 region 列出某账号未删除的会话，db 不可读 / 为空时降级扫描 projects 目录。
+///
+/// 返回结构（与 `list_sessions_for_user_for` 不同的、更结构化的形态）：
+///   {
+///     "sessions": [...],
+///     "source": "db" | "scan" | "empty" | "no-dir",
+///     "warning"?: "..." // source != "db" 时给出
+///   }
+///
+/// `source == "no-dir"` 表示**数据目录里根本没有会话数据**（`workbuddy.db` 与 `projects/` 都不存在）
+/// —— 典型成因是客户端刚被重装 / 重置（2026-09-23 现场：整个 `~/.workbuddy` 被重建为空）。
+/// 它必须与「账号确实没有会话」区分开：后者报成前者会**误导用户**（UI 会显示「当前账号暂无会话」，
+/// 而真实原因是数据目录空了）。
+///
+/// 命令层（`commands.rs::list_sessions`、`api.rs::api_sessions`）直接透传给前端；
+/// 旧 `list_sessions_for_user_for` 保持纯数组形态、继续给单测和只关心 session 数组
+/// 的调用方使用，避免一处改动牵动全栈。
+///
+/// 优先级：db 读到非空 → "db"；db 读到空但 projects 有 jsonl → "scan"；
+/// 两者都空且数据目录存在 → "empty"；数据目录里连 db / projects 都没有 → "no-dir"。
+/// **绝不让 UI 把「db 损坏」误显示成「账号无会话」**。
+pub fn list_sessions_with_fallback_for(region: Region, uid: &str) -> Value {
+    let from_db = list_sessions_for_user_for(region, uid);
+    let db_count = from_db.as_array().map(|a| a.len()).unwrap_or(0);
+    if db_count > 0 {
+        return json!({
+            "sessions": from_db,
+            "source": "db",
+        });
+    }
+    let scanned = scan_sessions_from_jsonl_for(region);
+    if !scanned.is_empty() {
+        return json!({
+            "sessions": scanned,
+            "source": "scan",
+            "warning": "数据库索引不可读，已从会话文件扫描；元数据可能不完整（如 customTitle / 任务/空间归属）",
+        });
+    }
+    if !data_dir_has_session_data(region) {
+        return json!({
+            "sessions": [],
+            "source": "no-dir",
+        });
+    }
+    json!({
+        "sessions": [],
+        "source": "empty",
+    })
+}
+
+/// 数据目录里是否存在任何会话数据载体（`workbuddy.db` 或 `projects/`）。
+///
+/// 两者皆无 ⇒ 客户端的会话数据不在本机（重装 / 重置 / 从未登录过），
+/// 与「账号在这份库里没有会话」是两回事，必须让 UI 分辨得出。
+fn data_dir_has_session_data(region: Region) -> bool {
+    workbuddy_db_path_for(region).is_file() || session_data_dir(region).join("projects").is_dir()
 }
 
 /// 按 region 在 `{data_dir}/projects/{workspace}/{cid}.jsonl` 定位会话正文。
@@ -213,6 +311,180 @@ fn find_project_jsonl_for(region: Region, cid: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// jsonl 头部能拿到的最小元数据（cwd / 标题）。
+///
+/// ## ★ 字段名是实测出来的，别照字面猜
+///
+/// WorkBuddy 5.5.x 的会话 jsonl 里，元数据**不在首行的同一个对象上**（实测三份真实会话）：
+/// - `cwd`：**每一行都带**（首行 `type:"message"` 也有），值是真实路径（如 `d:\_03_WorkBuddy\workbuddy-switch`）；
+/// - 标题：在 `type:"ai-title"` 那一行的 **`aiTitle`** 字段（实测**第 3 行**）；
+/// - `customTitle`（用户改名 / 定时任务名）出现在**更靠后**的记录里（实测第 56 行）。
+///
+/// ⚠️ 早期实现只认 `title` ⇒ 标题**永远取不到**，降级扫描出来的会话**全是「(无标题)」**。
+/// 而 db 的 `title` 列实测**就等于 `aiTitle`**（逐条比对过），`custom_title` 是另一列
+/// ⇒ 优先级与 [`session_display_title`] 对齐：**`customTitle` > `aiTitle`**
+/// （`title` 作为兼容别名一起认，供旧格式与既有测试夹具使用）。
+#[derive(Debug, Default, Clone)]
+struct JsonlMeta {
+    cwd: String,
+    title: String,
+}
+
+/// 只读文件头这么多字节去找元数据。
+///
+/// **刻意不读整个文件**：会话正文实测可到 2.3MB，而 `projects/**` 动辄几百个文件；
+/// cwd / 标题都在前几行。旧实现 `read_to_string` 把整份读进来只取前 8 行，
+/// 且扫描器对同一文件**调了两次** —— 等于每个文件读两遍全文（现已合并为 [`push_jsonl_session`] 里的一次）。
+const JSONL_META_HEAD_BYTES: u64 = 64 * 1024;
+
+/// 头部内最多看多少行。实测元数据在第 3 / 第 56 行，128 行留足余量；
+/// 真正的成本闸是上面的**字节**上限（一行超长时不会白扫）。
+const JSONL_META_MAX_LINES: usize = 128;
+
+/// 从 jsonl 头部解析 cwd / 标题。文件不存在 / 不可读 / 非 JSON / 字段缺失
+/// 均返回 `None`，**绝不报错**（降级路径的目标是「让 UI 至少列得出来」）。
+fn read_jsonl_meta(path: &Path) -> Option<JsonlMeta> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    file.take(JSONL_META_HEAD_BYTES).read_to_end(&mut head).ok()?;
+    // 头部可能正好切在一行中间（甚至多字节字符中间）⇒ 有损解码，末行解析失败会被跳过。
+    let text = String::from_utf8_lossy(&head);
+
+    let mut cwd = String::new();
+    let mut ai_title = String::new();
+    let mut custom_title = String::new();
+    for line in text.lines().take(JSONL_META_MAX_LINES) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if cwd.is_empty() {
+            cwd = text_field(&v, "cwd");
+        }
+        if ai_title.is_empty() {
+            ai_title = text_field(&v, "aiTitle");
+            if ai_title.is_empty() {
+                ai_title = text_field(&v, "title");
+            }
+        }
+        if custom_title.is_empty() {
+            custom_title = text_field(&v, "customTitle");
+        }
+        // 三项都齐了就不必再解析后面的行（正常格式第 3 行就该齐）。
+        if !cwd.is_empty() && !ai_title.is_empty() && !custom_title.is_empty() {
+            break;
+        }
+    }
+    let title = if custom_title.is_empty() {
+        ai_title
+    } else {
+        custom_title
+    };
+    if cwd.is_empty() && title.is_empty() {
+        return None;
+    }
+    Some(JsonlMeta { cwd, title })
+}
+
+/// 取字符串字段并 trim；缺失 / 非字符串（脏值）一律给空串，不参与展示。
+fn text_field(v: &Value, key: &str) -> String {
+    v.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// 从 `~/.workbuddy{,-ai}/projects/` 扫描会话 jsonl，从文件名得到 cid、
+/// 从**文件头**（见 [`read_jsonl_meta`]）解析 cwd / 标题。**仅在 sessions 表不可读 / 为空时调用**。
+///
+/// **只在两层内取文件**：`projects/<cid>.jsonl`（扁平布局）与 `projects/<workspace>/<cid>.jsonl`。
+/// ⚠️ **刻意不再往下递归**：`projects/<workspace>/<cid>/subagents/agent-*.jsonl` 是**子代理**
+/// 记录，不是会话 —— 实测（2026-09-24）国内版 `projects/` 里 391 个真会话旁边躺着 **81 个**
+/// 子代理文件；无界递归会把它们当成会话，切换弹窗里凭空多出几十条 `agent-xxxx` 假条目。
+/// （本函数此前的注释写着「层数写死」，但实现是无界递归 —— 这里把注释与实现对齐。）
+///
+/// 返回顺序：按文件 mtime DESC（最近活动在前），与 db 版同语义。
+/// Claw 工作区会被跳过，与 db 版语义对齐（缺 cwd 时不判 Claw）。
+///
+/// 限制：仅扫描 `.jsonl`；`.file-rollback.ndjson` / `.meta.json` 等忽略。
+fn scan_sessions_from_jsonl_for(region: Region) -> Vec<Value> {
+    let projects = session_data_dir(region).join("projects");
+    if !projects.is_dir() {
+        return Vec::new();
+    }
+    let mut sessions: Vec<(i64, Value)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&projects) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            push_jsonl_session(&path, &mut sessions);
+            continue;
+        }
+        let Ok(children) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for child in children.flatten() {
+            push_jsonl_session(&child.path(), &mut sessions);
+        }
+    }
+    sessions.sort_by(|a, b| b.0.cmp(&a.0));
+    sessions.into_iter().map(|(_, v)| v).collect()
+}
+
+/// 把单个路径收成一条会话记录；不是 `.jsonl` 文件 / 读不出元数据时跳过（**绝不报错**）。
+fn push_jsonl_session(path: &Path, out: &mut Vec<(i64, Value)>) {
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+        return;
+    }
+    let Some(cid) = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    let Ok(md) = std::fs::metadata(path) else {
+        return;
+    };
+    if !md.is_file() {
+        return;
+    }
+    // **只读一次**：cwd 与标题同在这一个头部里，读两遍等于每个文件读两遍全文。
+    let meta = read_jsonl_meta(path);
+    let cwd = meta.as_ref().map(|m| m.cwd.clone()).unwrap_or_default();
+    if !cwd.is_empty() && is_claw_workspace(&cwd) {
+        return;
+    }
+    let title = meta
+        .map(|m| m.title)
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "(无标题)".to_string());
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    out.push((
+        mtime,
+        json!({
+            "id": cid,
+            "title": title,
+            "cwd": cwd,
+            "updatedAt": mtime,
+            "hasHistory": true,
+            "isPlayground": false,
+            "degraded": true,
+        }),
+    ));
 }
 
 /// 备份 workbuddy.db（含 -wal/-shm），返回主库备份路径。对照 `backup_workbuddy_db`。
@@ -258,6 +530,11 @@ pub fn copy_session_to_user_for(
 ///
 /// **去重**：若该源会话此前已复制给同一目标账号且副本仍在，则不重复复制，
 /// 直接返回既有副本（`deduplicated: true`）。见 [`ledger_hit_for`]。
+///
+/// **降级**：源 sessions 表不可读时，从 jsonl 第一行推断 cwd 做 Claw 检查；
+/// 目标 sessions 表不可写时，jsonl 仍能复制但索引行留空（返回 `warning`）。
+/// 这样即便 workbuddy.db 损坏 / 索引缺失，至少 jsonl 正文能落到目标账号，
+/// WorkBuddy AI 重启后建索引即可看到。
 pub fn copy_session_to_user_cross(
     source_region: Region,
     target_region: Region,
@@ -279,18 +556,27 @@ pub fn copy_session_to_user_cross(
     }
 
     let new_cid = uuid::Uuid::new_v4().to_string();
-    let db = workbuddy_db_path_for(source_region);
-    if let Some(conn) = open_db(&db, true) {
-        let cwd: Option<String> = conn
+
+    // Claw 检查：优先从源 sessions 表读 cwd；表不可读时降级从 jsonl 推断。
+    // Claw 是「账号绑定的 IM 渠道工作区」，绑死当前账号渠道，复制给目标也用不了。
+    let cwd_from_db = match open_db(&workbuddy_db_path_for(source_region), true) {
+        Some(conn) if table_exists(&conn, "sessions") => conn
             .query_row(
                 "SELECT cwd FROM sessions WHERE id = ?1 AND user_id = ?2",
                 rusqlite::params![cid, source_uid],
                 |r| r.get(0),
             )
-            .ok();
-        if cwd.as_deref().is_some_and(is_claw_workspace) {
-            return Err("Claw 工作区绑定当前账号渠道，不支持复制".into());
-        }
+            .ok(),
+        _ => None,
+    };
+    let cwd_for_claw = match cwd_from_db {
+        Some(c) => c,
+        None => find_project_jsonl_for(source_region, cid)
+            .and_then(|p| read_jsonl_meta(&p).map(|m| m.cwd))
+            .unwrap_or_default(),
+    };
+    if !cwd_for_claw.is_empty() && is_claw_workspace(&cwd_for_claw) {
+        return Err("Claw 工作区绑定当前账号渠道，不支持复制".into());
     }
 
     // 1) 复制正文 jsonl：源 projects 下 {ws}/{cid}.jsonl → 目标 projects 下同位置 {new_cid}.jsonl
@@ -309,16 +595,19 @@ pub fn copy_session_to_user_cross(
     }
 
     // 2) 备份目标 db（复制前），再把源行复制为新 id 插进目标库
+    //    降级：源 / 目标 db 不可用时不再 Err，而是 Ok(false) 表达「没写索引行」；
+    //    调用方根据这个信号决定是否在报告里加 warning（jsonl 仍可继续复制）。
     let backup_root = backup_dir().join("sessions").join(utc_iso());
     backup_workbuddy_db(target_region, &backup_root);
-    insert_session_copy(
+    let session_row_written = insert_session_copy(
         &workbuddy_db_path_for(source_region),
         &workbuddy_db_path_for(target_region),
         &new_cid,
         cid,
         source_uid,
         target_uid,
-    )?;
+    )
+    .unwrap_or(false);
 
     // 3) 注册云端映射：新会话归属目标账号（msg_channel=convmsg:{target_uid}）
     let mapping_written = register_edge_sync_mapping_for(target_region, &new_cid, target_uid);
@@ -333,15 +622,31 @@ pub fn copy_session_to_user_cross(
         &new_cid,
     );
 
-    Ok(json!({
+    // 降级警告：jsonl 复制成功但索引行没写 → 用户重启 WorkBuddy 即可看到。
+    // 真正阻塞的失败（jsonl 也复制失败）已在前面步骤显式无声返回，
+    // 这里**不**为此再加 warning，避免「既不报错也不警告」式的静默降级。
+    let warning = if jsonl_copied && !session_row_written {
+        Some("目标账号的会话索引不可写；已复制正文，请重启 WorkBuddy 让其重建索引".to_string())
+    } else if jsonl_copied && !mapping_written {
+        Some("云端映射注册失败；新会话暂时无法在 WorkBuddy 中显示云端历史".to_string())
+    } else {
+        None
+    };
+
+    let mut report = json!({
         "id": cid,
         "newId": new_cid,
         "jsonlCopied": jsonl_copied,
+        "sessionRowWritten": session_row_written,
         "mappingWritten": mapping_written,
         "backup": backup_root.to_string_lossy().to_string(),
         "deduplicated": false,
         "ledgerWritten": ledger_written,
-    }))
+    });
+    if let Some(w) = warning {
+        report["warning"] = json!(w);
+    }
+    Ok(report)
 }
 
 /// 会话正文副本的落点：保持「相对 projects 目录的子路径」不变，换到目标版本目录下。
@@ -423,6 +728,12 @@ fn read_session_row(
 ///
 /// 源与目标可以是两个版本的 db。目标库缺某一列时**丢弃该列**而不是整条失败 ——
 /// 两版 schema 高度同源但允许有差异，丢弃比让整次复制失败更接近用户预期。
+///
+/// 返回语义（与「响亮失败优于静默降级」互补：让 UI 至少能把 jsonl 搬过去）：
+///   - `Ok(true)`  写入了 sessions 索引行；
+///   - `Ok(false)` 软失败（源行缺失 / 目标 db 不存在 / 表不存在 / 列不全 / 执行失败），
+///     调用方据此决定是否提示用户「重启 WorkBuddy 重建索引」；
+///   - `Err(_)`    仅在 `read_session_row` 拒绝（如 Claw 工作区）时返回，仍会阻断复制。
 fn insert_session_copy(
     src_db_path: &Path,
     dst_db_path: &Path,
@@ -430,18 +741,18 @@ fn insert_session_copy(
     cid: &str,
     source_uid: &str,
     target_uid: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let Some((cols, vals)) = read_session_row(src_db_path, cid, source_uid)? else {
-        return Ok(());
+        return Ok(false);
     };
     if !dst_db_path.is_file() {
-        return Ok(());
+        return Ok(false);
     }
     let Some(conn) = open_db(dst_db_path, false) else {
-        return Ok(());
+        return Ok(false);
     };
     if !table_exists(&conn, "sessions") {
-        return Ok(());
+        return Ok(false);
     }
     let dst_cols = table_columns(&conn, "sessions");
 
@@ -462,16 +773,18 @@ fn insert_session_copy(
         insert_vals.push(v);
     }
     if insert_cols.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     let placeholders = insert_cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let colnames = insert_cols.join(", ");
     let sql = format!("INSERT OR REPLACE INTO sessions ({colnames}) VALUES ({placeholders})");
     let params: Vec<&rusqlite::types::Value> = insert_vals.iter().collect();
-    conn.execute(&sql, rusqlite::params_from_iter(params))
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    match conn.execute(&sql, rusqlite::params_from_iter(params)) {
+        Ok(_) => Ok(true),
+        // 执行失败也降级为软失败：jsonl 已复制，至少正文能落到目标账号。
+        Err(_) => Ok(false),
+    }
 }
 
 /// 把新会话注册进 edge_sync_mapping（云端归属关键）。失败不致命，返回 False。
@@ -1135,6 +1448,626 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // 降级路径：db 不可读 / 为空时从 projects 目录扫描 jsonl
+    // -----------------------------------------------------------------------
+    //
+    // 这些测试把进程级 home 重定向到**临时目录**（via `HomeOverrideGuard`，drop 时
+    // 还原），绝不触碰真实 `~/.workbuddy{,-ai}`。home 是进程级全局状态，故一律先取
+    // `env_lock`（已在 `HomeOverrideGuard::set` 内串行化），避免与并行测试互相踩踏。
+
+    /// 在临时目录建一个「已存在」的 home（validate_home_override 要求绝对且已存在）。
+    fn make_temp_home(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy_switch_fb_{}_{label}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 删掉临时 home；失败忽略（仅泄漏临时文件，不影响断言）。
+    fn cleanup_temp_home(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 建一个合法 sessions 表，写入若干属于 `uid` 的未删除会话。
+    fn create_sessions_db(db: &Path, uid: &str, rows: &[(&str, &str, &str)]) {
+        if let Some(parent) = db.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT,
+                cwd TEXT,
+                created_at INTEGER,
+                updated_at INTEGER,
+                deleted_at INTEGER
+            );",
+        )
+        .unwrap();
+        for (cid, cwd, title) in rows {
+            conn.execute(
+                "INSERT INTO sessions (id, user_id, title, cwd, created_at, updated_at, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4, 1000, 2000, NULL)",
+                rusqlite::params![cid, uid, title, cwd],
+            )
+            .unwrap();
+        }
+    }
+
+    /// db 完全缺失 → 降级扫描 projects → source == "scan"，并列出 jsonl 会话。
+    ///
+    /// 这正是用户现场的根因：workbuddy.db 损坏后 UI 误判「账号无会话」、禁用复制。
+    /// 降级路径必须让 UI 仍能看到（至少）jsonl 里存在的会话。
+    #[test]
+    fn list_sessions_falls_back_to_scan_when_db_missing() {
+        let home = make_temp_home("missing-db");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        // 只放 jsonl，不放 workbuddy.db
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("cid-A.jsonl"),
+            "{\"cwd\":\"/proj/alpha\",\"title\":\"Alpha 会话\"}\n",
+        )
+        .unwrap();
+
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
+        assert_eq!(
+            resp.get("source").and_then(Value::as_str),
+            Some("scan"),
+            "db 缺失应降级到 scan"
+        );
+        let sessions = resp.get("sessions").and_then(Value::as_array).unwrap();
+        assert_eq!(sessions.len(), 1, "应扫描到 1 个 jsonl 会话");
+        let s = &sessions[0];
+        assert_eq!(s.get("id").and_then(Value::as_str), Some("cid-A"));
+        assert_eq!(s.get("title").and_then(Value::as_str), Some("Alpha 会话"));
+        assert_eq!(s.get("cwd").and_then(Value::as_str), Some("/proj/alpha"));
+        assert_eq!(
+            s.get("degraded").and_then(Value::as_bool),
+            Some(true),
+            "扫描得到的会话应标 degraded"
+        );
+        assert!(resp.get("warning").is_some(), "降级应给出 warning");
+        cleanup_temp_home(&home);
+    }
+
+    /// db 存在但**不是合法 sqlite**（磁盘镜像损坏）→ 同样降级到 scan。
+    ///
+    /// 死磕这条：真实 bug 就是 `database disk image is malformed`。必须证明「损坏」
+    /// 不再被静默成空数组，而是走 scan 降级。
+    #[test]
+    fn list_sessions_falls_back_to_scan_when_db_corrupt() {
+        let home = make_temp_home("corrupt-db");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        std::fs::create_dir_all(home.join(".workbuddy")).unwrap();
+        std::fs::write(
+            home.join(".workbuddy").join("workbuddy.db"),
+            b"this is not a sqlite database file at all",
+        )
+        .unwrap();
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("cid-B.jsonl"), "{\"cwd\":\"/proj/beta\",\"title\":\"Beta\"}\n").unwrap();
+
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
+        assert_eq!(
+            resp.get("source").and_then(Value::as_str),
+            Some("scan"),
+            "损坏 db 必须降级到 scan，而不是静默空数组"
+        );
+        assert_eq!(
+            resp.get("sessions").and_then(Value::as_array).unwrap().len(),
+            1
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// db 可读且有该账号的会话 → source == "db"，**不**重复列出 projects 里的 jsonl。
+    ///
+    /// 证明正常路径优先级最高，降级只是兜底；否则 db 行与扫描结果会重复。
+    #[test]
+    fn list_sessions_prefers_db_when_readable() {
+        let home = make_temp_home("db-ok");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        create_sessions_db(
+            &home.join(".workbuddy").join("workbuddy.db"),
+            "uid-x",
+            &[("cid-DB", "/proj/db", "DB 会话")],
+        );
+        // 同时放一个其它 cid 的 jsonl：db 优先，绝不应被重复列。
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("cid-OTHER.jsonl"), "{\"cwd\":\"/x\",\"title\":\"X\"}\n").unwrap();
+
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
+        assert_eq!(resp.get("source").and_then(Value::as_str), Some("db"));
+        let sessions = resp.get("sessions").and_then(Value::as_array).unwrap();
+        assert_eq!(sessions.len(), 1, "只应列 db 中的 1 条，jsonl 不重复");
+        assert_eq!(sessions[0].get("id").and_then(Value::as_str), Some("cid-DB"));
+        assert_eq!(
+            sessions[0].get("degraded").and_then(Value::as_bool),
+            None,
+            "db 源不应标 degraded"
+        );
+        assert!(resp.get("warning").is_none(), "db 源不应有 warning");
+        cleanup_temp_home(&home);
+    }
+
+    /// ★ 客户端某些版本把会话行的 `user_id` 落成**空串**（2026-09-23 实测：本机 116/116 全为空串）
+    /// ⇒ 严格匹配 0 行时必须放宽到「空归属」行，否则 UI 会静默显示「当前账号暂无会话」并禁用复制。
+    #[test]
+    fn list_sessions_widens_scope_when_strict_uid_matches_nothing() {
+        let home = make_temp_home("uid-empty");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        // 库里的行归属为空串，而当前登录 uid 是真实 uuid。
+        create_sessions_db(
+            &home.join(".workbuddy").join("workbuddy.db"),
+            "",
+            &[("cid-EMPTY-UID", "/proj/empty", "空归属会话")],
+        );
+
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-real");
+        assert_eq!(
+            resp.get("source").and_then(Value::as_str),
+            Some("db"),
+            "空归属行仍属 db 源"
+        );
+        let sessions = resp.get("sessions").and_then(Value::as_array).unwrap();
+        assert_eq!(
+            sessions.len(),
+            1,
+            "严格匹配为空时应放宽到空归属行，而不是报告「账号无会话」"
+        );
+        assert_eq!(
+            sessions[0].get("id").and_then(Value::as_str),
+            Some("cid-EMPTY-UID")
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 负向对照：放宽**不得**扩到别的账号 —— 库里只有别人的（非空 uid）会话时仍应视为无会话。
+    #[test]
+    fn list_sessions_does_not_widen_to_other_accounts() {
+        let home = make_temp_home("uid-other");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        create_sessions_db(
+            &home.join(".workbuddy").join("workbuddy.db"),
+            "uid-someone-else",
+            &[("cid-OTHER-UID", "/proj/other", "别人的会话")],
+        );
+
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-real");
+        let sessions = resp.get("sessions").and_then(Value::as_array).unwrap();
+        assert!(
+            sessions.is_empty(),
+            "别人的账号（非空 uid）不得被放宽列出来"
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 部分命中：库里既有当前账号的行、又有旧「空归属」行 ⇒ 两类都必须列出（**并集**）。
+    ///
+    /// 这正是用户现场恢复索引后的形态：新会话带真实 uid、旧会话 `user_id` 为空串。
+    /// 若只做「严格命中 0 行才放宽」，这类库仍然列不出旧会话。
+    #[test]
+    fn list_sessions_unions_own_rows_with_legacy_empty_uid_rows() {
+        let home = make_temp_home("uid-mixed");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let db = home.join(".workbuddy").join("workbuddy.db");
+        create_sessions_db(&db, "uid-mine", &[("cid-MINE", "/proj/mine", "我的会话")]);
+        // 追加一条旧「空归属」行（不能复用 create_sessions_db：表已存在）。
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, user_id, title, cwd, created_at, updated_at, deleted_at)
+             VALUES ('cid-LEGACY', '', '旧会话', '/proj/legacy', 1000, 3000, NULL)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-mine");
+        let sessions = resp.get("sessions").and_then(Value::as_array).unwrap();
+        let ids: Vec<&str> = sessions
+            .iter()
+            .filter_map(|s| s.get("id").and_then(Value::as_str))
+            .collect();
+        assert!(ids.contains(&"cid-MINE"), "当前账号自己的会话必须列出");
+        assert!(
+            ids.contains(&"cid-LEGACY"),
+            "旧空归属会话必须一并列出（并集）"
+        );
+        assert_eq!(sessions.len(), 2, "并集不得产生重复行");
+        cleanup_temp_home(&home);
+    }
+
+    /// 数据目录里连 `workbuddy.db` / `projects/` 都没有 → source == "no-dir"。
+    ///
+    /// 现场（2026-09-23）：客户端重装把 `~/.workbuddy` 重建为空，UI 却显示「当前账号暂无会话」
+    /// —— 用户以为账号没会话，实际是整个数据目录空了。两种情形必须能分辨。
+    #[test]
+    fn list_sessions_reports_no_dir_when_data_dir_is_gone() {
+        let home = make_temp_home("no-dir");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
+        assert_eq!(resp.get("source").and_then(Value::as_str), Some("no-dir"));
+        assert_eq!(
+            resp.get("sessions").and_then(Value::as_array).unwrap().len(),
+            0
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 数据目录在、库也在，只是当前账号没有会话 → source == "empty"
+    /// （UI 这才显示「当前账号暂无会话」，措辞必须与 no-dir 区分）。
+    #[test]
+    fn list_sessions_reports_empty_when_db_exists_but_has_no_sessions() {
+        let home = make_temp_home("empty");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        // 合法空库：表在、行数为 0。
+        create_sessions_db(&home.join(".workbuddy").join("workbuddy.db"), "uid-x", &[]);
+        let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
+        assert_eq!(resp.get("source").and_then(Value::as_str), Some("empty"));
+        assert_eq!(
+            resp.get("sessions").and_then(Value::as_array).unwrap().len(),
+            0
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 扫描应跳过 Claw 工作区，与 db 版语义对齐。
+    #[test]
+    fn scan_skips_claw_workspaces() {
+        let home = make_temp_home("claw");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("cid-normal.jsonl"),
+            "{\"cwd\":\"/proj/normal\",\"title\":\"N\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("cid-claw.jsonl"),
+            "{\"cwd\":\"/proj/Claw\",\"title\":\"C\"}\n",
+        )
+        .unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(sessions.len(), 1, "Claw 工作区必须被跳过");
+        assert_eq!(
+            sessions[0].get("id").and_then(Value::as_str),
+            Some("cid-normal")
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// ★ 子代理记录不是会话：`projects/<ws>/<cid>/subagents/agent-*.jsonl` 必须被跳过。
+    ///
+    /// 实测现场（2026-09-24）：国内版 `projects/` 下 391 个真会话旁边躺着 **81 个**子代理文件。
+    /// 无界递归会把它们当成会话，切换弹窗里凭空多出几十条 `agent-xxxx`。
+    #[test]
+    fn scan_skips_subagent_transcripts() {
+        let home = make_temp_home("subagent");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("cid-real.jsonl"),
+            "{\"cwd\":\"/proj/real\",\"aiTitle\":\"真会话\"}\n",
+        )
+        .unwrap();
+        // 更深一层：<cid>/subagents/agent-*.jsonl（子代理记录）
+        let sub = ws.join("cid-real").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("agent-6a07c65d.jsonl"),
+            "{\"cwd\":\"/proj/real\",\"aiTitle\":\"子代理\"}\n",
+        )
+        .unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        let ids: Vec<&str> = sessions
+            .iter()
+            .filter_map(|s| s.get("id").and_then(Value::as_str))
+            .collect();
+        assert_eq!(ids, vec!["cid-real"], "只应列出真会话，子代理记录必须跳过");
+        cleanup_temp_home(&home);
+    }
+
+    /// 扫描从 jsonl 首行解析 cwd / title；缺字段时用「(无标题)」。
+    #[test]
+    fn scan_parses_cwd_and_title_from_jsonl() {
+        let home = make_temp_home("meta");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        // 首行是纯数据行（无 cwd/title），meta 写在第二行 —— 容忍前几行。
+        std::fs::write(
+            ws.join("cid-meta.jsonl"),
+            "{\"role\":\"user\",\"content\":\"hi\"}\n{\"cwd\":\"/proj/m\",\"title\":\"M 会话\"}\n",
+        )
+        .unwrap();
+        // 首行无任何可解析字段 → 标题回退「(无标题)」。
+        std::fs::write(ws.join("cid-anon.jsonl"), "{\"role\":\"assistant\"}\n").unwrap();
+
+        let mut sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        // 按 id 查表更稳（mtime 在新文件上等同，顺序不可靠）。
+        sessions.sort_by_key(|s| s.get("id").and_then(Value::as_str).unwrap_or("").to_string());
+        assert_eq!(sessions.len(), 2);
+        let by_id: std::collections::HashMap<String, Value> = sessions
+            .iter()
+            .map(|s| (s.get("id").and_then(Value::as_str).unwrap().to_string(), s.clone()))
+            .collect();
+        let meta = by_id.get("cid-meta").unwrap();
+        assert_eq!(meta.get("cwd").and_then(Value::as_str), Some("/proj/m"));
+        assert_eq!(meta.get("title").and_then(Value::as_str), Some("M 会话"));
+        let anon = by_id.get("cid-anon").unwrap();
+        assert_eq!(
+            anon.get("title").and_then(Value::as_str),
+            Some("(无标题)"),
+            "无标题应回退占位符"
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// **真实 jsonl 格式**：`cwd` 在**每一行**上，标题字段叫 `aiTitle`（实测在第 3 行）。
+    ///
+    /// 这条用例锁的就是当年那个缺陷：旧实现找的是 `title` 字段，真实文件里根本没有
+    /// ⇒ 每个会话都退化成「(无标题)」，而单测用的自制 fixture 恰好有 `title` ⇒ 全绿。
+    #[test]
+    fn scan_reads_real_format_ai_title() {
+        let home = make_temp_home("real-fmt");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        // 逐行模仿实测格式：第 1 行 message 带 cwd，第 2 行无标题，第 3 行 ai-title 带 aiTitle。
+        std::fs::write(
+            ws.join("cid-real.jsonl"),
+            concat!(
+                "{\"type\":\"message\",\"cwd\":\"/proj/real\",\"role\":\"user\",\"content\":\"hi\"}\n",
+                "{\"type\":\"message\",\"cwd\":\"/proj/real\",\"role\":\"assistant\",\"content\":\"yo\"}\n",
+                "{\"type\":\"ai-title\",\"cwd\":\"/proj/real\",\"aiTitle\":\"真实自动标题\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].get("cwd").and_then(Value::as_str),
+            Some("/proj/real")
+        );
+        assert_eq!(
+            sessions[0].get("title").and_then(Value::as_str),
+            Some("真实自动标题"),
+            "标题必须取自 aiTitle（真实格式），不是 title"
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 用户改过名的会话以 `customTitle` 为准 —— 与 db 版 [`session_display_title`] 同优先级。
+    #[test]
+    fn scan_prefers_custom_title_over_ai_title() {
+        let home = make_temp_home("custom-title");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        // customTitle 实测出现得很靠后（第 56 行），这里刻意也放远一点，顺便验证窗口够宽。
+        let mut body = String::from(
+            "{\"type\":\"message\",\"cwd\":\"/proj/c\",\"role\":\"user\",\"content\":\"hi\"}\n\
+             {\"type\":\"ai-title\",\"cwd\":\"/proj/c\",\"aiTitle\":\"自动标题\"}\n",
+        );
+        for i in 0..40 {
+            body.push_str(&format!(
+                "{{\"type\":\"message\",\"cwd\":\"/proj/c\",\"role\":\"assistant\",\"content\":\"line {i}\"}}\n"
+            ));
+        }
+        body.push_str("{\"type\":\"custom-title\",\"cwd\":\"/proj/c\",\"customTitle\":\"我改的名字\"}\n");
+        std::fs::write(ws.join("cid-custom.jsonl"), body).unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].get("title").and_then(Value::as_str),
+            Some("我改的名字"),
+            "customTitle 优先于 aiTitle"
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 头部读取有**行数**上限：元数据落在 128 行之后就读不到（回退「(无标题)」）。
+    ///
+    /// 这是刻意的成本闸 —— 一行的**字节**长度不受控，只靠字节上限会被一行超长内容拖死。
+    #[test]
+    fn scan_stops_at_line_cap() {
+        let home = make_temp_home("line-cap");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut body = String::new();
+        for i in 0..200 {
+            body.push_str(&format!("{{\"type\":\"message\",\"role\":\"user\",\"n\":{i}}}\n"));
+        }
+        body.push_str("{\"cwd\":\"/proj/late\",\"aiTitle\":\"来晚了\"}\n");
+        std::fs::write(ws.join("cid-late.jsonl"), body).unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].get("title").and_then(Value::as_str),
+            Some("(无标题)"),
+            "第 201 行的元数据不该被读到"
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 头部读取有**字节**上限：前 100 行各 1KB（≈100KB > 64KB）时，第 101 行的元数据读不到。
+    ///
+    /// 与上一条互补：这条里行数（101 < 128）没超，**只有**字节上限生效 ⇒ 两条分别锁定两个闸。
+    #[test]
+    fn scan_stops_at_byte_cap() {
+        let home = make_temp_home("byte-cap");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let filler = "x".repeat(1000);
+        let mut body = String::new();
+        for i in 0..100 {
+            body.push_str(&format!(
+                "{{\"type\":\"message\",\"role\":\"user\",\"n\":{i},\"pad\":\"{filler}\"}}\n"
+            ));
+        }
+        body.push_str("{\"cwd\":\"/proj/far\",\"aiTitle\":\"太远了\"}\n");
+        std::fs::write(ws.join("cid-far.jsonl"), body).unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].get("title").and_then(Value::as_str), Some("(无标题)"));
+        assert_eq!(sessions[0].get("cwd").and_then(Value::as_str), Some(""));
+        cleanup_temp_home(&home);
+    }
+
+    /// 头部有**非 JSON** 噪声（真实文件首行可能是半截 / 非 JSON）时不能整条丢弃，
+    /// 后续行的元数据仍要能解析出来。
+    #[test]
+    fn scan_tolerates_garbage_head_lines() {
+        let home = make_temp_home("garbage-head");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("cid-garbage.jsonl"),
+            "not json at all\n\n{\"cwd\":\"/proj/g\"}\n{\"aiTitle\":\"幸存标题\"}\n",
+        )
+        .unwrap();
+
+        let sessions = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].get("cwd").and_then(Value::as_str), Some("/proj/g"));
+        assert_eq!(
+            sessions[0].get("title").and_then(Value::as_str),
+            Some("幸存标题")
+        );
+        cleanup_temp_home(&home);
+    }
+
+    /// 跨 region 扫描隔离：Global 的 projects 不应出现在 CN 的扫描结果里。
+    #[test]
+    fn scan_is_region_scoped() {
+        let home = make_temp_home("region-scope");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        let cn_ws = home.join(".workbuddy").join("projects").join("ws");
+        let g_ws = home.join(".workbuddy-ai").join("projects").join("ws");
+        std::fs::create_dir_all(&cn_ws).unwrap();
+        std::fs::create_dir_all(&g_ws).unwrap();
+        std::fs::write(cn_ws.join("cid-cn.jsonl"), "{\"cwd\":\"/cn\",\"title\":\"C\"}\n").unwrap();
+        std::fs::write(g_ws.join("cid-g.jsonl"), "{\"cwd\":\"/g\",\"title\":\"G\"}\n").unwrap();
+
+        let cn = scan_sessions_from_jsonl_for(Region::Cn);
+        assert_eq!(cn.len(), 1);
+        assert_eq!(cn[0].get("id").and_then(Value::as_str), Some("cid-cn"));
+        let g = scan_sessions_from_jsonl_for(Region::Global);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].get("id").and_then(Value::as_str), Some("cid-g"));
+        cleanup_temp_home(&home);
+    }
+
+    /// 复制降级：源 jsonl 存在但 workbuddy.db 缺失 → 仍复制正文，索引行写不进时给 warning。
+    ///
+    /// 这对应「目标账号 db 也坏了」的最坏情形：至少 jsonl 正文能落到目标账号，
+    /// 用户重启 WorkBuddy 重建索引后即可见。绝不能因为它「报错」就阻断整次复制。
+    #[test]
+    fn copy_session_degrades_when_db_missing() {
+        let home = make_temp_home("copy-degraded");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        // 源 region 放 jsonl，但**没有** workbuddy.db（既不读索引、也写不进目标索引）。
+        let src_ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&src_ws).unwrap();
+        std::fs::write(
+            src_ws.join("cid-S.jsonl"),
+            "{\"cwd\":\"/proj/s\",\"title\":\"S\",\"sessionId\":\"cid-S\"}\n",
+        )
+        .unwrap();
+
+        let result = copy_session_to_user_cross(
+            Region::Cn,
+            Region::Cn,
+            "cid-S",
+            "uid-src",
+            "uid-dst",
+        )
+        .expect("降级复制不应报错");
+        assert_eq!(
+            result.get("jsonlCopied").and_then(Value::as_bool),
+            Some(true),
+            "jsonl 必须被复制"
+        );
+        assert_eq!(
+            result.get("sessionRowWritten").and_then(Value::as_bool),
+            Some(false),
+            "db 缺失则索引行没写"
+        );
+        assert_eq!(
+            result.get("mappingWritten").and_then(Value::as_bool),
+            Some(false),
+            "edge_sync 映射库缺失则注册失败（不致命）"
+        );
+        assert!(
+            result.get("warning").is_some(),
+            "应给出降级 warning，提示用户重启 WorkBuddy 重建索引"
+        );
+        assert_eq!(
+            result.get("deduplicated").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        // 副本应落在同版本 projects 下、使用新 cid。
+        let copied = std::fs::read_dir(&src_ws)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .any(|name| name.ends_with(".jsonl") && name != "cid-S.jsonl");
+        assert!(copied, "应生成新 cid 的 jsonl 副本");
+        cleanup_temp_home(&home);
+    }
+
+    /// 复制降级：源 db 损坏（读不到 cwd）→ 从 jsonl 推断 Claw，Claw 仍被拒绝。
+    #[test]
+    fn copy_session_rejects_claw_even_when_db_corrupt() {
+        let home = make_temp_home("copy-claw");
+        let _g = crate::modules::config::HomeOverrideGuard::set(&home);
+        std::fs::create_dir_all(home.join(".workbuddy")).unwrap();
+        std::fs::write(
+            home.join(".workbuddy").join("workbuddy.db"),
+            b"corrupt sqlite",
+        )
+        .unwrap();
+        let src_ws = home.join(".workbuddy").join("projects").join("ws");
+        std::fs::create_dir_all(&src_ws).unwrap();
+        std::fs::write(
+            src_ws.join("cid-claw.jsonl"),
+            "{\"cwd\":\"/proj/Claw\",\"title\":\"C\"}\n",
+        )
+        .unwrap();
+
+        let err = copy_session_to_user_cross(
+            Region::Cn,
+            Region::Cn,
+            "cid-claw",
+            "uid-src",
+            "uid-dst",
+        )
+        .expect_err("Claw 工作区必须被拒绝");
+        assert!(err.contains("Claw"), "拒绝原因应为 Claw: {err}");
+        cleanup_temp_home(&home);
     }
 
     /// 损坏的账本必须退化为「无登记」而不是报错或丢弃已有副本。

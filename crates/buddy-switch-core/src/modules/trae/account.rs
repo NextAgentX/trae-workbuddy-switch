@@ -252,6 +252,40 @@ pub fn find_for(variant: TraeVariant, user_id: &str) -> Option<RawAccount> {
         .map(|(_, account)| account)
 }
 
+/// 按 uid 取账号库里的**展示名**（[`RawAccount::name`]）；查不到或名字为空白 → `None`。
+///
+/// ## 用途：界面上「已登录: `<谁>`」该给人看的东西
+///
+/// 「当前登录账号」对外是**两个不同的事实**，不能合并成一个字段：
+///
+/// | 事实 | 载体 | 谁在用 |
+/// |:--|:--|:--|
+/// | 身份 | `currentAccount`（uid） | 前端的相等比较（卡片上「是不是当前账号」） |
+/// | 展示 | 本函数的结果 | 状态条第二行「已登录: …」 |
+///
+/// 拿展示名去做身份比较会在**改名**后立刻失配（把当前账号显示成"未启用"）；
+/// 反过来，把 uid 直接摆到界面上就是改造前的样子 —— 16 位数字，用户认不出是谁。
+///
+/// ## 调用方拿到 `None` 时必须回落 uid，不得显示「未知账号」
+///
+/// 「客户端正登录着一个本机账号库里还没有的账号」是**正常状态**：用户刚在客户端里
+/// 手动登录、还没做采集/导入。此时 uid 仍是有效且可行动的线索（用户能拿它去客户端
+/// 里对照），报成「未知账号」反而把唯一可用的信息抹掉了。
+/// 这一条与 WorkBuddy 侧 `presenceText` 的回落链（`nickname → email → uid`）同构。
+///
+/// 名字为空白同样视为**无名**：`name` 是 `#[serde(default)]`，
+/// 参考工具写出的老文件里有空串记录。
+pub fn display_name_for(variant: TraeVariant, user_id: &str) -> Option<String> {
+    find_for(variant, user_id)
+        .map(|account| account.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+/// 按 uid 取展示名（默认变体，兼容壳）。
+pub fn display_name(user_id: &str) -> Option<String> {
+    display_name_for(TraeVariant::default(), user_id)
+}
+
 // ---------------------------------------------------------------------------
 // 视图（线上形态：camelCase）
 // ---------------------------------------------------------------------------
@@ -1563,6 +1597,52 @@ mod tests {
         assert_eq!(resolve_user_id(&blank), "");
     }
 
+    /// 展示名取自账号库的 `name`，且**绝不**把 uid 当展示名返回。
+    ///
+    /// 反例（改坏会红）：
+    /// - 名字空白时返回 `Some("")` → 状态条渲染成「已登录: 」；
+    /// - 查不到时回落 `user_id` → 界面又变回那串 16 位数字，正是本次要修的；
+    /// - 查找横跨变体 → 国际版会读到国内库的名字。
+    #[test]
+    fn display_name_reads_the_library_and_refuses_blanks() {
+        let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
+
+        let mut file = AccountsFile::default();
+        file.accounts.push(RawAccount {
+            name: "JackDev".into(),
+            user_id: Some("u-cn".into()),
+            jwt: String::new(),
+            refresh_token: None,
+            added_at: None,
+            updated_at: None,
+        });
+        file.accounts.push(RawAccount {
+            name: "   ".into(),
+            user_id: Some("u-blank".into()),
+            jwt: String::new(),
+            refresh_token: None,
+            added_at: None,
+            updated_at: None,
+        });
+        save_accounts_for(TraeVariant::Trae, &file).unwrap();
+
+        assert_eq!(
+            display_name_for(TraeVariant::Trae, "u-cn").as_deref(),
+            Some("JackDev")
+        );
+        // 空白名 = 无名（不是 `Some("")`）。
+        assert_eq!(display_name_for(TraeVariant::Trae, "u-blank"), None);
+        // 库里没有这个 uid ⇒ 无名，回落与否交给调用方。
+        assert_eq!(display_name_for(TraeVariant::Trae, "u-absent"), None);
+        // 国内两条产品线**共用一本库** ⇒ 换程序位也读得到。
+        assert_eq!(
+            display_name_for(TraeVariant::TraeWork, "u-cn").as_deref(),
+            Some("JackDev")
+        );
+        // 国际版是另一本库 ⇒ 读不到（跨区域冒充会在这里红）。
+        assert_eq!(display_name_for(TraeVariant::Global, "u-cn"), None);
+    }
+
     /// 参考实现格式的 `checkin_accounts.json` 必须能被直接读入（跨工具共享契约）。
     ///
     /// 这是「与既有 Trae 账号数据兼容」的核心断言：用户从参考工具迁移过来时，
@@ -2200,15 +2280,29 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             Some("-")
         );
 
-        // 错误消息必须能指出「未取到设备凭证」（否则用户无从判断是协议还是凭证问题）。
+        // 错误消息必须能指出「没取到设备凭证」（否则用户无从判断是协议还是凭证问题）。
+        //
+        // ⚠️ 这里**刻意不再锚某个具体词**（原来断言的是 `contains("未找到")`）：
+        // 那是**代理断言** —— 它用「文案里出现『未找到』」代理「文案说清了原因是凭证」。
+        // 2026-09-24 把文案改成「已检测到【Trae Work】客户端（…），但它**从未启动过** ——
+        // 设备凭证是客户端首次启动时才写入的…」之后它就**恒为假**：
+        // **不是文案变差了，是锚选错了**（用户报障的原话正是「已经安装了，为什么检查不到
+        // 安装的客户端」，旧文案确实没把原因说清）。
+        //
+        // 现在锚两处**稳定标记**：
+        //   ① `kind()` —— 结构化判据，调用方与日志真正依赖的那一个（换文案不会动它）；
+        //   ② 文案必须**点明产品线**且**提到「设备凭证」** —— 领域名词，跨改写稳定。
         let credential_error = crate::modules::trae::icube::IcubeError::DataDirMissing;
-        let note = format!(
-            "{}（kind={}）",
-            credential_error.user_message(TraeVariant::TraeWork),
-            credential_error.kind()
+        let message = credential_error.user_message(TraeVariant::TraeWork);
+        assert!(
+            message.contains(TraeVariant::TraeWork.display_name()),
+            "文案必须点明是哪条产品线: {message}"
         );
-        assert!(note.contains("未找到"));
-        assert!(note.contains("dataDirMissing"));
+        assert!(
+            message.contains("设备凭证"),
+            "文案必须把原因说到「设备凭证」上（否则用户会以为是网络/协议问题）: {message}"
+        );
+        assert_eq!(credential_error.kind(), "dataDirMissing");
     }
 
     /// ★ 服务端明确拒绝 vs 本地/协议级失败必须区分开。

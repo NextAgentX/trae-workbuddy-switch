@@ -355,10 +355,11 @@ pub fn write_account_to_auth_file_for(region: Region, acc: &Value) -> Result<(),
     if let Err(e) = atomic_write(&path, &content) {
         eprintln!("[auth] atomic_write FAILED: {e}");
         if e.kind() == std::io::ErrorKind::PermissionDenied {
-            return Err(
-                "无权限写入认证文件：请打开 系统设置→隐私与安全性→App 管理，允许本 App 控制 WorkBuddy 的数据（或为其开启『完全磁盘访问』后重试）"
-                    .to_string(),
-            );
+            return Err(super::error_code::AppError::new(
+                super::error_code::ErrorCode::PermissionDenied,
+                "无权限写入认证文件：请打开 系统设置→隐私与安全性→App 管理，允许本 App 控制 WorkBuddy 的数据（或为其开启『完全磁盘访问』后重试）",
+            )
+            .to_wire());
         }
         return Err(e.to_string());
     }
@@ -492,8 +493,19 @@ mod tests {
         );
     }
 
+    /// 三个取值入口必须给出同一个路径。
+    ///
+    /// ## 为什么必须持 `env_lock()`
+    ///
+    /// 断言的两侧各自**独立**读取进程级 `BUDDY_SWITCH_HOME`（`auth_file_path`、
+    /// `auth_file_path_for`、`auth_candidates_for` 都是无参/重读型路径函数）。
+    /// lib 单测在同一进程里并行跑，若有别的用例（`HomeOverrideGuard` 系列）
+    /// 在这几次读取之间换掉该变量，就会出现「左侧真实 home、右侧临时 home」
+    /// 的**假失败**（2026-09-24 实测踩到：新增用例改 home 后本用例开始红）。
+    /// 修法是让本用例与所有改 home 的用例互斥，而不是给断言加容错。
     #[test]
     fn cn_auth_file_path_is_first_candidate() {
+        let _lock = crate::modules::config::env_lock();
         assert_eq!(auth_file_path(), auth_file_path_for(Region::Cn));
         assert_eq!(
             auth_file_path_for(Region::Cn),

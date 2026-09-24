@@ -85,22 +85,91 @@ pub fn account_display_name(acc: &Value) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// 账号库里某个 uid 的**展示名**（`nickname` → `email`）；库里没有该 uid 时返回 `None`。
+///
+/// # 为什么需要它（2026-09-24 用户报障：区域页签显示一串 UUID）
+///
+/// 新版 WorkBuddy 客户端把认证文件里的 `account.nickname` / `account.phoneNumber`
+/// 改成了**加密信封**（`{"$wbEncrypted":1,"envelope":"…"}`，密钥由客户端经 OS
+/// 安全存储保管）。本项目不持有那把钥匙，于是 `display_str(nickname)` 恒为 `null`，
+/// 界面只能沿 `nickname → email → uid` 一路回落到 **uid**：
+///
+/// ```text
+/// 国内版 WorkBuddy   已登录: 31da0a95-6637-4f5e-adee-f7f08a6f86fd
+/// ```
+///
+/// 而**账号库里本来就有**这个账号的昵称（导入时写入，也可由用户在卡片上维护）。
+/// 「当前账号是谁」的判定用的是 **uid**（前端 `isWorkbuddyCurrent` 也只比 uid / email），
+/// 所以按 uid 去库里取昵称是**同源**的，不是猜测。
+///
+/// 与 Trae 侧同构：那边 `profile::current_account_name_for` 同样以「账号库里的
+/// `name`」作为当前账号的展示名、查不到才回落 uid。
+///
+/// ⚠️ **只回落到 `nickname` / `email`，不回落到 uid** —— 拿 uid 当「昵称」会让调用方
+/// 无法区分「查到了名字」与「没查到」，回落链的最后一段留给调用方自己决定。
+pub fn library_display_name_for(region: Region, uid: &str) -> Option<String> {
+    library_display_name_in(&load_accounts_for(region), uid)
+}
+
+/// [`library_display_name_for`] 的纯函数形态（显式入参，测试用，不碰磁盘）。
+///
+/// 与 [`find_account_in`] 同款拆分理由：单测不该依赖进程级 `BUDDY_SWITCH_HOME`。
+fn library_display_name_in(accounts: &[Value], uid: &str) -> Option<String> {
+    let uid = uid.trim();
+    if uid.is_empty() {
+        return None;
+    }
+    let account = find_account_in(accounts, uid)?;
+    get_str(&account, "nickname").or_else(|| get_str(&account, "email"))
+}
+
+/// 认证文件的 `account` 对象 → 下发前端的 `status.current.nickname`。
+///
+/// ## 取值规则（**只有这一处**，两个下发点都调它）
+///
+/// 1. 认证文件里的 `nickname` 读得到 ⇒ 原样用（归一成「字符串或 null」，见 [`display_str`]）；
+/// 2. 读不到（`null`）⇒ 按认证文件里的 **uid** 去**账号库**取昵称；
+/// 3. 库里也没有 ⇒ `null`，交给前端既有的 `nickname → email → uid` 回落链。
+///
+/// 为什么值得抽成一个函数：第 2 条是**有条件的**回落（只在 `null` 时生效），
+/// 若在两个下发点各写一遍，很容易一处写成「无条件覆盖」——
+/// 那会让老客户端（`nickname` 仍是明文）的用户看到账号库里**过期的旧名字**。
+///
+/// 背景与「为什么回落账号库是同源的」见 [`library_display_name_for`]。
+pub fn current_nickname_for(region: Region, acct: &Value) -> Value {
+    let from_auth = display_str(acct, "nickname");
+    if !from_auth.is_null() {
+        return from_auth;
+    }
+    display_str(acct, "uid")
+        .as_str()
+        .and_then(|uid| library_display_name_for(region, uid))
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
 /// 账号的展示元数据（不泄露 token）。对照 server.py `account_meta`。
+///
+/// ⚠️ **展示字段一律过 [`display_str`] 归一**（不要改回 `acc.get(..)` 裸透传）：
+/// 这是 issue #2「Win11 打开一片白」的修复点之一，理由见该函数文档。
+/// 时间戳字段（`expiresAt` 一族）按契约是**数字**，**不参与**字符串归一。
 pub fn account_meta(acc: &Value) -> Value {
     json!({
-        "id": acc.get("id"),
-        "uid": acc.get("uid"),
-        "email": acc.get("email"),
-        "nickname": acc.get("nickname"),
-        "enterpriseName": acc.get("enterpriseName"),
+        "id": display_str(acc, "id"),
+        "uid": display_str(acc, "uid"),
+        "email": display_str(acc, "email"),
+        "nickname": display_str(acc, "nickname"),
+        "enterpriseName": display_str(acc, "enterpriseName"),
+        // 时间戳：前端 `types.ts` 声明为 `number | null`，且
+        // `account-card.tsx` 用 `typeof expiresAt === "number"` 判定过期 —— 不能归一成字符串。
         "expiresAt": acc.get("expiresAt"),
         "refreshExpiresAt": acc.get("refreshExpiresAt"),
         "refreshedAt": acc.get("refreshedAt"),
         "createdAt": acc.get("createdAt"),
         "needsRelogin": acc.get("needs_relogin").and_then(|v| v.as_bool()) == Some(true),
-        "needsReloginReason": acc.get("needs_relogin_reason"),
+        "needsReloginReason": display_str(acc, "needs_relogin_reason"),
         // 用户备注：自由文本，可能缺失或为 null。前端按「有值才渲染」处理。
-        "remark": acc.get("remark"),
+        "remark": display_str(acc, "remark"),
     })
 }
 
@@ -110,6 +179,44 @@ pub fn get_str(v: &Value, key: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// 展示/标识字段归一：任意 JSON 值 → **「字符串或 null」**。
+///
+/// # 为什么需要它（issue #2：Win11 打开后一片白）
+///
+/// 账号相关字段的历史数据里出现过**非字符串**形态 —— 认证文件
+/// `account.nickname` 是对象（AI 生成的展示名带 emoji / 特殊 unicode 时，
+/// 客户端可能把它存成 `{"zh": "…"}` 这类结构）。
+///
+/// 而前端拿到这些字段后**直接当 React 子节点渲染**：
+/// ```text
+/// {workbuddyCurrentName}   // pages/AccountsPage.tsx
+/// <h3>{name}</h3>          // components/account-card.tsx
+/// ```
+/// 对象会让 React 抛 `Objects are not valid as a React child`；当时本仓**没有
+/// 错误边界** ⇒ React 在未捕获的渲染错误上卸载**整棵树**（自 React 16 起的行为，
+/// 19 的 `createRoot` 默认不变）⇒ 侧栏一起消失 ⇒ 用户看到的是一张**纯白窗口**
+/// （而不是「只有 CN 面板空掉」）。
+///
+/// 所以凡是「要交给前端展示 / 拼进字符串」的字段，出口一律过这道归一：
+/// - `String`：原样保留（含空串，语义与历史一致）；
+/// - `Number`：转成文本 —— **纯数字昵称是合法数据**（如 `12345`），不能当脏值丢掉；
+/// - 其余（对象 / 数组 / 布尔 / null / 缺失）：`null`，交给前端既有的 `||`
+///   回落链（`nickname || email || uid || 未知账号`）接管。
+///
+/// 布尔刻意**不**转成 `"true"`：那会让界面把「字段坏了」显示成一个人名，
+/// 属于「静默降级」；落 `null` 才能触发正常的兜底展示。
+///
+/// ⚠️ **只用于展示与标识字段**。`expiresAt` / `refreshExpiresAt` /
+/// `refreshedAt` / `createdAt` 按契约是数字（`src/lib/types.ts` 里
+/// `number | null`），**绝不能**过这道归一，否则会破坏过期判定。
+pub fn display_str(v: &Value, key: &str) -> Value {
+    match v.get(key) {
+        Some(Value::String(s)) => Value::String(s.clone()),
+        Some(Value::Number(n)) => Value::String(n.to_string()),
+        _ => Value::Null,
+    }
 }
 
 /// 返回可用于 UID 缺失场景的真实邮箱。历史展示占位值不参与身份匹配。
@@ -354,6 +461,47 @@ mod tests {
         assert_eq!(get_str(&json!({"k": 123}), "k"), None);
     }
 
+    /// [`display_str`] 的形状不变量：**只可能产出字符串或 null**。
+    ///
+    /// 这是 issue #2「Win11 打开一片白」的根因护栏 —— 前端把这些字段直接当
+    /// React 子节点渲染，任何非字符串形态都会让 React 卸载整棵树。
+    #[test]
+    fn display_str_normalizes_to_string_or_null() {
+        // 字符串原样保留（含空串：语义与历史一致，前端 `||` 回落链会接管）
+        assert_eq!(display_str(&json!({"k": "v"}), "k"), json!("v"));
+        assert_eq!(display_str(&json!({"k": ""}), "k"), json!(""));
+        // 数字 → 文本：纯数字昵称是**合法数据**，不能当脏值丢掉
+        assert_eq!(display_str(&json!({"k": 12345}), "k"), json!("12345"));
+        assert_eq!(display_str(&json!({"k": 1.5}), "k"), json!("1.5"));
+        // 对象 / 数组 / 布尔 / null / 缺失 → null（布尔刻意不转 "true"：那会把
+        // 「字段坏了」显示成一个人名，属于静默降级）
+        assert_eq!(display_str(&json!({"k": {"a": 1}}), "k"), Value::Null);
+        assert_eq!(display_str(&json!({"k": [1, 2]}), "k"), Value::Null);
+        assert_eq!(display_str(&json!({"k": true}), "k"), Value::Null);
+        assert_eq!(display_str(&json!({"k": null}), "k"), Value::Null);
+        assert_eq!(display_str(&json!({}), "k"), Value::Null);
+    }
+
+    /// 归一的**反向对照**：时间戳字段必须保持数字，不能被顺手字符串化。
+    ///
+    /// `src/lib/types.ts` 声明 `expiresAt: number | null`，且 `account-card.tsx`
+    /// 用 `typeof account.expiresAt === "number"` 判定是否过期 —— 一旦变成
+    /// `"123456"`，过期提示会**静默消失**（不报错、只是不再出现）。
+    #[test]
+    fn account_meta_keeps_timestamps_numeric() {
+        let meta = account_meta(&json!({
+            "id": "a1",
+            "expiresAt": 123456,
+            "refreshExpiresAt": 234567,
+            "refreshedAt": 345678,
+            "createdAt": 456789,
+        }));
+        assert_eq!(meta["expiresAt"], json!(123456));
+        assert_eq!(meta["refreshExpiresAt"], json!(234567));
+        assert_eq!(meta["refreshedAt"], json!(345678));
+        assert_eq!(meta["createdAt"], json!(456789));
+    }
+
     #[test]
     fn build_chat_headers_uses_no_star_conventions_and_never_carries_refresh_token() {
         let acc = json!({
@@ -439,6 +587,108 @@ mod tests {
         assert_eq!(meta["needsReloginReason"], "刷新失败");
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// 账号库里的展示名：`nickname` → `email`，查不到就是 `None`（**不回落到 uid**）。
+    ///
+    /// 最后一条断言是刻意的：`None` 与「拿 uid 当名字」必须可区分，
+    /// 否则调用方（`current_nickname_for`）无法决定要不要继续往下回落。
+    #[test]
+    fn library_display_name_prefers_nickname_then_email_and_never_uid() {
+        let accounts = vec![
+            account("a1", Some("uid-1"), "小明", Some("m@example.com")),
+            account("a2", Some("uid-2"), "", Some("only-mail@example.com")),
+            account("a3", Some("uid-3"), "", None),
+        ];
+
+        assert_eq!(
+            library_display_name_in(&accounts, "uid-1").as_deref(),
+            Some("小明")
+        );
+        // 昵称为空 ⇒ 用邮箱。
+        assert_eq!(
+            library_display_name_in(&accounts, "uid-2").as_deref(),
+            Some("only-mail@example.com")
+        );
+        // 昵称与邮箱都没有 ⇒ `None`，**不是** uid。
+        assert_eq!(library_display_name_in(&accounts, "uid-3"), None);
+        // 库里没有该 uid ⇒ `None`（不能凭空造名字）。
+        assert_eq!(library_display_name_in(&accounts, "uid-404"), None);
+        // 空 / 全空白 uid 不得命中任何条目。
+        assert_eq!(library_display_name_in(&accounts, ""), None);
+        assert_eq!(library_display_name_in(&accounts, "   "), None);
+        // 脏值（对象）不算名字。
+        let dirty = vec![json!({"uid": "uid-4", "nickname": {"zh": "对象昵称"}})];
+        assert_eq!(library_display_name_in(&dirty, "uid-4"), None);
+    }
+
+    /// ★ 新版客户端的加密昵称 ⇒ `status.current.nickname` 必须回落账号库，而不是显示 uid。
+    ///
+    /// 现场（2026-09-24 用户截图）：`%APPDATA%\...\workbuddy-desktop.info` 里
+    /// `account.nickname` 是 `{"$wbEncrypted":1,"envelope":"…"}`，`display_str` 给 `null`，
+    /// 界面于是显示 `已登录: 31da0a95-6637-4f5e-adee-f7f08a6f86fd`。
+    #[test]
+    fn current_nickname_falls_back_to_library_for_encrypted_auth_file_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-current-nickname-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
+
+        save_accounts_for(
+            Region::Cn,
+            &[
+                account("a1", Some("uid-1"), "Jackey", None),
+                account("a2", Some("uid-2"), "", Some("fallback@example.com")),
+            ],
+        )
+        .expect("seed accounts");
+
+        // 1) 加密信封（对象）⇒ 读不到 ⇒ 回落账号库。
+        let encrypted = json!({
+            "uid": "uid-1",
+            "nickname": {"$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MSw…"},
+        });
+        assert_eq!(
+            current_nickname_for(Region::Cn, &encrypted),
+            json!("Jackey"),
+            "认证文件读不到昵称时必须回落账号库，否则界面只能显示 uid"
+        );
+
+        // 2) 库里只有邮箱 ⇒ 回落到邮箱。
+        let encrypted_no_nickname = json!({"uid": "uid-2", "nickname": {"$wbEncrypted": 1}});
+        assert_eq!(
+            current_nickname_for(Region::Cn, &encrypted_no_nickname),
+            json!("fallback@example.com")
+        );
+
+        // 3) 库里也没有 ⇒ `null`，把最后一段回落（→ email → uid）留给前端。
+        let unknown = json!({"uid": "uid-404", "nickname": {"$wbEncrypted": 1}});
+        assert_eq!(current_nickname_for(Region::Cn, &unknown), Value::Null);
+
+        // 4) 阳性对照（**这条防的是「无条件覆盖」**）：老客户端明文昵称必须原样用，
+        //    哪怕账号库里对同一个 uid 存着另一个（过期的）名字。
+        let plaintext = json!({"uid": "uid-1", "nickname": "认证文件里的名字"});
+        assert_eq!(
+            current_nickname_for(Region::Cn, &plaintext),
+            json!("认证文件里的名字"),
+            "认证文件读得到昵称时不得被账号库覆盖"
+        );
+
+        // 5) uid 是脏值（对象）⇒ 无从查库，如实落 null。
+        let dirty_uid = json!({"uid": {"nested": true}, "nickname": {"$wbEncrypted": 1}});
+        assert_eq!(current_nickname_for(Region::Cn, &dirty_uid), Value::Null);
+
+        // 6) 跨区域不得串库：国际版的 uid 不在国内库里 ⇒ null。
+        assert_eq!(
+            current_nickname_for(Region::Global, &encrypted),
+            Value::Null,
+            "国内账号库的昵称不得泄漏到国际版视图"
+        );
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -551,8 +801,19 @@ mod tests {
     /// `region.rs` 只断言了两个 `accounts_filename` 常量不同，但**常量不同 ≠
     /// `accounts_file_for` 用对了常量**——若该函数写死用 CN 的文件名，常量测试照样绿，
     /// 而两版账号库会互相覆盖。这里直接钉住函数产出的文件名。
+    ///
+    /// ## 本用例为什么必须持 `env_lock()`
+    ///
+    /// 断言里出现了**两处**无参全局路径（`accounts_file_for` 与 `store_dir()`），
+    /// 它们每次调用都重读进程级 `BUDDY_SWITCH_HOME`。lib 单测在同一进程里并行跑，
+    /// 只要有别的用例（如 `current_nickname_falls_back_to_library_for_encrypted_auth_file_name`
+    /// 的 `HomeOverrideGuard`）在这两次读取之间换掉该变量，就会出现
+    /// 「左侧真实 home、右侧临时 home」的**假失败**（2026-09-24 实测踩到）。
+    /// 症状看起来像竞态，实则是**跨用例的全局状态泄漏**。
+    /// 修法是让本用例与所有改 home 的用例互斥（取 env 锁），不是给断言加容错。
     #[test]
     fn accounts_file_for_is_region_scoped() {
+        let _lock = crate::modules::config::env_lock();
         let cn = accounts_file_for(Region::Cn);
         let global = accounts_file_for(Region::Global);
 

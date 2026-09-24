@@ -29,6 +29,8 @@
 //! reqwest 的错误类型无法在单测里凭空构造（`is_timeout()` 之类也就无从触发），
 //! 所以只让它做**分类**（[`classify_transport_error`]），文案逻辑全部落在纯函数上，可测。
 
+use super::error_code::{AppError, ErrorCode};
+
 /// 传输层错误的种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportErrorKind {
@@ -93,12 +95,41 @@ pub fn compose_transport_message(kind: TransportErrorKind, chain: &str) -> Strin
     format!("{}：{}", transport_error_label(kind), chain)
 }
 
-/// **唯一出口**：把传输层错误变成可诊断的中文文案。
-pub fn describe_transport_error(error: &reqwest::Error) -> String {
-    compose_transport_message(
-        classify_transport_error(error),
-        &join_error_chain(error),
+/// 把 [`TransportErrorKind`] 映射到跨通道的错误码。
+///
+/// 四种 kind 必须映射到**互不相同**的码，否则前端无法区分「该重试」还是「该修网络」。
+pub fn transport_error_code(kind: TransportErrorKind) -> ErrorCode {
+    match kind {
+        TransportErrorKind::Timeout => ErrorCode::NetTransportTimeout,
+        TransportErrorKind::Connect => ErrorCode::NetTransportConnect,
+        TransportErrorKind::BodyOrDecode => ErrorCode::NetTransportBody,
+        TransportErrorKind::Other => ErrorCode::NetTransportOther,
+    }
+}
+
+/// 带错误码的传输层错误：**文本与 [`describe_transport_error`] 逐字节相同**，
+/// 另外携带 `net.transport.*` 码与 `chain` 参数，供前端按当前语言重新渲染。
+///
+/// 两者是**同一份实现**（本函数是唯一真相，`describe_transport_error` 委托过来取 `Display`），
+/// 因此不可能出现「中文版和带码版的文案不一致」。
+///
+/// 只在**能把码送到前端**的调用点用它；纯内部日志用 [`describe_transport_error`] 即可。
+pub fn transport_error(error: &reqwest::Error) -> AppError {
+    let kind = classify_transport_error(error);
+    let chain = join_error_chain(error);
+    AppError::new(
+        transport_error_code(kind),
+        compose_transport_message(kind, &chain),
     )
+    // 前端文案写作 `{kindLabel}：{chain}`，因此只把原因链交给前端拼接。
+    .with("chain", chain)
+}
+
+/// **唯一出口**：把传输层错误变成可诊断的中文文案。
+///
+/// 委托 [`transport_error`]，保证带码版与本函数的文本永远一致。
+pub fn describe_transport_error(error: &reqwest::Error) -> String {
+    transport_error(error).to_string()
 }
 
 #[cfg(test)]
@@ -212,5 +243,52 @@ mod tests {
             message.contains("；原因: tcp connect error"),
             "原因链被种类前缀挤掉了: {message}"
         );
+    }
+
+    /// ★ 可证伪性：若有人把两种 kind 映射到同一个码，这条会红。
+    /// 前端正是靠这个码决定文案与「重试 / 修网络」的建议，撞码等于分类失效。
+    #[test]
+    fn 四种种类映射到互不相同的错误码() {
+        let codes = [
+            transport_error_code(TransportErrorKind::Timeout),
+            transport_error_code(TransportErrorKind::Connect),
+            transport_error_code(TransportErrorKind::BodyOrDecode),
+            transport_error_code(TransportErrorKind::Other),
+        ];
+        assert_eq!(codes[0], crate::modules::error_code::ErrorCode::NetTransportTimeout);
+        let mut unique = std::collections::HashSet::new();
+        for code in codes {
+            assert!(unique.insert(code.as_str()), "错误码重复: {}", code.as_str());
+        }
+    }
+
+    /// 带码版的文本必须与纯文案版**逐字节相同**（前端换语言失败时回落显示的就是它）。
+    #[test]
+    fn 带码版文本与纯文案版一致() {
+        let chain = "error sending request for url (…)；原因: tcp connect error";
+        for kind in [
+            TransportErrorKind::Timeout,
+            TransportErrorKind::Connect,
+            TransportErrorKind::BodyOrDecode,
+            TransportErrorKind::Other,
+        ] {
+            let coded = crate::modules::error_code::AppError::new(
+                transport_error_code(kind),
+                compose_transport_message(kind, chain),
+            )
+            .with("chain", chain);
+            assert_eq!(coded.to_string(), compose_transport_message(kind, chain));
+            // 尾部必须真的带上了码与原因链，否则前端无从重渲染。
+            let decoded = crate::modules::error_code::decode_wire(&coded.to_wire());
+            assert_eq!(
+                decoded.code,
+                Some(transport_error_code(kind)),
+                "码丢失: {kind:?}"
+            );
+            assert_eq!(
+                decoded.params,
+                vec![("chain".to_string(), chain.to_string())]
+            );
+        }
     }
 }

@@ -55,6 +55,33 @@ fn probe_real_machine_variant_detection() {
         }
     }
 
+    println!("\n=== 各变体的**安装探测**与**目录选择**（OAuth 前置条件） ===");
+    // 这一节回答的是「OAuth 网页登录能不能发起」：
+    //   ① `detect_install_for` 找不到客户端 ⇒ `trae_launch_client` 会响亮失败（给不出可执行文件）；
+    //   ② `select_data_dir_for` 为 `None` ⇒ 没有 userData ⇒ `device_identity_for` 必然
+    //      `DataDirMissing`，**用户点多少次「重新发起登录」都没用**（客户端首次启动才写凭证）。
+    // 两个值都来自与生产代码**同一个函数**，因此这里的输出就是界面会看到的东西。
+    for v in TraeVariant::all() {
+        let probe = platform::detect_install_for(v);
+        println!(
+            "--- {v:?} ({}) --- installed={} version={:?} exe={:?}",
+            v.display_name(),
+            probe.installed,
+            probe.version,
+            probe.exe.as_ref().map(|p| p.display().to_string()),
+        );
+        // 「写侧」与「读/展示侧」两个选择器都给出来：它们语义不同、**允许不同值**，
+        // 探针把两者并排打印正是为了让人一眼看出「报错说的是哪一个」。
+        println!(
+            "    写侧 detect_data_dir_for = {:?}",
+            platform::detect_data_dir_for(v).map(|p| p.display().to_string())
+        );
+        println!(
+            "    读侧 select_data_dir_for = {:?}（None ⇒ OAuth 必失败）",
+            platform::select_data_dir_for(v).map(|p| p.display().to_string())
+        );
+    }
+
     println!("\n=== 各变体端点表 ===");
     for v in TraeVariant::all() {
         let ep = variant::variant_spec(v);

@@ -272,6 +272,29 @@ impl OAuthLine {
     pub const fn hide_saas_login(self) -> bool {
         matches!(self, OAuthLine::Solo)
     }
+
+    /// `DeviceInfo.PlatformCode` —— 同样是**产品线级**的取值。
+    ///
+    /// 客户端原文（本机 2026-09-24 读 `out/main.js`，逐字）：
+    /// ```js
+    /// k(){ return gr(this.d) ? "SOLO_PC" : "IDE_PC" }   // gr = 是否 SOLO_Lite
+    /// ```
+    /// 与 `auth_from` / `client_id` 用的是**同一个**判定（`Su(t) === "SOLO_Lite"`），
+    /// 因此必须与它们同源派生 —— 分成两个常量必然漂移。
+    ///
+    /// ## 为什么这条值得单独写一段注释（真机现场）
+    ///
+    /// 2026-09-24 用户报「TraeWork（SOLO 线）OAuth 登录失败，上游回
+    /// `20403/040036 Token device not match`」。抓真机对照发现：本实现把
+    /// `PlatformCode` 写死成 `IDE_PC`（从参考实现 `oauth.rs` 逐字抄来，而参考
+    /// 固化的是 **TraeCode/IDE 线**），而真机客户端在 SOLO 线上报的是 **`SOLO_PC`**。
+    /// 这正是「移植参考实现前先问这段抓自哪条产品线」那条教训的漏网之鱼。
+    pub const fn platform_code(self) -> &'static str {
+        match self {
+            OAuthLine::Solo => "SOLO_PC",
+            OAuthLine::Trae => "IDE_PC",
+        }
+    }
 }
 
 impl Default for TraeVariant {
@@ -372,6 +395,24 @@ impl VariantSpec {
 /// **CN 端点取值逐字等于改造前的 `modules::trae` 常量**，保证既有行为零变化：
 /// 改造前 `TRAE_API_BASE = "https://api.trae.cn"`、`TRAE_OAUTH_BASE = "https://api.trae.com.cn"`、
 /// `TRAE_AGENT_HOST = "https://trae-api-cn.mchost.guru"`。
+///
+/// ## ⚠️ 候选名与 `GLOBAL_SPEC` **重叠**（`TRAE SOLO`）—— 已知缺陷，勿在此处单独摘除
+///
+/// 本表的 `TRAE SOLO` 属于**国际版**客户端（`packageType = SOLO_I18N`，见 [`GLOBAL_SPEC`]），
+/// 与 `TRAE SOLO CN`（国内版）不是同一个客户端。两者重叠的后果不是报错而是
+/// **静默读错客户端**：`select_data_dir_for(TraeWork)`（按活跃度）在本机返回 `TRAE SOLO`
+/// ⇒ 拿到国际版的设备凭证 / 目录。
+///
+/// **但"顺手摘掉它"会连带作废约 20 条护栏**：本表是目前**唯一**有"一个变体多个候选目录"
+/// 的表，而 `select_data_dir_for` 与 `detect_data_dir_for` 的分叉、以及 R3/R5/R6 那批
+/// 「登录态不在首个候选里」的用例**全部**靠它构造现场（2026-09-24 实测：摘掉后
+/// `cargo test -p buddy-switch-core --lib` 30 条红）。`super::region` 的目标表
+/// （`CN_TRAE_WORK.data_dir_names = ["TRAE SOLO CN"]` 等四个程序位**各一个名字**）
+/// 一旦成为唯一来源，两个选择器就恒等 ⇒ 分叉机制整体失去意义。
+///
+/// ⇒ 正确做法是 `.trellis/tasks/09-21-trae-region-program-model` 的「仍未做 #1」
+/// （`TraeVariant` → `(TraeRegion, TraeProgram)` 的类型收尾），**必须单独一轮**、
+/// 连同那 20 条用例的去留一起决定。**不要**在别处顺手改这张表。
 const TRAE_WORK_SPEC: VariantSpec = VariantSpec {
     variant: TraeVariant::TraeWork,
     display_name: "Trae Work",
@@ -490,6 +531,10 @@ pub fn variant_of_name(name: &str) -> Option<TraeVariant> {
 
     // 再退化到包含关系。`solo` 是 Trae Work 的独有词根（`TRAE SOLO`），
     // 放在 `trae` 之前判定，否则 `TRAE SOLO CN` 会被 `trae` 抢先命中。
+    //
+    // ⚠️ 已知后果（与 `TRAE_WORK_SPEC` 的候选名重叠同源）：`TRAE SOLO` 会落到
+    //   `TraeWork`，而它其实是**国际版**客户端的 userData 名。修它等于摘掉那条重叠，
+    //   见 `TRAE_WORK_SPEC` 的说明 —— 必须与那 20 条护栏一起单独一轮处理。
     if lowered.contains("solo") {
         return Some(TraeVariant::TraeWork);
     }
@@ -548,6 +593,11 @@ mod tests {
 
     /// 变体之间的候选名**必须不重叠**：重叠会导致探测时互相抢，
     /// 出现「选中 Trae Work 的安装、读 Trae CN 的 userData」。
+    ///
+    /// ⚠️ **只比 `TraeWork` vs `Trae`**（历史范围）。`TraeWork` 与 `Global` 之间
+    /// 在 `TRAE SOLO` 上**确实重叠**，而修它必须连同约 20 条依赖「多变体多候选目录」
+    /// 的护栏一起做 —— 见 `TRAE_WORK_SPEC` 的说明。在那之前，把本用例扩到 `Global`
+    /// 只会得到一条**恒红**的断言，不如把事实写在这里。
     #[test]
     fn 变体候选名互不重叠() {
         let work = variant_spec(TraeVariant::TraeWork);
@@ -618,13 +668,26 @@ mod tests {
             OAuthLine::Trae.default_client_id()
         );
         assert_ne!(OAuthLine::Solo.hide_saas_login(), OAuthLine::Trae.hide_saas_login());
-        // 逐字值（与客户端 `authConfig` / `auth_from` 分派对拍）。
+        assert_ne!(OAuthLine::Solo.platform_code(), OAuthLine::Trae.platform_code());
+        // 逐字值（与客户端 `authConfig` / `auth_from` / `k()` 分派对拍）。
         assert_eq!(OAuthLine::Solo.auth_from(), "solo");
         assert_eq!(OAuthLine::Trae.auth_from(), "trae");
         assert_eq!(OAuthLine::Solo.default_client_id(), "en1oxy7wnw8j9n");
         assert_eq!(OAuthLine::Trae.default_client_id(), "ono9krqynydwx5");
         assert!(OAuthLine::Solo.hide_saas_login());
         assert!(!OAuthLine::Trae.hide_saas_login());
+        // `PlatformCode` 与 `auth_from` **同源判定**：SOLO 线是 SOLO_PC。
+        // 反例就是 2026-09-24 那个真实缺陷（写死 IDE_PC ⇒ 上游 20403）。
+        assert_eq!(OAuthLine::Solo.platform_code(), "SOLO_PC");
+        assert_eq!(OAuthLine::Trae.platform_code(), "IDE_PC");
+        for spec in all_specs() {
+            assert_eq!(
+                OAuthLine::from_package_type(spec.package_type).platform_code(),
+                spec.variant.oauth_line().platform_code(),
+                "{} 的 PlatformCode 没有从 package_type 派生",
+                spec.name_alias
+            );
+        }
     }
 
     /// 两条产品线的 CN 端点**逐字相同**（实测结论）。

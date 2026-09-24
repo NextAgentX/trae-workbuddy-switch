@@ -1,7 +1,7 @@
 //! Trae 数据目录与文件路径。
 //!
 //! 全部路径由 [`crate::modules::config::store_dir`] 派生，因此自动继承
-//! `BUDDY_SWITCH_HOME` 覆盖与 `.wb-switch` 兼容回落，测试里可用隔离目录重定向。
+//! `BUDDY_SWITCH_HOME` 覆盖，测试里可用隔离目录重定向。
 //!
 //! ## ★ 按产品线变体分家（2026-09-18 起）
 //!
@@ -630,63 +630,88 @@ mod tests {
         assert_eq!(settings_file(), trae_dir().join("settings.json"));
     }
 
-    /// ★ 核心护栏：两条产品线的**每一个**分家文件都不能相同。
+    /// ★ 同区域的两条程序**刻意共用**同一套数据文件与日志，但**快照目录必须按程序分家**。
     ///
-    /// 如果这个测试红了，说明有一个数据文件被两条产品线共用 ——
-    /// 后果是「Trae CN 的签到把账号灌进 Trae Work 的库」这类静默污染。
+    /// ## 为什么「共用」才是对的（这一条极容易改反）
+    ///
+    /// 账号库 / 签到 / 积分 / 冷却 / 日志的归属维度是**区域**，不是程序：CN 与国际是两套
+    /// **互不相通**的账号体系，而同一区域内 TraeWork / TraeCode **共用同一套账号**
+    /// （同一个 Trae 账号可以分别启用在国内的两条程序上）。`scoped_file(_, variant)`
+    /// 因此直接转发到 `variant.region()`（见本文件顶部「为什么账号库按区域分家而不是
+    /// 按程序分家」）。⇒ **同区域两条程序指向同一个文件是设计，不是缺陷。**
+    ///
+    /// 反过来，**快照必须按程序分家**：快照是某个客户端 userData 的文件副本，只能恢复到
+    /// 采集它的那条程序里去（见 [`profiles_dir_for`] 那节）。
+    ///
+    /// ## 本用例为什么改过名
+    ///
+    /// 原名 `两条产品线的数据文件互不相同` 断言的是**改造前**的产品线语义。轴翻到区域之后
+    /// 那条断言不再成立，原用例却靠把 `cn` 换成 `Global` 一直假绿 —— 于是名字、文档与代码
+    /// 三处互相矛盾，而它声称要防的那种污染**在设计上不可能发生**（详见 2026-09-21 日志）。
+    /// 现在改成断言**真实不变式**，并显式覆盖「同区域共用」这个此前无人断言的方向。
     #[test]
-    fn 两条产品线的数据文件互不相同() {
+    fn 同区域两条程序共用数据文件而快照按程序分家() {
         // 同 [`Self::两个区域的数据文件互不相同`]：下面每一对都各自**独立**读取进程级
         // `BUDDY_SWITCH_HOME`，并发用例中途换 home 会让两侧取到不同根目录 ⇒ 整段持 env 锁。
         let _lock = crate::modules::config::env_lock();
 
-        let work = TraeVariant::TraeWork;
-        // ⚠️ 这里刻意是 **Global** 而不是 `Trae`：账号库/签到等**数据文件按区域分家**，同一区域内
-        //   两条程序（TraeWork / TraeCode）**刻意共用同一套账号**
-        //   （`scoped_file(name, variant)` → `variant.region()`，见本文件顶部「为什么账号库按区域
-        //   分家而不是按程序分家」）。⇒ 若把这里改成 `TraeVariant::Trae`，本用例会**立刻红**
-        //   （左右同为 `checkin_accounts.json`）—— 那不是缺陷，是设计。
-        //   TODO(口径): 本用例名与文档仍写「两条产品线 / 右边是 Trae」，与代码和实际语义不符，
-        //   见 2026-09-21 日志；改名/改写前**别**动这个 `Global`。
-        let cn = TraeVariant::Global;
+        let work = TraeVariant::TraeWork; // 国内 · 默认变体
+        let code = TraeVariant::Trae; // 国内 · 另一条程序（Trae CN）
+        let global = TraeVariant::Global; // 国际版（另一个区域）
 
-        // 逐个函数族对拍：左边是 TraeWork，右边是 Trae。
-        let pairs: [(&str, PathBuf, PathBuf); 7] = [
-            ("账号库", accounts_file_for(work), accounts_file_for(cn)),
-            ("分组", groups_file_for(work), groups_file_for(cn)),
-            ("设备映射", device_map_file_for(work), device_map_file_for(cn)),
+        // 1) 数据文件与日志：同区域的两条程序**必须相同**（刻意共用同一套账号）。
+        let shared: [(&str, PathBuf, PathBuf); 9] = [
+            ("账号库", accounts_file_for(work), accounts_file_for(code)),
+            ("分组", groups_file_for(work), groups_file_for(code)),
+            ("设备映射", device_map_file_for(work), device_map_file_for(code)),
             (
                 "签到明细",
                 credits_history_file_for(work),
-                credits_history_file_for(cn),
+                credits_history_file_for(code),
             ),
             (
                 "每日积分",
                 credits_daily_file_for(work),
-                credits_daily_file_for(cn),
+                credits_daily_file_for(code),
             ),
             (
                 "剩余积分",
                 remaining_credits_file_for(work),
-                remaining_credits_file_for(cn),
+                remaining_credits_file_for(code),
             ),
-            ("冷却状态", cooldowns_file_for(work), cooldowns_file_for(cn)),
+            ("冷却状态", cooldowns_file_for(work), cooldowns_file_for(code)),
+            (
+                "签到摘要",
+                checkin_summary_file_for(work),
+                checkin_summary_file_for(code),
+            ),
+            (
+                "签到日志",
+                checkin_log_file_for(work),
+                checkin_log_file_for(code),
+            ),
         ];
-        for (label, work_path, cn_path) in pairs {
-            assert_ne!(work_path, cn_path, "{label} 被两条产品线共用: {work_path:?}");
+        for (label, work_path, code_path) in shared {
+            assert_eq!(
+                work_path, code_path,
+                "{label} 应被同区域两条程序共用，却分家了: {work_path:?} vs {code_path:?}"
+            );
         }
 
-        // 签到摘要与快照目录单独对拍（它们不在上面的数组里）。
+        // 2) 但**跨区域**必须不同 —— 否则两套互不相通的账号体系会混库。
+        //    （与 `两个区域的数据文件互不相同` 互补：那条走 `*_for_region` 入口，这条走 `*_for` 入口。）
         assert_ne!(
-            checkin_summary_file_for(work),
-            checkin_summary_file_for(cn),
-            "签到摘要被两条产品线共用"
+            accounts_file_for(work),
+            accounts_file_for(global),
+            "账号库在跨区域时不得共用"
         );
-        assert_ne!(profiles_dir_for(work), profiles_dir_for(cn), "快照目录共用");
+
+        // 3) 快照目录按**程序**分家 —— 把 CN TraeWork 的快照灌进 TraeCode，等于把一个
+        //    未知格式的登录态写进另一个客户端。
         assert_ne!(
-            checkin_log_file_for(work),
-            checkin_log_file_for(cn),
-            "签到日志共用"
+            profiles_dir_for(work),
+            profiles_dir_for(code),
+            "快照目录被两条程序共用"
         );
     }
 

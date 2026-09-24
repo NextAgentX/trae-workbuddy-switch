@@ -1,8 +1,9 @@
 //! 定时任务排程配置与「按点独立排程」纯函数。
 //!
 //! 对照参考实现 `internal/config/schedule.go` + `internal/scheduler/scheduler.go`：
-//! 六类任务（签到 / 旅行 / 活跃上报 / 保活 / 开学季 / 夜猫子）各自独立时点、独立开关，
-//! 同一整点上的多类任务并行执行。
+//! WorkBuddy 侧的六类任务（签到 / 旅行 / 活跃上报 / 保活 / 开学季 / 夜猫子）各自独立时点、
+//! 独立开关，同一整点上的多类任务并行执行；本产品另加第七类 **Trae 自动签到**
+//! （`trae_checkin`，第二条产品线，默认关闭，见 [`default_schedule`]）。
 //!
 //! **默认值预置 + 缺失键保留**：`ScheduleConfig` 先取默认值再被输入覆盖，因此键缺席
 //! （或为 `null`）时保留默认——尤其 `*_enabled` 缺省必须为 `true`，否则老配置会因字段
@@ -90,6 +91,10 @@ define_schedule_tasks! {
     Keepalive => "keepalive", keepalive_enabled, keepalive_hours;
     School => "school", school_enabled, school_hours;
     Cat => "cat", cat_enabled, cat_hours;
+    // Trae 分区（第二条产品线）的自动签到。**与上面的 `checkin` 是两件事**：
+    // 前者签 WorkBuddy 的账号库，本任务签 Trae 的区域账号库（两本互不相通）。
+    // 粒度刻意独立 —— 用户完全可能只想自动签其中一个产品。
+    TraeCheckin => "trae_checkin", trae_checkin_enabled, trae_checkin_hours;
 }
 
 /// 排程配置（`~/.buddy-switch/schedule_config.json`）。
@@ -101,16 +106,27 @@ pub struct ScheduleConfig {
     pub keepalive_hours: Vec<u32>,
     pub school_hours: Vec<u32>,
     pub cat_hours: Vec<u32>,
+    /// Trae 自动签到的小时点（第二条产品线，区域账号库）。
+    pub trae_checkin_hours: Vec<u32>,
     pub checkin_enabled: bool,
     pub travel_enabled: bool,
     pub activity_enabled: bool,
     pub keepalive_enabled: bool,
     pub school_enabled: bool,
     pub cat_enabled: bool,
+    /// Trae 自动签到开关。**默认关闭**，见 [`default_schedule`] 的说明。
+    pub trae_checkin_enabled: bool,
     pub activity_report_count: u32,
 }
 
-/// 默认排程：与参考实现 `DefaultSchedule` 逐字一致。
+/// 默认排程：WorkBuddy 六类与参考实现 `DefaultSchedule` 逐字一致。
+///
+/// ## 唯一的偏离：Trae 自动签到**默认关闭**
+///
+/// 其余六类默认启用是**历史既定事实**（参考实现如此，改了会让老用户的功能静默消失）。
+/// Trae 这条是本产品新增的能力，且它会**对外发请求**：默认打开等于「升级后凭空开始
+/// 拿用户的 Trae 凭据去签到」——那不是用户授权过的行为。小时点仍预置 9/21，
+/// 用户打开开关即可用，不需要先配时间。
 pub fn default_schedule() -> ScheduleConfig {
     ScheduleConfig {
         checkin_hours: vec![9, 21],
@@ -119,12 +135,14 @@ pub fn default_schedule() -> ScheduleConfig {
         keepalive_hours: vec![22],
         school_hours: vec![12],
         cat_hours: vec![1],
+        trae_checkin_hours: vec![9, 21],
         checkin_enabled: true,
         travel_enabled: true,
         activity_enabled: true,
         keepalive_enabled: true,
         school_enabled: true,
         cat_enabled: true,
+        trae_checkin_enabled: false,
         // 领猫前置需 5 次对话；5 连发把 chat_5 刷满。显式缺省 = 5，但 0/负数归一为 1（旧行为）。
         activity_report_count: 5,
     }
@@ -183,6 +201,7 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
         cfg.keepalive_hours = hours_from(map, "keepalive_hours", "keepalive_enabled", &defaults.keepalive_hours)?;
         cfg.school_hours = hours_from(map, "school_hours", "school_enabled", &defaults.school_hours)?;
         cfg.cat_hours = hours_from(map, "cat_hours", "cat_enabled", &defaults.cat_hours)?;
+        cfg.trae_checkin_hours = hours_from(map, "trae_checkin_hours", "trae_checkin_enabled", &defaults.trae_checkin_hours)?;
 
         for (key, slot) in [
             ("checkin_enabled", &mut cfg.checkin_enabled),
@@ -191,6 +210,7 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
             ("keepalive_enabled", &mut cfg.keepalive_enabled),
             ("school_enabled", &mut cfg.school_enabled),
             ("cat_enabled", &mut cfg.cat_enabled),
+            ("trae_checkin_enabled", &mut cfg.trae_checkin_enabled),
         ] {
             if let Some(value) = map.get(key).and_then(Value::as_bool) {
                 *slot = value;
@@ -210,6 +230,7 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
     validate_hours("schedule.keepalive_hours", "keepalive_enabled", &cfg.keepalive_hours)?;
     validate_hours("schedule.school_hours", "school_enabled", &cfg.school_hours)?;
     validate_hours("schedule.cat_hours", "cat_enabled", &cfg.cat_hours)?;
+    validate_hours("schedule.trae_checkin_hours", "trae_checkin_enabled", &cfg.trae_checkin_hours)?;
     Ok(cfg)
 }
 
@@ -232,12 +253,14 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "keepalive_hours": cfg.keepalive_hours.clone(),
         "school_hours": cfg.school_hours.clone(),
         "cat_hours": cfg.cat_hours.clone(),
+        "trae_checkin_hours": cfg.trae_checkin_hours.clone(),
         "checkin_enabled": cfg.checkin_enabled,
         "travel_enabled": cfg.travel_enabled,
         "activity_enabled": cfg.activity_enabled,
         "keepalive_enabled": cfg.keepalive_enabled,
         "school_enabled": cfg.school_enabled,
         "cat_enabled": cfg.cat_enabled,
+        "trae_checkin_enabled": cfg.trae_checkin_enabled,
         "activity_report_count": cfg.activity_report_count,
     })
 }
@@ -333,9 +356,25 @@ mod tests {
         assert_eq!(cfg.school_hours, vec![12]);
         assert_eq!(cfg.cat_hours, vec![1]);
         assert_eq!(cfg.activity_report_count, 5);
+        assert_eq!(cfg.trae_checkin_hours, vec![9, 21]);
+        // WorkBuddy 的六类默认全启用（与参考实现逐字一致，改了会让老用户的功能静默消失）。
         for task in ScheduleTask::all() {
-            assert!(task.enabled(&cfg), "默认应全部启用: {}", task.as_str());
+            assert_eq!(
+                task.enabled(&cfg),
+                task != ScheduleTask::TraeCheckin,
+                "只有 Trae 签到默认关闭（新增能力、会对外发请求，故 opt-in）: {}",
+                task.as_str()
+            );
         }
+        assert!(
+            !cfg.trae_checkin_enabled,
+            "Trae 自动签到必须**默认关闭**：默认打开等于升级后凭空拿用户凭据去签到"
+        );
+        // 小时表仍预置好，用户打开开关即可用，不必先配时间。
+        assert!(
+            ScheduleTask::TraeCheckin.hours(&cfg).is_empty(),
+            "关闭的任务不参与排程（hours() 返回空切片）"
+        );
     }
 
     #[test]
@@ -372,11 +411,29 @@ mod tests {
             "keepalive_enabled": false,
             "school_enabled": false,
             "cat_enabled": false,
+            "trae_checkin_enabled": false,
         }))
         .unwrap();
         for task in ScheduleTask::all() {
             assert!(!task.enabled(&cfg), "显式 false 必须生效: {}", task.as_str());
             assert!(task.hours(&cfg).is_empty());
+        }
+
+        // 反向探针（**必需**）：Trae 签到的默认值是 `false`，因此只测「显式 false」时，
+        // 这一项**即使后端根本没读这个键**也会通过 —— 那是假绿。
+        // 用显式 true 才能证明该字段真的被读进配置。
+        let all_on = schedule_from_value(&json!({
+            "checkin_enabled": true,
+            "travel_enabled": true,
+            "activity_enabled": true,
+            "keepalive_enabled": true,
+            "school_enabled": true,
+            "cat_enabled": true,
+            "trae_checkin_enabled": true,
+        }))
+        .unwrap();
+        for task in ScheduleTask::all() {
+            assert!(task.enabled(&all_on), "显式 true 必须生效: {}", task.as_str());
         }
     }
 
@@ -558,7 +615,7 @@ mod tests {
     /// 断言的是「等于它自己那一列」（随字段变化），而非某个常量——否则改错映射仍可能蒙对。
     #[test]
     fn schedule_task_mappings_are_pinned_per_variant() {
-        // 全关 + 六份互异的小时列表（当作「每类自己的那一列」的探针）。
+        // 全关 + 七份互异的小时列表（当作「每类自己的那一列」的探针）。
         let off = ScheduleConfig {
             checkin_hours: vec![1],
             travel_hours: vec![2],
@@ -566,23 +623,30 @@ mod tests {
             keepalive_hours: vec![4],
             school_hours: vec![5],
             cat_hours: vec![6],
+            trae_checkin_hours: vec![7],
             checkin_enabled: false,
             travel_enabled: false,
             activity_enabled: false,
             keepalive_enabled: false,
             school_enabled: false,
             cat_enabled: false,
+            trae_checkin_enabled: false,
             activity_report_count: 5,
         };
 
         // (1) label + hours：逐类断言等于「它自己那一列」。
-        let expected: [(ScheduleTask, &str, &[u32]); 6] = [
+        let expected: [(ScheduleTask, &str, &[u32]); 7] = [
             (ScheduleTask::Checkin, "checkin", off.checkin_hours.as_slice()),
             (ScheduleTask::Travel, "travel", off.travel_hours.as_slice()),
             (ScheduleTask::Activity, "activity", off.activity_hours.as_slice()),
             (ScheduleTask::Keepalive, "keepalive", off.keepalive_hours.as_slice()),
             (ScheduleTask::School, "school", off.school_hours.as_slice()),
             (ScheduleTask::Cat, "cat", off.cat_hours.as_slice()),
+            (
+                ScheduleTask::TraeCheckin,
+                "trae_checkin",
+                off.trae_checkin_hours.as_slice(),
+            ),
         ];
         // `hours()` 仅在任务启用时才返回自己的列表，故 hours 断言用「全启用」配置。
         let on = ScheduleConfig {
@@ -592,6 +656,7 @@ mod tests {
             keepalive_enabled: true,
             school_enabled: true,
             cat_enabled: true,
+            trae_checkin_enabled: true,
             ..off.clone()
         };
         for (task, label, own_hours) in expected {
@@ -607,9 +672,9 @@ mod tests {
             );
         }
 
-        // (2) enabled：布尔仅两态，一份配置区分不了 6 个字段；遍历「只开一个开关」的六份配置，
+        // (2) enabled：布尔仅两态，一份配置区分不了 7 个字段；遍历「只开一个开关」的七份配置，
         //     断言「被启用的任务集合」恰为该开关的属主。
-        let only: [(&str, ScheduleConfig); 6] = [
+        let only: [(&str, ScheduleConfig); 7] = [
             (
                 "checkin",
                 ScheduleConfig {
@@ -652,6 +717,13 @@ mod tests {
                     ..off.clone()
                 },
             ),
+            (
+                "trae_checkin",
+                ScheduleConfig {
+                    trae_checkin_enabled: true,
+                    ..off.clone()
+                },
+            ),
         ];
         for (owner_label, cfg) in only {
             let enabled_labels: Vec<&str> = ScheduleTask::all()
@@ -666,15 +738,23 @@ mod tests {
             );
         }
 
-        // (3) 集合完整性：`all()` 恰好是这六类、不多不少（顺序 = 宏声明顺序）。
+        // (3) 集合完整性：`all()` 恰好是这七类、不多不少（顺序 = 宏声明顺序）。
         let labels: Vec<&str> = ScheduleTask::all()
             .into_iter()
             .map(|task| task.as_str())
             .collect();
         assert_eq!(
             labels,
-            vec!["checkin", "travel", "activity", "keepalive", "school", "cat"],
-            "all() 必须恰好包含全部六类且顺序稳定"
+            vec![
+                "checkin",
+                "travel",
+                "activity",
+                "keepalive",
+                "school",
+                "cat",
+                "trae_checkin"
+            ],
+            "all() 必须恰好包含全部七类且顺序稳定"
         );
     }
 

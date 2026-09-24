@@ -51,6 +51,11 @@ pub enum ErrorCode {
     NetTransportBody,
     /// 其余传输层失败（构建请求失败、重定向、状态码错误等）。
     NetTransportOther,
+    /// 缺少「完全磁盘访问 / App 管理」权限，写认证文件被系统拒绝。
+    ///
+    /// 前端据此弹出授权引导（轮询授权状态、给出三步说明）。**必须走码而不是匹配中文**：
+    /// 界面语言可切换，按中文关键词判定会让引导在英文界面下静默失效。
+    PermissionDenied,
 }
 
 impl ErrorCode {
@@ -61,6 +66,7 @@ impl ErrorCode {
             ErrorCode::NetTransportConnect => "net.transport.connect",
             ErrorCode::NetTransportBody => "net.transport.body",
             ErrorCode::NetTransportOther => "net.transport.other",
+            ErrorCode::PermissionDenied => "permission.denied",
         }
     }
 
@@ -71,6 +77,7 @@ impl ErrorCode {
             "net.transport.connect" => Some(ErrorCode::NetTransportConnect),
             "net.transport.body" => Some(ErrorCode::NetTransportBody),
             "net.transport.other" => Some(ErrorCode::NetTransportOther),
+            "permission.denied" => Some(ErrorCode::PermissionDenied),
             _ => None,
         }
     }

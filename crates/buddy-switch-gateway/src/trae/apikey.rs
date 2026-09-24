@@ -313,12 +313,11 @@ mod tests {
 
     /// 把 home 指向隔离目录，并在 drop 时恢复 env 与清理目录。
     ///
-    /// 断言 legacy 回落必须隔离 home —— 否则会读到这台机器上真实的
+    /// 必须隔离 home —— 否则会读到这台机器上真实的
     /// `~/.buddy-switch/trae/settings.json`，测试结果随环境变化。
     struct EnvGuard {
         _lock: MutexGuard<'static, ()>,
         previous_new: Option<std::ffi::OsString>,
-        previous_legacy: Option<std::ffi::OsString>,
         home: PathBuf,
     }
 
@@ -326,13 +325,10 @@ mod tests {
         fn set(home: PathBuf) -> Self {
             let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous_new = std::env::var_os("BUDDY_SWITCH_HOME");
-            let previous_legacy = std::env::var_os("WB_SWITCH_HOME");
-            std::env::remove_var("WB_SWITCH_HOME");
             std::env::set_var("BUDDY_SWITCH_HOME", &home);
             Self {
                 _lock: lock,
                 previous_new,
-                previous_legacy,
                 home,
             }
         }
@@ -343,10 +339,6 @@ mod tests {
             match self.previous_new.take() {
                 Some(value) => std::env::set_var("BUDDY_SWITCH_HOME", value),
                 None => std::env::remove_var("BUDDY_SWITCH_HOME"),
-            }
-            match self.previous_legacy.take() {
-                Some(value) => std::env::set_var("WB_SWITCH_HOME", value),
-                None => std::env::remove_var("WB_SWITCH_HOME"),
             }
             let _ = std::fs::remove_dir_all(&self.home);
         }

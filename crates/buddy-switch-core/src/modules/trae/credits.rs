@@ -248,7 +248,9 @@ pub async fn post_json_for(
             let text = response.text().await.unwrap_or_default();
             (status, text)
         }
-        Err(error) => (0, crate::modules::net::describe_transport_error(&error)),
+        // 带码版：文本与 `describe_transport_error` 逐字节相同，另带 `net.transport.*` 码，
+        // 供前端按当前语言重渲染「刷新积分失败」这类提示。
+        Err(error) => (0, crate::modules::net::transport_error(&error).to_wire()),
     }
 }
 

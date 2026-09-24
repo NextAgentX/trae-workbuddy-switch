@@ -235,6 +235,43 @@ pub fn detect_install_for(variant: super::variant::TraeVariant) -> InstallProbe 
     }
 }
 
+/// 「该变体没有数据目录」时的**用户可读原因**。
+///
+/// ## 为什么必须有它（2026-09-24 用户报障原话）
+///
+/// 「**已经安装了，为什么检查不到安装的客户端**」—— 用户把「没有数据目录」
+/// 读成了「没装客户端」。两件事的下一步**完全不同**，所以文案必须分开说：
+///
+/// | 实际情况 | 文案要说清 |
+/// |:--|:--|
+/// | 装了、但**从没启动过** | 客户端在哪（给出路径）、**为什么读不到凭证**（首次启动才写）、下一步做什么 |
+/// | 真的没装 | 去装，或在「设置」里指定可执行文件路径 |
+///
+/// ## 判据与「启动客户端」按钮**同源**
+///
+/// 用的是 [`detect_install_for`] —— 与 `handlers::launch_client_for`、与界面那个按钮
+/// 完全同一个函数 ⇒ 不会出现「文案说已装、按钮却报找不到可执行文件」这种自相矛盾。
+///
+/// ## 为什么允许在这里做磁盘探测
+///
+/// 它**只在错误路径上**被调用（正常登录 / 导入不会走到），换来的是用户第一次就看得懂。
+/// 换成「预先算好存起来」反而会让这个值在客户端装/卸后变陈旧。
+pub fn data_dir_missing_reason(variant: super::variant::TraeVariant) -> String {
+    let line = variant.display_name();
+    match detect_install_for(variant).exe {
+        Some(exe) => format!(
+            "已检测到【{line}】客户端（{}），但它**从未启动过** —— 设备凭证是客户端\
+             首次启动时才写入的，所以现在还读不到。请先启动一次该客户端，\
+             等它起来后再重试。",
+            exe.display()
+        ),
+        None => format!(
+            "未检测到【{line}】客户端：请先安装该客户端，\
+             或在「设置」里指定它的可执行文件路径，再重试。"
+        ),
+    }
+}
+
 /// 某一个变体的客户端是否正在运行（只读探测）。
 ///
 /// 与 [`is_running`] 的区别：后者只回答"有没有 Trae 在跑"（任一产品线），
@@ -309,22 +346,33 @@ fn region_status(region: super::region::TraeRegion) -> Value {
         .iter()
         .map(|spec| {
             let variant = variant_for_program(spec.region, spec.program);
-            let (installed, running, version, path, data_dir) = match variant {
+            let (installed, running, version, path, data_dir, write_data_dir) = match variant {
                 Some(target) => {
                     let probe = detect_install_for(target);
                     let dir = select_data_dir_for(target);
+                    // 写侧来源（`detect_data_dir_for`：候选表里**首个存在**的目录）。
+                    //
+                    // ★ 与 `dir`（读/展示侧：**最近活跃**）**可能不是同一个目录** ——
+                    // 本机就是：`TRAE SOLO CN` 有登录态却更旧、更活跃的是 `TRAE SOLO`。
+                    // 两者语义不同（见两个函数的文档），调用方必须自己选对：
+                    // 「客户端最近在用哪个」用 `dataDir`；「切换器正在操作哪个 / 登录态在哪个」
+                    // 用 `writeDataDir`（与 `profile::overview_for` 的 `dataDir` 同源）。
+                    let write_dir = detect_data_dir_for(target);
                     (
                         probe.installed,
                         is_running_for(target),
                         probe.version,
                         probe.exe.as_ref().map(|p| p.to_string_lossy().to_string()),
                         dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+                        write_dir
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string()),
                     )
                 }
                 // 该程序位**没有对应的客户端建模**（例如国际版 TraeCode：本机未安装、
                 // 也尚未建模）⇒ 如实报「未安装」，**不猜目录**。
                 // 猜错目录的后果是"切换"把登录态写进另一个客户端的 userData。
-                None => (false, false, None, None, None),
+                None => (false, false, None, None, None, None),
             };
             json!({
                 "program": spec.program.as_str(),
@@ -338,6 +386,13 @@ fn region_status(region: super::region::TraeRegion) -> Value {
                 "path": path,
                 "dataDir": data_dir,
                 "dataDirExists": data_dir.as_deref().map(|p| std::path::Path::new(p).is_dir()).unwrap_or(false),
+                // 写侧目录（见上面 `write_data_dir` 的注释）。前端「客户端环境」行必须用它：
+                // 那一行的用途是让用户核对「切换器正在操作哪个目录、登录态在哪」。
+                "writeDataDir": write_data_dir,
+                "writeDataDirExists": write_data_dir
+                    .as_deref()
+                    .map(|p| std::path::Path::new(p).is_dir())
+                    .unwrap_or(false),
             })
         })
         .collect();
@@ -373,6 +428,11 @@ fn region_status(region: super::region::TraeRegion) -> Value {
         "path": field("path"),
         "dataDir": field("dataDir"),
         "dataDirExists": field("dataDirExists"),
+        // 写侧目录（与主程序的 `writeDataDir` 同源）。
+        // ⚠️ 与 `dataDir` **不是同一个问题**：前者是「切换器在操作哪个」，
+        // 后者是「客户端最近在用哪个」。两者在本机不同值，别互相顶替。
+        "writeDataDir": field("writeDataDir"),
+        "writeDataDirExists": field("writeDataDirExists"),
         // 该区域下的程序位（卡片上每个账号要渲染的切换按钮）。
         "programs": programs,
     })
@@ -497,6 +557,145 @@ fn version_from_install_dir(dir: &Path) -> Option<String> {
 /// 而 `None` 在界面上只表现为「不显示版本」，几乎不会有人当成 bug 报上来。
 fn version_from_exe(exe: &Path) -> Option<String> {
     exe.parent().and_then(version_from_install_dir)
+}
+
+// ---------------------------------------------------------------------------
+// 客户端「自述事实」：安装元数据 + 系统信息
+// ---------------------------------------------------------------------------
+//
+// ★ 为什么单独有这一节（2026-09-24 真机缺陷的修复）
+//
+// 授权 URL 与 `ExchangeToken` 请求体里**同一件事实只能有一个来源**。真机抓到的
+// 客户端原文（`%APPDATA%\TRAE SOLO CN\logs\<ts>\main.log` 的
+// `OAuthenticator# openLogin getLoginUrl` 与 `[exchangeTokenByAuthCode] request`
+// 两行）显示上游会比对下面这几对字段，而本实现此前**每一对都自相矛盾**：
+//
+// | 同源对 | 授权 URL | 兑换请求体 | 修复前 |
+// |:--|:--|:--|:--|
+// | 机器标识 | `machine_id` / `x_machine_id` | `DeviceInfo.MachineID` | URL 用**自造**值、请求体用 `telemetry.machineId` |
+// | 应用版本 | `x_app_version` | `ClientVersion` / `IDEVersion` | URL 用 IDE 线常量、请求体用安装目录版本 |
+// | 设备型号 | `x_device_brand` | `DeviceModel` | URL 用主机名、请求体空串 |
+// | 系统版本 | `x_os_version` | `OSVersion` | URL 写死 `Windows`、请求体空串 |
+//
+// 上游对不一致的回应是 `20403/040036: Token device not match`。
+
+/// 客户端安装根目录 `manifest.json` 里、**上游请求要用到**的那几个取值。
+///
+/// ## 为什么不能复用 [`InstallProbe::version`]
+///
+/// `InstallProbe::version` 读的是 `resources/app/package.json` 的 `version`
+/// （Electron/VS Code 内核版本，本机 `1.107.1`）—— 界面展示用它是对的。
+/// 但客户端在 `x_app_version` / `DeviceInfo.ClientVersion` / `IDEVersion`
+/// 三处报的是**安装包版本**（`manifest.json` → `appVersion`，本机 `0.1.69`）。
+/// 两者不是一回事，混用会让「URL 与请求体」这一对同源字段不一致。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientInstallMeta {
+    /// `manifest.json` → `appVersion`（本机 `0.1.69`）。
+    pub app_version: String,
+    /// `manifest.json` → `buildVersion`（本机 `2.3.87413`，即授权 URL 的 `plugin_version`）。
+    pub build_version: String,
+    /// `manifest.json` → `channel`（本机 `stable`，即授权 URL 的 `x_app_type`）。
+    pub channel: String,
+}
+
+/// 读该变体客户端的安装元数据。
+///
+/// 安装目录由 [`detect_install_for`] 定位 —— 与「启动客户端」按钮、界面上的
+/// 「已检测到 vX」**同源**，不另立第二份探测逻辑。
+/// 文件缺失或字段为空 ⇒ `None`，由调用方决定回落值（不在这里编默认值：
+/// 编出来的值会静默进入授权 URL，而登录失败时没人看得出它来自哪里）。
+pub fn client_install_meta_for(variant: super::variant::TraeVariant) -> Option<ClientInstallMeta> {
+    let exe = detect_install_for(variant).exe?;
+    let manifest = exe.parent()?.join("manifest.json");
+    let text = std::fs::read_to_string(&manifest).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let field = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    Some(ClientInstallMeta {
+        app_version: field("appVersion").unwrap_or_default(),
+        build_version: field("buildVersion").unwrap_or_default(),
+        channel: field("channel").unwrap_or_default(),
+    })
+}
+
+/// 客户端在上游眼里的「系统信息」。
+///
+/// 真机取值来自客户端的 `iCubeSystemInformationService`（`deviceModel` /
+/// `deviceManufacturer` 取自 aha 原生模块，`osName` / `osVersion` 取自 Node 的
+/// `os.platform()` / `os.version()`）。本实现复刻同一批值，见 [`system_profile`]。
+///
+/// ★ 这里每个字段都**同时**喂给授权 URL 与 `DeviceInfo` —— 两处若各取一份来源，
+/// 就是 2026-09-24 那个 `20403` 的形态。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemProfile {
+    /// `DeviceInfo.DeviceName`。真值是「Windows 账户全名 + 本地化后缀」（本机
+    /// `Jackey的电脑`）——**本实现留空**，理由见 [`system_profile`]。
+    pub device_name: String,
+    /// `x_device_brand` 与 `DeviceInfo.DeviceModel`（本机 `System Product Name`）。
+    pub device_model: String,
+    /// `DeviceInfo.DeviceBrand`（本机 `ASUS`）。
+    pub device_manufacturer: String,
+    /// `DeviceInfo.DeviceCPU`（本机 `Intel(R) Core(TM) i9-14900K`）。
+    pub cpu_brand: String,
+    /// `x_device_type` 与 `DeviceInfo.OSInfo`（`windows`）。
+    pub os_name: String,
+    /// `x_os_version` 与 `DeviceInfo.OSVersion`（本机 `Windows 11 Pro`）。
+    pub os_version: String,
+}
+
+/// 读本机系统信息。**进程内只读一次**：它不随变体变化。
+///
+/// ## ⚠️ 已知缺口：四个「描述性」字段留空（有意，不是漏改）
+///
+/// 真机客户端（`TRAE SOLO CN`，2026-09-24 实测）的取值来自 aha 原生模块与 Node：
+///
+/// | 字段 | 真机值 | 本实现 |
+/// |:--|:--|:--|
+/// | `device_model` | `System Product Name` | 空 |
+/// | `device_manufacturer` | `ASUS` | 空 |
+/// | `cpu_brand` | `Intel(R) Core(TM) i9-14900K` | 空 |
+/// | `os_version` | `Windows 11 Pro` | 空 |
+///
+/// 它们在 Windows 上分别来自注册表 `HKLM\HARDWARE\DESCRIPTION\System\BIOS`、
+/// `…\CentralProcessor\0` 与 `…\SOFTWARE\Microsoft\Windows NT\CurrentVersion`
+/// （最后一项还要复刻 Node `os.version()` 的「按内部版本号纠正主版本」行为）。
+///
+/// **本轮刻意不读注册表**：读它要么起 `reg.exe` 子进程（开发沙箱把 `reg.exe`
+/// 列进了程序黑名单，直接被拒），要么给 `windows` crate 加
+/// `Win32_System_Registry` 特性 —— 两条路都无法在本次会话内实测，而把
+/// 「无法实测的 IO」放进登录路径正是本轮要修的毛病。
+///
+/// **留空是安全的**：这四个字段在授权 URL 与兑换请求体里**取同一个值**
+/// （URL 的 `x_device_brand` / `x_os_version` 与请求体的 `DeviceModel` /
+/// `OSVersion` 都从这里取），所以「两处不一致」这个已证实的缺陷不会因留空而复发。
+/// 若后续实测发现上游会拿它们与设备注册记录比对，再按上表的注册表路径补齐
+/// —— 优先用 `windows` crate 的 `RegGetValueW` 进程内读取，不起子进程。
+pub fn system_profile() -> SystemProfile {
+    static CACHE: std::sync::OnceLock<SystemProfile> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| SystemProfile {
+            // 真值是「Windows 账户全名 + 本地化后缀」：客户端跑 `net user <user>` 取
+            // `Full Name`，再拼它自己的本地化文案（本机 = `Jackey` + `的电脑`）。
+            // 后缀随客户端语言变化、没有稳定来源 ⇒ 留空（填错比留空更坏）。
+            // 该字段**不在授权 URL 里**，不参与「URL ↔ 请求体」同源比对。
+            device_name: String::new(),
+            device_model: String::new(),
+            device_manufacturer: String::new(),
+            cpu_brand: String::new(),
+            // 客户端在 macOS 上报的是 `mac`（`os.platform()==="darwin" ? "mac" : …`）。
+            os_name: match std::env::consts::OS {
+                "macos" => "mac".to_string(),
+                other => other.to_string(),
+            },
+            os_version: String::new(),
+        })
+        .clone()
 }
 
 /// 探测结果。
@@ -1500,6 +1699,58 @@ fn reset_machine_guid(guid: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// ★「没有数据目录」的解释必须**区分**「没装客户端」与「装了但从没启动过」。
+    ///
+    /// 现场（2026-09-24 用户报障原话）：「**已经安装了，为什么检查不到安装的客户端**」——
+    /// 旧文案只说「未找到【Trae Work】的数据目录」，用户读成「你没装客户端」，
+    /// 于是去反复重装/重试，而真正缺的是「首次启动才会写入的设备凭证」。
+    ///
+    /// ## 断言集随机器分支（但两支都可证伪）
+    ///
+    /// 本机装没装 Trae 决定走哪一支；**两支都能被旧文案弄红**：
+    /// - 装了：旧文案不含「从未启动过」、也不含 exe 路径 ⇒ 红；
+    /// - 没装：旧文案不含「未检测到」/「设置」 ⇒ 红。
+    ///
+    /// 持 `env_lock()`：本用例既读 `detect_install_for`（内部读 `settings` → `store_dir()`）
+    /// 又自己再读一次，两次之间若被别的用例改走 `BUDDY_SWITCH_HOME`，
+    /// 就会拿到「文案说装了、探测说没装」的**假失败**（见验证纪律「无参全局路径函数」一条）。
+    #[test]
+    fn data_dir_missing_reason_distinguishes_not_installed_from_never_launched() {
+        let _lock = crate::modules::config::env_lock();
+        let variant = super::super::variant::TraeVariant::TraeWork;
+
+        let reason = data_dir_missing_reason(variant);
+        // ① 必须指名道姓 —— 否则用户不知道该去启动/安装哪一个产品线。
+        assert!(
+            reason.contains(variant.display_name()),
+            "必须点明是哪条产品线: {reason}"
+        );
+
+        // ② 与「启动客户端」按钮**同源**的探测结果决定说哪一套话。
+        match detect_install_for(variant).exe {
+            Some(exe) => {
+                assert!(
+                    reason.contains("从未启动过"),
+                    "装了但没数据目录 ⇒ 必须说清「从未启动过」: {reason}"
+                );
+                assert!(
+                    reason.contains(&exe.display().to_string()),
+                    "必须给出**检测到的**可执行文件路径（这正是用户「为什么检查不到」的答案）: {reason}"
+                );
+            }
+            None => {
+                assert!(
+                    reason.contains("未检测到"),
+                    "真的没装 ⇒ 必须说「未检测到」: {reason}"
+                );
+                assert!(
+                    reason.contains("设置"),
+                    "真的没装 ⇒ 必须引导去「设置」里指定路径: {reason}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn platform_tag_is_known_value() {
         assert!(matches!(
@@ -1739,6 +1990,8 @@ mod tests {
                 "path",
                 "dataDir",
                 "dataDirExists",
+                "writeDataDir",
+                "writeDataDirExists",
                 "programs",
             ] {
                 assert!(item.get(key).is_some(), "区域项缺少线上字段 {key}");
@@ -1747,9 +2000,20 @@ mod tests {
             assert!(item.get("running").unwrap().is_boolean());
             // 不能泄漏 snake_case 形式。
             assert!(item.get("variant_label").is_none());
+            assert!(item.get("write_data_dir").is_none());
             // 官方别名**下移到程序位**（区域不是客户端，没有 nameAlias）。
             for program in item.get("programs").and_then(|v| v.as_array()).unwrap() {
-                for key in ["program", "label", "nameAlias", "variant", "installed", "running"] {
+                for key in [
+                    "program",
+                    "label",
+                    "nameAlias",
+                    "variant",
+                    "installed",
+                    "running",
+                    "dataDir",
+                    "writeDataDir",
+                    "writeDataDirExists",
+                ] {
                     assert!(program.get(key).is_some(), "程序位缺少线上字段 {key}");
                 }
             }
@@ -1939,6 +2203,88 @@ mod tests {
             let full = format!("{expected}{suffix}");
             assert!(names.contains(&full.as_str()), "候选名缺少 {full}：{names:?}");
         }
+    }
+
+    /// ★ 「客户端环境」那一行必须能拿到**写侧**目录，而不是「最近活跃」的那个。
+    ///
+    /// ## 对应用户报障
+    ///
+    /// 国内版页签的「客户端数据目录」写着**国际版**客户端的目录
+    /// （`%APPDATA%\TRAE SOLO`，其 `packageType = SOLO_I18N`），而登录态在
+    /// `TRAE SOLO CN` 里。真因是那一行读的是 `get_trae_env`（**跨变体**全局探测），
+    /// 而区域页必须用本区域的目录；且**本区域**里也还得选对来源 ——
+    /// 「最近活跃」与「首个存在」在本机不是同一个目录。
+    ///
+    /// ## 反例（改坏会红）
+    ///
+    /// 把 `writeDataDir` 也接到 `select_data_dir_for`（即与 `dataDir` 同源）⇒ 第 2 条断言红。
+    #[cfg(windows)]
+    #[test]
+    fn variants_status_exposes_the_write_side_dir_next_to_the_active_one() {
+        let exp = chrono::Utc::now().timestamp() + 3600;
+        let env = crate::modules::trae::test_support::TempEnv::empty();
+        let variant = crate::modules::trae::variant::TraeVariant::TraeWork;
+        let names = data_dir_names_for(variant);
+        assert!(
+            names.len() >= 2,
+            "本用例需要至少两个候选目录才能构造「活跃 ≠ 首个存在」"
+        );
+
+        // 全部候选都存在：**首位**装着登录态但不活跃，**末位**活跃但无登录态 —— 真机同形。
+        let mut cells = vec![(true, false, false); names.len()];
+        cells[0] = (true, true, false);
+        cells[names.len() - 1] = (true, false, true);
+        let grid = crate::modules::trae::icube::test_support::write_selection_grid(
+            &env.appdata(),
+            variant,
+            &cells,
+            exp,
+        );
+        assert!(grid.selectors_diverge, "前置：两个选择器必须分叉，否则本用例证明不了什么");
+
+        let value = variants_status();
+        let cn = value["variants"]
+            .as_array()
+            .expect("variants 应是数组")
+            .iter()
+            .find(|item| item["variant"].as_str() == Some("cn"))
+            .expect("应有 cn 区域");
+        let program = cn["programs"]
+            .as_array()
+            .expect("programs 应是数组")
+            .iter()
+            .find(|item| item["variant"].as_str() == Some(variant.as_str()))
+            .expect("cn 区域应有 TraeWork 程序位");
+
+        // 只比 basename：绝对路径前缀依赖临时目录，比较它只会让断言更脆。
+        let basename = |item: &Value, key: &str| -> String {
+            item[key]
+                .as_str()
+                .and_then(|path| std::path::Path::new(path).file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            basename(program, "dataDir"),
+            names[names.len() - 1],
+            "dataDir 的语义是「最近活跃」那一份（保持既有含义不变）"
+        );
+        assert_eq!(
+            basename(program, "writeDataDir"),
+            names[0],
+            "writeDataDir 必须是写侧（首个存在的候选）—— 区域页核对「登录态在哪」用的是它"
+        );
+        assert_ne!(
+            basename(program, "dataDir"),
+            basename(program, "writeDataDir"),
+            "前置：本 fixture 下两个目录必须分叉"
+        );
+        assert_eq!(
+            program["writeDataDirExists"],
+            Value::Bool(true),
+            "目录存在时 writeDataDirExists 必须为 true"
+        );
     }
 
     #[test]

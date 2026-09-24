@@ -467,7 +467,8 @@ foreach ($hive in $unHives) {
     $dn = $_.GetValue('DisplayName')
     if (-not $dn) { return }
     $dnl = [string]$dn
-    if ($dnl -match 'workbuddy-switch|buddy-switch|BuddySwitch') { return }
+    # 排除本工具自己的卸载项；其它工具的名字不列举（见 process::is_self_image_name）。
+    if ($dnl -match 'buddy-switch|BuddySwitch') { return }
     if ($dnl -notmatch 'CodeBuddy CN') { return }
     $icon = $_.GetValue('DisplayIcon')
     if ($icon) { $out += [string]$icon }
@@ -546,10 +547,8 @@ fn windows_cn_exe_path_resolved() -> Option<PathBuf> {
 )]
 fn linux_cmdline_is_codebuddy_cn(cmdline: &str) -> bool {
     let lower = cmdline.to_ascii_lowercase();
-    if lower.contains("buddy-switch")
-        || lower.contains("workbuddy-switch")
-        || lower.contains("buddyswitch")
-    {
+    // `buddy-switch` 按子串匹配，已覆盖所有以它结尾的同族名字（无需再列第二个）。
+    if lower.contains("buddy-switch") || lower.contains("buddyswitch") {
         return false;
     }
     if lower.contains("crashpad") || lower.contains("--type=") {

@@ -54,9 +54,11 @@ pub fn preview_accounts(text: &str) -> Result<Value, String> {
         .map(|(index, item)| {
             json!({
                 "index": index,
-                "uid": item.get("uid"),
-                "nickname": item.get("nickname"),
-                "email": item.get("email"),
+                // 展示字段归一：导入文件来自外部，`nickname` 可能是对象（issue #2）。
+                // 契约见 `ImportPreviewAccount`（`string | null`）。
+                "uid": account::display_str(item, "uid"),
+                "nickname": account::display_str(item, "nickname"),
+                "email": account::display_str(item, "email"),
                 "hasToken": account::get_str(item, "access_token").is_some(),
             })
         })
@@ -285,6 +287,38 @@ mod tests {
     fn parse_accepts_object_array() {
         let parsed = parse_accounts_json(r#"[{ "uid": "u1" }, {}]"#).unwrap();
         assert_eq!(parsed.len(), 2);
+    }
+
+    /// 回归护栏（issue #2）：导入预览的展示字段同样只能是「字符串或 null」。
+    ///
+    /// 预览内容来自**外部文件**（用户可能从别的工具导出），`nickname` 完全可能是对象；
+    /// 而 `ImportPreviewAccount` 声明为 `string | null`，弹框把它当 **React 子节点**渲染
+    /// ⇒ 脏值会让 React 卸载整棵树 ⇒ 白屏。
+    ///
+    /// 两段式：第一段钉形状不变量，第二段是**阳性对照** —— 没有它，「无脑全置 null」
+    /// 的偷懒实现也能让第一段全绿（数字昵称是合法数据，必须保留成文本）。
+    #[test]
+    fn preview_never_leaks_non_string_display_fields() {
+        let dirty = r#"[{"uid":{"nested":true},"nickname":{"zh":"小明"},
+            "email":["a@b.c"],"access_token":"tok"}]"#;
+        let preview = preview_accounts(dirty).expect("解析应成功");
+        for key in ["uid", "nickname", "email"] {
+            let value = &preview["accounts"][0][key];
+            assert!(
+                value.is_null() || value.is_string(),
+                "preview.accounts[0].{key} 必须是字符串或 null，实际透出了 {value}：{preview}"
+            );
+        }
+
+        let clean = r#"[{"uid":"u-1","nickname":12345,"email":"x@y.z","access_token":"tok"}]"#;
+        let preview = preview_accounts(clean).expect("解析应成功");
+        assert_eq!(preview["accounts"][0]["uid"], json!("u-1"), "{preview}");
+        assert_eq!(
+            preview["accounts"][0]["nickname"],
+            json!("12345"),
+            "数字昵称必须归一成字符串、而不是被丢掉：{preview}"
+        );
+        assert_eq!(preview["accounts"][0]["email"], json!("x@y.z"), "{preview}");
     }
 
     #[test]

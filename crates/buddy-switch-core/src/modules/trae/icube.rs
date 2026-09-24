@@ -194,10 +194,19 @@ impl IcubeError {
     pub fn user_message(&self, variant: TraeVariant) -> String {
         let line = variant.display_name();
         match self {
-            IcubeError::DataDirMissing => format!(
-                "未找到【{line}】的数据目录，无法读取设备凭证；\
-                 请先启动一次该客户端并完成登录，再重试。"
-            ),
+            IcubeError::DataDirMissing => {
+                // ★ 必须区分「**没装**客户端」与「装了但**从没启动过**」——这两件事对用户是
+                // **完全不同**的下一步，而原文案只说「未找到…的数据目录」，
+                // 用户会读成「你没装客户端」。
+                //
+                // 现场（2026-09-24 用户报障原话）：「**已经安装了，为什么检查不到安装的客户端**」——
+                // 客户端确实装着（`D:\Programs\TRAE SOLO CN\`），只是从未启动过，
+                // 而设备凭证是**首次启动**才写的（见模块头「设备身份 ≠ 登录态」）。
+                //
+                // 文案与判据全在 [`platform::data_dir_missing_reason`] 一处
+                // （它与「启动客户端」按钮同源），这里**不要**再自己拼一遍。
+                platform::data_dir_missing_reason(variant)
+            }
             IcubeError::StorageUnreadable(detail) => format!(
                 "【{line}】的 storage.json 无法读取（{detail}）；\
                  若客户端正在运行，请关闭后重试。"

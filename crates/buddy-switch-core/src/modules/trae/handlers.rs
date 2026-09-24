@@ -24,6 +24,7 @@ use crate::modules::trae::credits;
 use crate::modules::trae::paths;
 use crate::modules::trae::platform;
 use crate::modules::trae::profile::{self, SwitchOptions};
+use crate::modules::trae::region::TraeRegion;
 use crate::modules::trae::settings;
 use crate::modules::trae::store;
 use crate::modules::trae::token_stats::TraeTokenScope;
@@ -783,6 +784,46 @@ pub fn open_data_dir(variant: TraeVariant) -> Result<Value, String> {
     }))
 }
 
+/// 启动**指定变体**的 Trae 客户端。
+///
+/// ## 为什么要有这个独立入口（2026-09-24 用户报障：Trae 模块无法登录授权）
+///
+/// OAuth 网页登录的 `device_id` **必须**与客户端 `storage.json` 里的 icube 设备凭证
+/// 同源（见 [`crate::modules::trae::icube::device_identity_for`] 的红线说明）。
+/// 而该凭证是客户端**首次启动时**写入的 —— 用户从未启动过客户端时，登录必然以
+/// `dataDirMissing` 失败，错误文案只能让他自己去开始菜单里找客户端。
+/// 这里把「探测 → 启动」收成一个动作，让用户**一键**跨过这道前置条件。
+///
+/// 与切换流程里「第 7 步启动客户端」的区别：那里是切换的收尾动作、且带代理注入
+/// （`SwitchOptions::proxy_port`），这里是**登录前置动作**，不带任何代理参数。
+///
+/// ⚠️ 「启动成功」**不等于**「设备凭证已就绪」：客户端从启动到写出凭证有间隔。
+/// 因此调用方在启动后应让用户**自己再点一次登录**（或提示稍等重试），
+/// 不要在这里 sleep 假装就绪 —— 那是把不可控的时序当成确定事件。
+pub fn launch_client_for(variant: TraeVariant) -> Result<Value, String> {
+    let probe = crate::modules::trae::platform::detect_install_for(variant);
+    if !probe.installed {
+        return Err(format!(
+            "未检测到【{}】的客户端，无法启动；\
+             请在「设置」里指定客户端路径，或手动启动一次该客户端。",
+            variant.display_name()
+        ));
+    }
+    let Some(exe) = probe.exe else {
+        return Err(format!(
+            "已检测到【{}】的安装，但定位不到可执行文件；\
+             请在「设置」里指定客户端路径后重试。",
+            variant.display_name()
+        ));
+    };
+    crate::modules::trae::platform::launch_client_for(variant, &exe, None)?;
+    Ok(json!({
+        "ok": true,
+        "variant": variant.as_str(),
+        "path": exe.to_string_lossy(),
+    }))
+}
+
 /// 运行日志（系统日志页的「运行日志」标签页）。
 ///
 /// 只做转发：过滤 / 排序 / 截断 / 边界都在 [`crate::modules::trae::logs`]，
@@ -800,6 +841,54 @@ pub fn logs(params: &Value) -> Value {
 pub async fn run_checkin_report(options: CheckinOptions) -> Value {
     let report = checkin::run_checkin(options, |_| {}).await;
     checkin::report_json(&report)
+}
+
+/// **定时任务**入口（排程器专用）：全部区域各签一轮，返回逐区域结果。
+///
+/// ## 为什么它在 handlers 而不是 checkin
+///
+/// 签到选项的解析链「**请求参数 > 用户设置 > 内置默认**」由 [`parse_checkin_options`]
+/// 单点承担。排程路径没有请求参数，但**仍然必须读用户设置** —— 直接拿
+/// `CheckinOptions::default()`（`retry = 1`）会让设置页的「网络失败重试次数」与两个
+/// 「跳过…」开关对自动签到**完全无效**，正是本仓库已踩过三次的「假控件」。
+/// 因此这里复用同一个解析函数（只给 `variant` / `scope`，三个策略键缺席即回落设置），
+/// 而不是在业务模块里另写一套回落。
+///
+/// ## 为什么无区域参数、且要遍历区域
+///
+/// 排程器在后台跑，没有「当前选中的区域」这个概念（区域是**页面**维度，见
+/// `useTraeVariant`）。签哪个区域若取决于某个页面状态，就会出现「用户当时停在哪个页面
+/// 就签哪套账号」这种不可预测的行为。两个区域的账号库互不相通，故各签一轮，各自独立成败。
+///
+/// ## 只签到、不刷积分（与 WorkBuddy 的定时签到一致）
+///
+/// 页面上的「签到并刷新积分」是两步，但第二步只为让用户当场看到新数字；签到本身已经把
+/// **本次拿到的积分**写进账本。定时任务再拉一遍余额，只会成倍放大上游调用量。
+pub async fn run_scheduled_checkin() -> Value {
+    let mut regions = Vec::new();
+    for region in TraeRegion::all() {
+        // `TraeVariant::parse` 收口区域标识（`cn` 落到该区域的**主程序**）。
+        let variant = TraeVariant::parse(region.as_str()).unwrap_or_default();
+        let options = match parse_checkin_options(&json!({
+            "variant": variant.as_str(),
+            "scope": "all",
+        })) {
+            Ok(options) => options,
+            // 解析失败在事实上不可能（`scope: "all"` 是常量），但真发生时必须**如实记下**
+            // 而不是静默跳过整个区域 —— 否则「自动签到没动静」会变得无从排查。
+            Err(error) => {
+                regions.push(json!({ "region": region.as_str(), "error": error }));
+                continue;
+            }
+        };
+        let report = checkin::run_checkin(options, |_| {}).await;
+        regions.push(json!({
+            "region": region.as_str(),
+            "variant": variant.as_str(),
+            "report": checkin::report_json(&report),
+        }));
+    }
+    json!({ "regions": regions })
 }
 
 #[cfg(test)]
@@ -982,6 +1071,45 @@ mod tests {
         assert!(parse_checkin_options(&json!({ "scope": "grup:x" })).is_err());
     }
 
+    /// 定时签到必须**覆盖两个区域**，且每段的形状可辨认（区域 + 实际用的变体 + 报告）。
+    ///
+    /// 可证伪性：
+    /// - 只签一个区域（漏掉国际版）→ 第一条断言红；
+    /// - 不回报 `variant` → 第二条断言红（排查「签的是哪条库」时这是唯一的线索）；
+    /// - 把区域的 `report` 拼成裸对象（丢掉 `totalOk` 等字段）→ 第三条断言红。
+    ///
+    /// 本用例在**空账号库**下跑（`TempEnv` 隔离了 home）⇒ `run_checkin` 计划出 0 个账号、
+    /// 不发任何网络请求，因此它只验形状与遍历，不验签到语义（那是 `checkin` 模块的测试）。
+    #[tokio::test]
+    async fn scheduled_checkin_covers_both_regions_with_identifiable_shape() {
+        let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
+
+        let value = run_scheduled_checkin().await;
+        let regions = value
+            .get("regions")
+            .and_then(Value::as_array)
+            .expect("必须回报 regions 数组");
+
+        let labels: Vec<&str> = regions
+            .iter()
+            .filter_map(|item| item.get("region").and_then(Value::as_str))
+            .collect();
+        assert_eq!(labels, vec!["cn", "global"], "必须两个区域各签一轮");
+
+        for item in regions {
+            assert!(
+                item.get("variant").and_then(Value::as_str).is_some(),
+                "每段都要回报实际使用的变体: {item}"
+            );
+            let report = item.get("report").expect("每段都要有 report");
+            for key in ["total", "totalOk", "already", "failed", "results"] {
+                assert!(report.get(key).is_some(), "report 缺少字段 {key}: {report}");
+            }
+            // 空库 ⇒ 一个账号都没处理，也不能因此报错。
+            assert_eq!(report.get("total").and_then(Value::as_u64), Some(0));
+        }
+    }
+
     #[test]
     fn parse_switch_options_requires_user_id() {
         assert!(parse_switch_options(&json!({})).is_err());
@@ -1070,15 +1198,46 @@ mod tests {
 
     /// `open_data_dir` 在非 Windows 上必须返回**结构化 Unsupported**（四个字段），
     /// 而不是裸错误或假成功；Windows 上返回 `{ok,path,variant}`（路径可不存在但不得 panic）。
+    ///
+    /// ## 为什么 Windows 分支容忍 Err（本用例曾经恒红）
+    ///
+    /// 旧版无条件 `.expect("open_data_dir 不应 Err")`，于是**本机没装 Trae 时必然失败**，
+    /// 长期给整套 lib 测试挂一条假失败（真回归会被这条淹没）。而「该变体没有数据目录 ⇒ Err」
+    /// 其实是**正确行为**：
+    /// - `open_data_dir` 取 `select_data_dir_for(variant)`，后者是
+    ///   `data_dirs_by_activity_for(..).into_iter().next()`，而 `data_dirs_by_activity_for`
+    ///   里写着 `.filter(|dir| dir.is_dir())` —— **刻意只返回存在的目录**（与
+    ///   `detect_data_dir_for` 的「回落主候选名」相对，两者各有护栏用例）。
+    /// - 隔离用的 `HomeOverrideGuard` 改的是 `BUDDY_SWITCH_HOME`，**管不到** `data_dir_base()`
+    ///   （它读 `APPDATA`）⇒ 这个用例**根本没法**靠隔离 home 造出「有 Trae」的环境。
+    /// - 旧注释「隔离 home 下不一定真装了 Trae」本身就与无条件 `.expect` 自相矛盾。
+    ///
+    /// ⚠️ **刻意不去造一个假数据目录**：真拿到目录时 Windows 分支会 `spawn explorer`
+    /// ⇒ 每次跑测试都会在用户桌面上弹出文件管理器窗口。故这里只钉住「Err 必须可读且指名变体」。
     #[test]
     fn open_data_dir_is_structured_unsupported_off_windows() {
         let dir = std::env::temp_dir().join(format!("trae-opendir-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let _guard = crate::modules::config::HomeOverrideGuard::set(&dir);
 
-        let value = open_data_dir(TraeVariant::TraeWork).expect("open_data_dir 不应 Err");
+        let value = match open_data_dir(TraeVariant::TraeWork) {
+            Ok(value) => value,
+            Err(error) => {
+                // 「没找到数据目录」是**合法结果**（本机没装 Trae 时必然走到这里）。
+                // 但必须响亮、可读、且点名是哪个变体，不能是空串或 panic。
+                assert!(
+                    error.contains("未找到"),
+                    "Err 必须说明是「没找到数据目录」，实际: {error}"
+                );
+                assert!(
+                    error.contains(TraeVariant::TraeWork.display_name()),
+                    "Err 必须点名变体，实际: {error}"
+                );
+                return;
+            }
+        };
         if cfg!(windows) {
-            // 隔离 home 下不一定真装了 Trae；能拿到 ok+path 就够（实际打开是宿主副作用）。
+            // 真装了 Trae 才可能走到这里；能拿到 ok+path 就够（实际打开是宿主副作用）。
             assert!(value.get("ok").is_some() || value.get("capability").is_some());
         } else {
             assert_eq!(value["capability"], "open_data_dir");

@@ -55,8 +55,21 @@ pub fn official_usage_url(region: Region) -> String {
     }
 }
 
+/// 官方接口单页条数（分页抓取用）。
 pub const OFFICIAL_USAGE_PAGE_SIZE: usize = 3_000;
-pub const OFFICIAL_USAGE_DETAIL_LIMIT: usize = 100;
+
+/// 单账号向上层下发的**请求明细**条数上限（按请求时间取最近的 N 条）。
+///
+/// 这个值同时决定「官方用量缓存文件」与「统计接口单次响应」的载荷规模，所以必须有限：
+/// 实测每行明细约 200 B，3_000 行 ≈ 600 KB/账号，属可接受区间。
+///
+/// **为什么从 100 放宽到 3_000**：100 条对重度用户只覆盖最近一两天，明细表里根本看不到
+/// 「哪几笔请求最贵」；而聚合口径（`models` / `daily`）本来就是**全量**的，于是出现
+/// 「合计用了全部 N 条请求，列表却只给 100 条」的口径不一致。放宽后与官方单页上限同值，
+/// 覆盖绝大多数账号 31 天的全部请求；真的超过时仍以 `detailTruncated` 如实上报，
+/// 前端的「仅展示最近 N 条」提示不会说谎。
+pub const OFFICIAL_USAGE_DETAIL_LIMIT: usize = 3_000;
+
 const OFFICIAL_USAGE_MAX_PAGES: usize = 100;
 
 /// 官方用量采集结果的进程内记忆，**按 region 分家**。
@@ -641,6 +654,18 @@ fn request_value(account_id: &str, account_name: &str, row: &RequestRow) -> Valu
     })
 }
 
+/// 明细行按**请求时间倒序**取最近 `limit` 条。
+///
+/// 只有**明细**受 `limit` 约束；`models` / `daily` 聚合走全量 `rows`。
+/// 两处口径不同，正是「合计是全部 N 条、列表却只给 100 条」的成因，故此处单列出来，
+/// 让「上限足够时必须一条不丢」这个边界可以被单测钉住。
+fn recent_detail_rows(rows: &[RequestRow], limit: usize) -> Vec<RequestRow> {
+    let mut sorted = rows.to_vec();
+    sorted.sort_by_key(|row| Reverse(row.request_ts));
+    sorted.truncate(limit);
+    sorted
+}
+
 /// 查询全部当前账号并生成官方请求用量投影（CN 薄包装）。
 pub async fn collect_official_usage(accounts: &[Value], at_ms: i64) -> Value {
     collect_official_usage_for(Region::Cn, accounts, at_ms).await
@@ -708,12 +733,10 @@ pub async fn collect_official_usage_for(region: Region, accounts: &[Value], at_m
                         .or_insert(0.0) += amount;
                 }
 
-                let mut sorted_rows = result.rows.clone();
-                sorted_rows.sort_by_key(|row| Reverse(row.request_ts));
-                for row in sorted_rows.iter().take(OFFICIAL_USAGE_DETAIL_LIMIT) {
+                for row in recent_detail_rows(&result.rows, OFFICIAL_USAGE_DETAIL_LIMIT) {
                     recent_requests.push((
                         row.request_ts,
-                        request_value(&account_id, &account_name, row),
+                        request_value(&account_id, &account_name, &row),
                     ));
                 }
                 account_rows.push(json!({
@@ -946,6 +969,42 @@ mod tests {
         assert_eq!(models[1]["model"], "model-a");
         assert_eq!(models[1]["requestCount"], 2);
         assert_eq!(models[1]["credit"], 3.0);
+    }
+
+    /// 明细上限的**边界行为**：上限足够时一条不丢，上限不足时只留最近的 N 条。
+    ///
+    /// 旧实现是内联 `take(100)`：重度用户 31 天有几千条请求，明细表里只看得见最近一两天，
+    /// 而 `models` / `daily` 聚合是全量的 —— 口径不一致正是本次修复的动因。
+    #[test]
+    fn recent_detail_rows_keep_the_newest_up_to_the_limit() {
+        let (today, today_ts) = local_date(0, 12);
+        let rows: Vec<RequestRow> = (0..150)
+            .map(|index| row(today, today_ts + index as i64, index as f64))
+            .collect();
+
+        // 上限足够：一条不丢，且最近的在最前。
+        let all = recent_detail_rows(&rows, 150);
+        assert_eq!(all.len(), 150, "上限足够时必须返回全部明细");
+        assert_eq!(all[0].request_ts, today_ts + 149, "必须按请求时间倒序");
+        assert_eq!(all[149].request_ts, today_ts);
+
+        // 上限不足：只保留最近的 N 条。
+        let capped = recent_detail_rows(&rows, 3);
+        assert_eq!(capped.len(), 3);
+        assert_eq!(capped[0].request_ts, today_ts + 149);
+        assert_eq!(capped[2].request_ts, today_ts + 147);
+    }
+
+    /// 明细上限不得小于官方单页上限。
+    ///
+    /// 改回 100 本用例即红：「一页都装不下」对重度用户必然截断，
+    /// 与全量的聚合口径再次不一致（即用户报障的原状）。
+    #[test]
+    fn detail_limit_covers_a_full_official_page() {
+        assert!(
+            OFFICIAL_USAGE_DETAIL_LIMIT >= OFFICIAL_USAGE_PAGE_SIZE,
+            "明细上限（{OFFICIAL_USAGE_DETAIL_LIMIT}）不得小于官方单页上限（{OFFICIAL_USAGE_PAGE_SIZE}）"
+        );
     }
 
     #[test]

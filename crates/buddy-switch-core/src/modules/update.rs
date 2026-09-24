@@ -38,21 +38,11 @@ pub fn github_config_file() -> PathBuf {
     store_dir().join("github_config.json")
 }
 
-/// 把已知的旧仓库坐标归一到当前坐标，返回 `(owner, repo)`。
-///
-/// 旧坐标有两代：`changexbc/buddy-switch`（早期截图/配置）与
-/// `changexbc/workbuddy-switch`（旧公开仓库）。配置文件 `github_config.json`
-/// 的优先级**高于**常量，若不迁移，已存有旧坐标的用户会永久指向已迁走的仓库、
-/// 再也收不到更新。因此按 **owner** 判定，一次性把该 owner 下的所有旧 repo 归一到新坐标。
-fn migrate_legacy_coordinates(owner: &str, repo: &str) -> (String, String) {
-    if owner == "changexbc" {
-        (GITHUB_OWNER.to_string(), GITHUB_REPO.to_string())
-    } else {
-        (owner.to_string(), repo.to_string())
-    }
-}
-
 /// 读取更新源配置（兼容旧配置文件，但永不返回 token）。
+///
+/// 配置里的 `owner` / `repo` 原样采信，不做任何改写：本项目的升级源只由
+/// [`GITHUB_OWNER`] / [`GITHUB_REPO`] 与用户显式配置决定，不会把用户配置的
+/// 其他仓库坐标替换成本项目自己的坐标。
 pub fn load_github_config() -> Value {
     let mut owner = GITHUB_OWNER.to_string();
     let mut repo = GITHUB_REPO.to_string();
@@ -78,12 +68,6 @@ pub fn load_github_config() -> Value {
                 should_normalize = v.get("token").is_some();
             }
         }
-    }
-    let (migrated_owner, migrated_repo) = migrate_legacy_coordinates(&owner, &repo);
-    if migrated_owner != owner || migrated_repo != repo {
-        owner = migrated_owner;
-        repo = migrated_repo;
-        should_normalize = true;
     }
     let normalized = json!({"owner": owner, "repo": repo, "proxy": proxy});
     if should_normalize {
@@ -341,6 +325,74 @@ pub async fn update_check(proxy: Option<&str>, force: bool) -> Value {
 mod tests {
     use super::*;
 
+    /// 配置文件里的仓库坐标必须**原样采信**：本项目与其它项目各自独立，
+    /// 绝不允许把用户配置的仓库坐标改写成本项目自己的坐标。
+    ///
+    /// 这条改写曾以 `migrate_legacy_coordinates` 的形式存在（按 owner 一刀切，
+    /// 且因配置优先级高于常量而**落盘覆盖**用户原配置、不可逆），已于 2026-09-23
+    /// 整体删除。此测试钉住「不再改写」，防止它以任何形式回归。
+    ///
+    /// 用隔离的临时 home，绝不触碰真实 `~/.buddy-switch`。**不要**在此再手动
+    /// `env_lock()`：`HomeOverrideGuard::set()` 内部已取锁并持到 drop，重复取用会自死锁。
+    #[test]
+    fn load_github_config_keeps_configured_coordinates_verbatim() {
+        let home = std::env::temp_dir().join(format!(
+            "buddy-switch-update-cfg-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&home).expect("create isolated home");
+        let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
+
+        let file = github_config_file();
+        std::fs::create_dir_all(file.parent().expect("config file has parent"))
+            .expect("create store dir");
+
+        // 1) 任意第三方坐标必须原样返回，且文件**不被改写**。
+        let foreign =
+            r#"{"owner":"someone-else","repo":"their-repo","proxy":"http://127.0.0.1:7890"}"#;
+        std::fs::write(&file, foreign).expect("seed config");
+        let cfg = load_github_config();
+        assert_eq!(
+            cfg.get("owner").and_then(|v| v.as_str()),
+            Some("someone-else")
+        );
+        assert_eq!(cfg.get("repo").and_then(|v| v.as_str()), Some("their-repo"));
+        assert_eq!(
+            cfg.get("proxy").and_then(|v| v.as_str()),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("read back"),
+            foreign,
+            "坐标原样采信时不应产生任何落盘改写"
+        );
+
+        // 2) 归一化路径（旧配置含 token → 剥离）同样不得顺手改写坐标。
+        std::fs::write(
+            &file,
+            r#"{"owner":"someone-else","repo":"their-repo","proxy":"","token":"ghp_secret"}"#,
+        )
+        .expect("seed legacy config");
+        let cfg = load_github_config();
+        assert_eq!(
+            cfg.get("owner").and_then(|v| v.as_str()),
+            Some("someone-else")
+        );
+        assert_eq!(cfg.get("repo").and_then(|v| v.as_str()), Some("their-repo"));
+        assert!(cfg.get("token").is_none(), "token 不得被返回");
+        let rewritten = std::fs::read_to_string(&file).expect("read back normalized");
+        assert!(!rewritten.contains("ghp_secret"), "token 必须被剥离");
+        assert!(rewritten.contains("someone-else"), "归一化不得改写坐标");
+
+        // 3) 无配置文件时回落到本项目自己的坐标。
+        std::fs::remove_file(&file).expect("remove config");
+        let cfg = load_github_config();
+        assert_eq!(cfg.get("owner").and_then(|v| v.as_str()), Some(GITHUB_OWNER));
+        assert_eq!(cfg.get("repo").and_then(|v| v.as_str()), Some(GITHUB_REPO));
+
+        std::fs::remove_dir_all(&home).expect("cleanup isolated home");
+    }
+
     #[test]
     fn updater_manifest_urls_macos_skips_duplicate_fallback() {
         let urls = updater_manifest_urls(GITHUB_OWNER, GITHUB_REPO, "macos", "aarch64");
@@ -364,23 +416,6 @@ mod tests {
                 "https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest/download/latest-macos-x86_64.json",
             ]
         );
-    }
-
-    /// 旧坐标必须被迁移到新仓库：配置文件里的旧坐标优先级高于常量，
-    /// 不迁移的话老用户会永久指向已迁走的仓库。
-    #[test]
-    fn legacy_github_coordinates_migrate_to_current_repo() {
-        for legacy_repo in ["workbuddy-switch", "buddy-switch"] {
-            let migrated = migrate_legacy_coordinates("changexbc", legacy_repo);
-            assert_eq!(
-                migrated,
-                (GITHUB_OWNER.to_string(), GITHUB_REPO.to_string()),
-                "legacy repo `{legacy_repo}` should migrate to current coordinates"
-            );
-        }
-        // 非旧 owner 的坐标必须原样保留（不得被误伤）
-        let kept = migrate_legacy_coordinates("someone-else", "workbuddy-switch");
-        assert_eq!(kept, ("someone-else".to_string(), "workbuddy-switch".to_string()));
     }
 
     #[test]

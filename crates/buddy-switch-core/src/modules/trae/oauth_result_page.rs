@@ -149,12 +149,14 @@ mod tests {
 
     #[test]
     fn success_page_carries_account_name_and_region() {
+        // 夹具与 `oauth::success_page` 的实际产物保持一致（应用 → 产品 → 区域）。
         let html = result_page(
             PageKind::Success,
             "登录成功",
             &[
                 "账号 [Jackey] 登录成功".to_string(),
-                "账号已添加到「国内版」账号库，可关闭此页面返回应用。".to_string(),
+                "账号已添加到 Buddy Switch 的 Trae（国内版）账号库，可关闭此页面返回应用。"
+                    .to_string(),
             ],
         );
 

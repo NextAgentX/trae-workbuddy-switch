@@ -78,12 +78,13 @@ use tokio::sync::Notify;
 use crate::modules::trae::icube::{self, DeviceIdentity};
 use crate::modules::trae::oauth_client::oauth_client;
 use crate::modules::trae::oauth_result_page::{result_page, PageKind};
+use crate::modules::trae::platform::{self, ClientInstallMeta, SystemProfile};
 use crate::modules::trae::store;
 use crate::modules::trae::variant::TraeVariant;
 use crate::modules::trae::{
     account, device, endpoints_for, TRAE_EXCHANGE_TOKEN_LEGACY_PATH, TRAE_EXCHANGE_TOKEN_PATH,
     TRAE_OAUTH_APP_ID, TRAE_OAUTH_LOGIN_TIMEOUT_SECONDS, TRAE_PAGE_APP_VERSION,
-    TRAE_PAGE_PLATFORM_CODE, TRAE_PAGE_PLUGIN_VERSION,
+    TRAE_PAGE_PLUGIN_VERSION,
 };
 
 /// 授权页路径（挂在**该变体的 `console_base`** 后面）。
@@ -524,6 +525,126 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
+/// 一次登录用到的**全部客户端侧事实**：设备身份 + 安装元数据 + 系统信息。
+///
+/// ## ★ 为什么必须绑成一个值（本轮缺陷的结构性护栏）
+///
+/// 授权 URL 与 `ExchangeToken` 请求体里有**四对同源字段**，而 2026-09-24 的真机
+/// 缺陷正是「每一对都各取一份来源」：
+///
+/// | 同源对 | 授权 URL | 兑换请求体 |
+/// |:--|:--|:--|
+/// | 机器标识 | `machine_id` / `x_machine_id` | `DeviceInfo.MachineID` |
+/// | 应用版本 | `x_app_version` | `ClientVersion` / `IDEVersion` |
+/// | 设备型号 | `x_device_brand` | `DeviceModel` |
+/// | 系统版本 | `x_os_version` | `OSVersion` |
+///
+/// 上游对不一致的回应是 `20403/040036: Token device not match`（用户报障原文）。
+/// 把三者收进一个值、并让两个构造函数**只从这里取值**，就能让「两处各取一份」
+/// 在类型层面不成立 —— 与 `device_id` 那条红线同款思路。
+#[derive(Debug, Clone)]
+struct ClientFacts {
+    /// 设备身份（`device_id` 与 `publicKeyPEM` 的唯一来源）。
+    identity: DeviceIdentity,
+    /// 安装元数据（`manifest.json`）。取不到时为全空 ⇒ 各字段按 [`ClientInstallMeta`] 回落。
+    meta: ClientInstallMeta,
+    /// 系统信息。测试里可注入固定值。
+    system: SystemProfile,
+}
+
+impl ClientFacts {
+    /// 读一次本机事实。**设备身份取不到就直接失败**（不做任何降级）。
+    fn load_for(variant: TraeVariant) -> Result<ClientFacts, String> {
+        // ★ 身份先于端口取：授权 URL 的 `device_id` **必须**与 icube 设备凭证同源，
+        // 取不到就直接失败，不做任何降级（见 `build_authorize_url` 的红线说明）。
+        let identity = icube::device_identity_for(variant)
+            .map_err(|error| classify_error("credential", &error.user_message(variant)))?;
+        Ok(ClientFacts {
+            identity,
+            meta: platform::client_install_meta_for(variant).unwrap_or_default(),
+            system: platform::system_profile(),
+        })
+    }
+
+    /// `machine_id` / `x_machine_id` / `DeviceInfo.MachineID` 的**共同**取值。
+    fn machine_id(&self) -> String {
+        authorize_machine_id(self.identity.variant, &self.identity)
+    }
+
+    /// `x_app_version` / `ClientVersion` / `IDEVersion` 的**共同**取值。
+    ///
+    /// 客户端三处报的都是**安装包版本**（`manifest.json` → `appVersion`，本机 `0.1.69`），
+    /// 不是 `resources/app/package.json` 的内核版本（本机 `1.107.1`）。
+    /// 逐级回落：`manifest.json` → 安装目录版本 → 内置常量。**三条路都指向同一个值**，
+    /// 因此不会出现「URL 与请求体各说一个数」。
+    fn app_version(&self) -> String {
+        for candidate in [
+            self.meta.app_version.as_str(),
+            self.identity.app_version.as_str(),
+            TRAE_PAGE_APP_VERSION,
+        ] {
+            let candidate = candidate.trim();
+            if !candidate.is_empty() {
+                return candidate.to_string();
+            }
+        }
+        String::new()
+    }
+
+    /// 授权 URL 的 `plugin_version`（客户端：`product.json.tronBuildVersion`，
+    /// 本机 `2.3.87413`；同值也在安装根 `manifest.json` 的 `buildVersion` 里）。
+    fn build_version(&self) -> String {
+        let from_client = self.meta.build_version.trim();
+        if !from_client.is_empty() {
+            return from_client.to_string();
+        }
+        TRAE_PAGE_PLUGIN_VERSION.to_string()
+    }
+
+    /// 授权 URL 的 `x_app_type`（客户端：`product.quality`，本机 `stable`）。
+    fn app_type(&self) -> String {
+        let from_client = self.meta.channel.trim();
+        if !from_client.is_empty() {
+            return from_client.to_string();
+        }
+        "stable".to_string()
+    }
+}
+
+/// 授权 URL 与 `DeviceInfo` **共用的** `machine_id`（同源，唯一派生点）。
+///
+/// ## 取值来源：客户端自己的 `telemetry.machineId`
+///
+/// 真机客户端在授权 URL 的 `machine_id` / `x_machine_id` 与
+/// `DeviceInfo.MachineID` 三处报的是**同一个** `machineId`（客户端里 URL 构造器
+/// 与请求类注入的是同一个对象 ⇒ 两处必然相等）。真机日志可逐字核对：
+///
+/// ```text
+/// update#initialize: region = CN, deviceId = 7d3f5a9d…7538   ← 即 telemetry.machineId
+/// OAuthenticator# openLogin getLoginUrl …&machine_id=7d3f5a9d…7538&…
+/// [exchangeTokenByAuthCode] request {…"MachineID":"7d3f5a9d…7538"…}
+/// ```
+///
+/// ## 为什么此前是错的
+///
+/// 改造前这里用 `device::oauth_login_machine_for` 生成的**自造**值（arch 有意为之：
+/// 「授权 URL 在用户点授权之前就要打开，那时不该让客户端装没装决定登录能否发起」），
+/// 而请求体用的是 `storage.json` 的 `telemetry.machineId` ⇒ 两处**必然不等**。
+/// 上游因此回 `20403/040036 Token device not match`。
+///
+/// 该理由本身也站不住：`device_id` 本来就来自同一个 `storage.json`
+/// （[`icube::device_identity_for`]），客户端没启动过时**更早**就失败了。
+///
+/// 自造值保留为**兜底**：客户端还没写过 `telemetry.machineId` 时（极早期安装）
+/// 至少给出一个稳定的值，而不是空串。
+fn authorize_machine_id(variant: TraeVariant, identity: &DeviceIdentity) -> String {
+    let from_client = identity.machine_id.trim();
+    if !from_client.is_empty() {
+        return from_client.to_string();
+    }
+    device::oauth_login_machine_for(variant).machine_id
+}
+
 /// 构造授权 URL（**22 参数**，逐字对齐抓包固化值；SOLO 线再多一个 `hide_saas_login`）。
 ///
 /// 出处：`reference/TraeWorkAssistant-main/src-tauri/src/commands/oauth.rs:321-355`。
@@ -559,17 +680,21 @@ fn pkce_pair() -> (String, String) {
 /// 变体级持久稳定 —— 参考自身这两者也不相等（见 arch §10 #2-b）。
 fn build_authorize_url(
     variant: TraeVariant,
-    identity: &DeviceIdentity,
-    machine_id: &str,
+    facts: &ClientFacts,
     port: u16,
     trace_id: &str,
     code_challenge: &str,
 ) -> String {
+    let identity = &facts.identity;
     let device_id = identity.device_id.as_str();
+    // ★ 同源取值：`machine_id` 与 `DeviceInfo.MachineID` 都来自这里（唯一派生点）。
+    let machine_id = facts.machine_id();
+    let machine_id = machine_id.as_str();
+    // ★ 同源取值：系统信息同时喂给本 URL 的 `x_device_brand` / `x_device_type` /
+    // `x_os_version` 与请求体的 `DeviceModel` / `OSInfo` / `OSVersion`。
+    let system = &facts.system;
     let callback = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
-    // `COMPUTERNAME` 可能含空格/非 ASCII，必须走通用 URL 编码（手写 `:`/`/` 替换不够）。
-    let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows-PC".into());
-    // 授权页产品线：决定 `auth_from` / `client_id` / 是否追加 `hide_saas_login`。
+    // 授权页产品线：决定 `auth_from` / `client_id` / `PlatformCode` / 是否追加 `hide_saas_login`。
     // 判定依据是客户端自己的 `packageType` 分派（见 `OAuthLine::from_package_type`）。
     let line = variant.oauth_line();
     let mut url = format!(
@@ -587,23 +712,28 @@ fn build_authorize_url(
         &device_id={device_id}\
         &x_device_id={device_id}\
         &x_machine_id={machine_id}\
-        &x_device_brand={hostname}\
-        &x_device_type=windows\
+        &x_device_brand={device_brand}\
+        &x_device_type={device_type}\
         &x_os_version={os_version}\
         &x_env=\
         &x_app_version={app_version}\
-        &x_app_type=stable\
+        &x_app_type={app_type}\
         &code_challenge={code_challenge}\
         &code_challenge_method=S256\
         &channel_name=common",
         console_base = endpoints_for(variant).console_base,
         auth_from = line.auth_from(),
-        plugin_version = TRAE_PAGE_PLUGIN_VERSION,
+        plugin_version = facts.build_version(),
         client_id = oauth_client().client_id_for(line),
         redirect_uri = urlencoding::encode(&callback),
-        hostname = urlencoding::encode(&hostname),
-        os_version = urlencoding::encode("Windows"),
-        app_version = TRAE_PAGE_APP_VERSION,
+        // `x_device_brand` 装的是**设备型号**（客户端原文 `x_device_brand: b?.deviceModel`），
+        // 不是主机名 —— 改造前填的是 `COMPUTERNAME`，与请求体的 `DeviceModel` 对不上。
+        // 值可能含空格/非 ASCII，必须走通用 URL 编码。
+        device_brand = urlencoding::encode(&system.device_model),
+        device_type = urlencoding::encode(&system.os_name),
+        os_version = urlencoding::encode(&system.os_version),
+        app_version = facts.app_version(),
+        app_type = facts.app_type(),
     );
     // `hide_saas_login` 是 `auth_from=solo` 的**从属**参数（客户端：`A==="solo" && (D+=…)`），
     // 追加在**最末**，与客户端拼串顺序一致。
@@ -613,54 +743,80 @@ fn build_authorize_url(
     url
 }
 
-/// 解析交换端点主机：回调回传的 `host` 优先，缺失时回落该变体的 `icube_base`。
+/// 解析交换端点主机：回调回传的 `host` 优先，缺失时回落该变体的 **`account_base`**。
 ///
 /// 归一化只做 `trim()` + 去尾斜杠（**照抄参考** `oauth.rs:548` 的做法，
 /// 不自创 scheme 补全规则）。返回 `(host, 是否用了回落值)` ——
 /// 回落时要写一条脱敏留痕，便于排查「授权页没回传 host」这类上游变化。
+///
+/// ## 回落值为什么是 `account_base` 而不是 `icube_base`
+///
+/// 真机客户端（2026-09-24 实测）兑换时打的是
+/// `https://api.trae.cn/trae/api/v3/oauth/ExchangeToken` —— 即
+/// `bootConfig.account.trae.normal`（本表的 `account_base`），
+/// 而 `icube_base`（`https://api.trae.com.cn`）是**另一台主机**。
+/// 客户端源码里 `apiHost` 的取值顺序是「回调回传的 host → `account.trae.normal`」，
+/// 从不是 iCube 基址。
 fn resolve_exchange_host(callback_host: Option<&str>, variant: TraeVariant) -> (String, bool) {
     match callback_host
         .map(|host| host.trim().trim_end_matches('/'))
         .filter(|host| !host.is_empty())
     {
         Some(host) => (host.to_string(), false),
-        None => (
-            endpoints_for(variant).icube_base.to_string(),
-            true,
-        ),
+        None => (endpoints_for(variant).account_base.to_string(), true),
     }
 }
 
 /// 构造 AuthCode 交换请求体（纯函数，可单测）。
 ///
 /// ⚠️ AuthCode 场景**不发 DeviceProof**（那是 refreshToken 刷新场景专属结构），
-/// 因此这里只收 [`DeviceIdentity`]（**没有私钥字段**，见模块头）。
+/// 因此这里只收 [`ClientFacts`]（其 `identity` 字段**没有私钥字段**，见模块头）。
 /// `DevicePublicKey` 直接取信封里的 `publicKeyPEM`，**不推导**。
+///
+/// ★ 请求体里**每一个**与授权 URL 重叠的字段都从 `facts` 派生（唯一来源）：
+/// `MachineID` ← [`ClientFacts::machine_id`]、`ClientVersion` / `IDEVersion`
+/// ← [`ClientFacts::app_version`]、`DeviceModel` / `OSInfo` / `OSVersion`
+/// ← `facts.system`。`PlatformCode` 由 `identity.variant.oauth_line()` 派生。
 fn build_exchange_payload(
     client_id: &str,
     auth_code: &str,
     code_verifier: &str,
-    identity: &DeviceIdentity,
+    facts: &ClientFacts,
 ) -> Value {
+    let identity = &facts.identity;
+    let system = &facts.system;
+    // ★ 与授权 URL 的 `x_app_version` 同源（客户端三处同值）。
+    let app_version = facts.app_version();
     json!({
         "ClientID": client_id,
         "AuthCode": auth_code,
         "CodeVerifier": code_verifier,
         "DeviceInfo": {
             "DeviceID": identity.device_id,
-            "MachineID": identity.machine_id,
-            "PlatformCode": TRAE_PAGE_PLATFORM_CODE,
+            // ★ 与授权 URL 的 `machine_id` / `x_machine_id` **同源**（唯一派生点）。
+            // 改造前这里取 `storage.json` 的 `telemetry.machineId`、URL 取自造值 ⇒
+            // 上游回 `20403/040036 Token device not match`。
+            "MachineID": facts.machine_id(),
+            // ★ 按**产品线**派生：SOLO 线 `SOLO_PC` / IDE 线 `IDE_PC`
+            // （客户端 `k(){ return gr(product) ? "SOLO_PC" : "IDE_PC" }`）。
+            // 改造前写死 `IDE_PC`（照抄参考实现的 IDE 线），SOLO 线上必然对不上。
+            "PlatformCode": identity.variant.oauth_line().platform_code(),
             "DeviceType": "PC",
-            "DeviceName": "",
-            "DeviceModel": "",
-            "ClientVersion": identity.app_version,
+            // 真值是「Windows 账户全名 + 本地化后缀」（本机 `Jackey的电脑`）——
+            // 本实现留空，理由见 `platform::system_profile`（无稳定来源，且该字段
+            // **不在授权 URL 里**，不参与同源比对）。
+            "DeviceName": system.device_name,
+            // ★ 与授权 URL 的 `x_device_brand` 同源（客户端装的是 `deviceModel`）。
+            "DeviceModel": system.device_model,
+            "ClientVersion": app_version,
             "DevicePublicKey": identity.public_key_pem,
-            "DeviceBrand": "",
-            "DeviceCPU": "",
-            "OSInfo": "",
-            "OSVersion": "",
+            "DeviceBrand": system.device_manufacturer,
+            "DeviceCPU": system.cpu_brand,
+            // ★ 与授权 URL 的 `x_device_type` / `x_os_version` 同源。
+            "OSInfo": system.os_name,
+            "OSVersion": system.os_version,
         },
-        "IDEVersion": identity.app_version,
+        "IDEVersion": app_version,
     })
 }
 
@@ -674,6 +830,7 @@ fn build_auth_code_fallback_payload(
     auth_code: &str,
     code_verifier: &str,
     device_id: &str,
+    platform_code: &str,
     code_key: &str,
 ) -> Value {
     let mut payload = Map::new();
@@ -681,7 +838,9 @@ fn build_auth_code_fallback_payload(
     payload.insert(code_key.to_string(), json!(auth_code));
     payload.insert("CodeVerifier".into(), json!(code_verifier));
     payload.insert("DeviceID".into(), json!(device_id));
-    payload.insert("PlatformCode".into(), json!(TRAE_PAGE_PLATFORM_CODE));
+    // 与主变体同源（按产品线派生），不写死：兜底链里出现一个「另一条线」的值
+    // 只会让本来要排查的真问题被掩盖。
+    payload.insert("PlatformCode".into(), json!(platform_code));
     Value::Object(payload)
 }
 
@@ -693,10 +852,12 @@ fn build_auth_code_fallback_payload(
 ///
 /// `host` 显式传入（便于测试指向本地 mock）。
 ///
-/// ## ★ 签名里只有 `&DeviceIdentity`，没有独立的 device_id（结构性护栏）
+/// ## ★ 签名里只有 `&ClientFacts`，没有独立的 device_id / machine_id（结构性护栏）
 ///
 /// `DeviceInfo.DeviceID`、`x-device-id` 与授权 URL 的 `device_id` **三方同源**，
-/// 全部取自 `identity.device_id`。类型层面不存在「传进另一个 device_id」的可能。
+/// 全部取自 `facts.identity.device_id`；`DeviceInfo.MachineID` 与授权 URL 的
+/// `machine_id` / `x_machine_id` 同取自 [`ClientFacts::machine_id`]。
+/// 类型层面不存在「传进另一个 device_id / machine_id」的可能。
 ///
 /// **不移植**参考 `oauth.rs:579-609` 的「旧端点 + AuthCode + DeviceProof」探测变体
 /// （需要私钥、且其唯一目的是验证已固化的逆向结论）。
@@ -705,12 +866,15 @@ async fn exchange_auth_code(
     host: &str,
     auth_code: &str,
     code_verifier: &str,
-    identity: &DeviceIdentity,
+    facts: &ClientFacts,
 ) -> Result<account::ExchangedToken, String> {
-    let auth_device_id = identity.device_id.as_str();
+    let auth_device_id = facts.identity.device_id.as_str();
     // ★ 交换请求体里的 `ClientID` 必须与**授权 URL 用的那把钥匙同源**（按产品线分）。
     // 两处取不同的值 = 拿 A 线的钥匙去兑 B 线签发的 AuthCode，上游只会拒绝。
-    let client_id = oauth_client().client_id_for(variant.oauth_line()).to_string();
+    let line = variant.oauth_line();
+    let client_id = oauth_client().client_id_for(line).to_string();
+    // ★ `PlatformCode` 同样按产品线派生，与 `client_id` / `auth_from` 同一判定。
+    let platform_code = line.platform_code();
     let legacy_url = format!(
         "{}{}",
         endpoints_for(variant).icube_base,
@@ -724,7 +888,7 @@ async fn exchange_auth_code(
                 host.trim_end_matches('/'),
                 TRAE_EXCHANGE_TOKEN_PATH
             ),
-            build_exchange_payload(&client_id, auth_code, code_verifier, identity),
+            build_exchange_payload(&client_id, auth_code, code_verifier, facts),
             true,
         ),
         (
@@ -735,6 +899,7 @@ async fn exchange_auth_code(
                 auth_code,
                 code_verifier,
                 auth_device_id,
+                platform_code,
                 "AuthCode",
             ),
             false,
@@ -747,6 +912,7 @@ async fn exchange_auth_code(
                 auth_code,
                 code_verifier,
                 auth_device_id,
+                platform_code,
                 "Code",
             ),
             false,
@@ -755,7 +921,16 @@ async fn exchange_auth_code(
 
     let mut errors: Vec<String> = Vec::new();
     for (tag, url, payload, with_cloudide_token) in &variants {
-        match try_exchange_variant(tag, url, payload, auth_device_id, *with_cloudide_token).await {
+        match try_exchange_variant(
+            tag,
+            url,
+            payload,
+            auth_device_id,
+            platform_code,
+            *with_cloudide_token,
+        )
+        .await
+        {
             Ok(exchanged) => return Ok(exchanged),
             Err(error) => errors.push(format!("{tag}: {error}")),
         }
@@ -775,6 +950,7 @@ async fn try_exchange_variant(
     url: &str,
     payload: &Value,
     device_id: &str,
+    platform_code: &str,
     with_cloudide_token: bool,
 ) -> Result<account::ExchangedToken, String> {
     let client = crate::modules::trae::credits::trae_http_client();
@@ -782,11 +958,14 @@ async fn try_exchange_variant(
         .post(url)
         .header("content-type", "application/json")
         .header("accept", "*/*")
-        // 设备头（照抄参考 `oauth.rs:663-671`；简报只强制 `x-cloudide-token`，
-        // 多带非必需头无副作用，缺必需头才有 20403）。
+        // 设备头（照抄参考 `oauth.rs:663-671`；真机客户端只发 `content-type` +
+        // `x-cloudide-token`，这几个头属于「多带无副作用」，留着便于上游侧排查）。
+        //
+        // ⚠️ 但**值必须对**：`x-platform-code` 曾写死 `IDE_PC`，而 SOLO 线要的是
+        // `SOLO_PC`（同 `DeviceInfo.PlatformCode`，按产品线派生）。
         .header("x-device-id", device_id)
         .header("x-app-id", TRAE_OAUTH_APP_ID)
-        .header("x-platform-code", TRAE_PAGE_PLATFORM_CODE);
+        .header("x-platform-code", platform_code);
     if with_cloudide_token {
         // ★ 必须**存在且为空串**：缺失报 20403，带旧 token 报 20405。
         request = request.header("x-cloudide-token", "");
@@ -798,9 +977,13 @@ async fn try_exchange_variant(
         .map_err(|e| {
             // 与签到/续期同一出口：展开 source 链（见 modules/net.rs）。
             // 授权流程的失败提示往往是用户唯一的线索，不能只剩一行顶层文案。
+            //
+            // 用 `transport_error`（带码版）而不是 `describe_transport_error`：同一条文案，
+            // 额外携带 `net.transport.*` 码，前端才能按当前语言重渲染。文本逐字节相同
+            // —— 见 `net::describe_transport_error` 的委托实现。
             format!(
                 "请求失败: {}",
-                crate::modules::net::describe_transport_error(&e)
+                crate::modules::net::transport_error(&e).to_wire()
             )
         })?;
 
@@ -977,8 +1160,10 @@ pub async fn login_start_for(variant: TraeVariant) -> Result<Value, String> {
     // 为什么放在绑端口之前：身份缺失是本机环境问题（客户端没启动过 / 没登录过），
     // 与端口无关。先判它，用户拿到的第一句话就是「去启动一次客户端」，
     // 而不是先被一个端口错误引到错误的方向。
-    let identity = icube::device_identity_for(variant)
-        .map_err(|error| classify_error("credential", &error.user_message(variant)))?;
+    //
+    // ★ 一次读齐「客户端侧事实」（身份 + 安装元数据 + 系统信息）：授权 URL 与
+    // 兑换请求体都**只**从这里取值，两处不可能各说一套（见 [`ClientFacts`]）。
+    let facts = ClientFacts::load_for(variant)?;
 
     // 绑**固定端口**（见 [`CALLBACK_PORT`] 的说明）：授权页会来探这个端口判断
     // 客户端在线，随机端口会让它永远探不到、流程永久卡在「认证中」。
@@ -994,9 +1179,9 @@ pub async fn login_start_for(variant: TraeVariant) -> Result<Value, String> {
         .map_err(|e| format!("读取监听端口失败: {e}"))?
         .port();
 
-    // 身份 A2：授权 URL 的 `machine_id`（本机自造，变体级持久稳定）。
-    // 身份 A1（`device_id`）在上面已经随 `identity` 取到，不再有第二个来源。
-    let machine = device::oauth_login_machine_for(variant);
+    // 授权 URL 的 `machine_id` **不再**在这里单独取值 —— 它由 [`ClientFacts::machine_id`]
+    // 与请求体的 `DeviceInfo.MachineID` 共用同一个派生点（改造前两处各取一份，
+    // URL 用自造值、请求体用 `telemetry.machineId`，上游回 20403）。
     let trace_id = icube::random_hex(32);
     let (pkce_verifier, code_challenge) = pkce_pair();
     let login_id = format!("trae_{}", uuid::Uuid::new_v4().simple());
@@ -1025,18 +1210,11 @@ pub async fn login_start_for(variant: TraeVariant) -> Result<Value, String> {
         );
     }
 
-    let authorize_url = build_authorize_url(
-        variant,
-        &identity,
-        &machine.machine_id,
-        port,
-        &trace_id,
-        &code_challenge,
-    );
+    let authorize_url = build_authorize_url(variant, &facts, port, &trace_id, &code_challenge);
     let session_id = login_id.clone();
-    // 身份随监听任务一起搬进去：回调到达时要拿**同一个** `device_id` 去填
-    // `DeviceInfo.DeviceID` 与 `x-device-id`（三方同源）。
-    let identity = Arc::new(identity);
+    // 客户端事实随监听任务一起搬进去：回调到达时要拿**同一份**去填 `DeviceInfo`
+    // （`DeviceID` / `MachineID` / `PlatformCode` / 系统信息）。
+    let facts = Arc::new(facts);
 
     // 监听任务：**循环 accept**，直到拿到真正的回调凭据、超时或被取消。
     //
@@ -1208,7 +1386,7 @@ pub async fn login_start_for(variant: TraeVariant) -> Result<Value, String> {
             //
             // 代价是浏览器多等一次 ExchangeToken 往返（通常 1~2 秒）：
             // 换来的是「页面说的结果 == 实际结果」。
-            match perform_login(view.variant, &callback, &view.pkce_verifier, &identity).await {
+            match perform_login(view.variant, &callback, &view.pkce_verifier, &facts).await {
                 Ok(account_view) => {
                     let page = success_page(&account_view, view.variant);
                     // 先落终态再写浏览器页：应用侧的轮询结果不该被「写浏览器响应」这一步拖住
@@ -1328,13 +1506,40 @@ fn build_response(content_type: &str, body: &str, method: &str) -> String {
     )
 }
 
-/// 成功结果页：账号昵称 + 落库区域。
+/// 应用展示名（三层命名里的「**展示名**」层：带空格的 `Buddy Switch`）。
+///
+/// ⚠️ 本仓**刻意不做跨语言共享常量**，因此这个字面量在另外两处也各有一份载体，
+/// 三处必须同值：
+/// `src-tauri/src/tray.rs` 的 `DEFAULT_TOOLTIP`、
+/// `src/locales/domains/shell.zh.ts` / `shell.en.ts` 的 `app.name`。
+/// 按 i18n 约定它是**产品名，不译**。
+const APP_DISPLAY_NAME: &str = "Buddy Switch";
+
+/// 结果页里的产品名：**Trae 模块整体**（含 TraeWork 与 Trae 两条产品线）。
+///
+/// 与 `TraeVariant::display_name()`（程序位名：`Trae Work` / `Trae`）不同 ——
+/// 本页要说的是「账号进了哪个产品的库」，而两条产品线**共用同一本国内库**。
+const TRAE_PRODUCT_NAME: &str = "Trae";
+
+/// 成功结果页：账号昵称 + 落库位置（应用 → 产品 → 区域）。
 ///
 /// ## 为什么写「区域」而不是 `variant.display_name()`
 ///
 /// 持久化轴是**区域**（`TraeWork` 与 `Trae` 共用国内库）。页面说「账号已添加到哪」，
 /// 就必须按**账号库**那一轴说：写成程序名会出现「已添加到 Trae Work」，
 /// 而用户在 Trae 分区里也看得到这个账号（本来就是同一本库）——用户会以为提示在骗人。
+///
+/// ## 为什么还要带上应用名与产品名（2026-09-24 用户报障后补）
+///
+/// 这一页是**浏览器里的页**，脱离了应用上下文。只写「国内版」有两个歧义：
+///
+/// - 没说**是哪个应用**——本应用的 WorkBuddy 分区也有一个「国内版」；
+/// - 没说**是哪个产品**——本应用同时管 WorkBuddy 与 Trae 两族账号。
+///
+/// 用户的原话是「这里显示不对」（截图里圈着「国内版」）⇒ 页面必须自证身份：
+/// 「账号已添加到 Buddy Switch 的 Trae（国内版）账号库」。
+/// 三段的顺序刻意是**由外到内**（应用 → 产品 → 区域），与用户在界面上选东西的
+/// 顺序一致（先选应用分区，再选区域）。
 fn success_page(account_view: &Value, variant: TraeVariant) -> String {
     // 昵称可能为空（上游没给）；退回 userId 与前端 `result.name || result.userId` 同款，
     // 两处显示同一个名字，用户才不会怀疑「加错账号了」。
@@ -1352,7 +1557,8 @@ fn success_page(account_view: &Value, variant: TraeVariant) -> String {
         &[
             format!("账号 [{name}] 登录成功"),
             format!(
-                "账号已添加到「{}」账号库，可关闭此页面返回应用。",
+                "账号已添加到 {APP_DISPLAY_NAME} 的 {TRAE_PRODUCT_NAME}（{}）账号库，\
+                 可关闭此页面返回应用。",
                 variant.region().display_name()
             ),
         ],
@@ -1370,7 +1576,7 @@ async fn perform_login(
     variant: TraeVariant,
     callback: &CallbackInfo,
     pkce_verifier: &str,
-    identity: &DeviceIdentity,
+    facts: &ClientFacts,
 ) -> Result<Value, String> {
     let (jwt, refresh_token) = if let Some(auth_code) = callback.auth_code.as_deref() {
         let (host, used_fallback) = resolve_exchange_host(callback.host.as_deref(), variant);
@@ -1379,14 +1585,17 @@ async fn perform_login(
             store::append_log(
                 &crate::modules::trae::paths::checkin_log_file_for(variant),
                 &format!(
-                    "OAuth 回调未回传 host，回落【{}】的 icube_base（{host}）",
+                    // 文案必须跟着 [`resolve_exchange_host`] 的回落值走：它已从
+                    // `icube_base` 改为 `account_base`（真机客户端打的就是后者）。
+                    // 留旧词会让排障的人去查一台根本没被访问的主机。
+                    "OAuth 回调未回传 host，回落【{}】的 account_base（{host}）",
                     variant.display_name()
                 ),
             );
         }
-        // AuthCode 路径**只接受 `&DeviceIdentity`**（结构上没有私钥字段 ⇒ 类型层面
+        // AuthCode 路径**只接受 `&ClientFacts`**（其 `identity` 没有私钥字段 ⇒ 类型层面
         // 不可能在这条路径上签名），且这里**不发 DeviceProof**（见模块头红线）。
-        let exchanged = exchange_auth_code(variant, &host, auth_code, pkce_verifier, identity).await?;
+        let exchanged = exchange_auth_code(variant, &host, auth_code, pkce_verifier, facts).await?;
         (exchanged.jwt, exchanged.refresh_token)
     } else if let Some(refresh_token) = callback.refresh_token.as_deref() {
         // 兼容路径（回调直接给 refreshToken）：此刻**还没有**账号绑定 ——
@@ -1420,7 +1629,7 @@ async fn perform_login(
         callback.display_name.clone(),
         // 登录时实际使用的那台设备（授权 URL 的 `device_id` / `DeviceInfo.DeviceID` /
         // `x-device-id` 三方同源的那个值）⇒ 落成账号绑定，续期复用它签名。
-        Some(identity.device_id.as_str()),
+        Some(facts.identity.device_id.as_str()),
     )?;
     let uid = account::resolve_user_id(&raw);
     // jwt 已经写进 `raw.jwt`（落盘源就是它），这里的解析只用于日志里的到期时间。
@@ -1560,6 +1769,31 @@ mod tests {
         }
     }
 
+    /// 造一份「客户端侧事实」（合成身份 + **固定**的安装元数据与系统信息）。
+    ///
+    /// ★ 刻意用固定值、不读本机：本组用例要断言的是「授权 URL 与兑换请求体**同源**」，
+    /// 而不是「本机现在是什么」。读本机会让用例随机器漂，也无法钉住取值来源。
+    /// 固定值逐字取自 2026-09-24 真机抓到的客户端原文（`TRAE SOLO CN`）。
+    fn synthetic_facts(identity: DeviceIdentity) -> ClientFacts {
+        ClientFacts {
+            identity,
+            meta: ClientInstallMeta {
+                app_version: "0.1.69".into(),
+                build_version: "2.3.87413".into(),
+                channel: "stable".into(),
+            },
+            system: SystemProfile {
+                // 真机是 `Jackey的电脑`；本实现留空（见 `platform::system_profile`）。
+                device_name: String::new(),
+                device_model: "System Product Name".into(),
+                device_manufacturer: "ASUS".into(),
+                cpu_brand: "Intel(R) Core(TM) i9-14900K".into(),
+                os_name: "windows".into(),
+                os_version: "Windows 11 Pro".into(),
+            },
+        }
+    }
+
     /// 造一个真实形态的 Trae JWT。
     fn make_jwt(user_id: &str) -> String {
         let payload = serde_json::json!({
@@ -1675,7 +1909,7 @@ mod tests {
     #[test]
     fn authorize_url_carries_all_native_ide_params() {
         let identity = identity_with_device_id("dev");
-        let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows-PC".into());
+        let facts = synthetic_facts(identity.clone());
 
         // (变体, auth_from, client_id, 是否带 hide_saas_login)
         let cases: [(TraeVariant, &str, &str, bool); 3] = [
@@ -1687,7 +1921,7 @@ mod tests {
         ];
 
         for (variant, auth_from, client_id, hide_saas) in cases {
-            let url = build_authorize_url(variant, &identity, "mach", 12345, "trace-1", "challenge-1");
+            let url = build_authorize_url(variant, &facts, 12345, "trace-1", "challenge-1");
             assert!(
                 url.starts_with(&format!(
                     "{}{AUTHORIZE_PATH}",
@@ -1698,25 +1932,30 @@ mod tests {
             let query = url.split_once('?').expect("授权 URL 必须带查询串").1;
             let params = parse_query(query);
 
+            // ★ 这些「固定值」全部来自 `synthetic_facts` 注入的**客户端事实**，
+            // 不再是散落的常量 —— 断言因此同时钉住了「URL 取值来自哪一份事实」。
             let expected: [(&str, &str); 22] = [
                 ("login_version", "1"),
                 ("auth_from", auth_from),
                 ("login_channel", "native_ide"),
-                ("plugin_version", "2.3.83560"),
+                ("plugin_version", "2.3.87413"),
                 ("auth_type", "local"),
                 ("client_id", client_id),
                 ("redirect", "0"),
                 ("login_trace_id", "trace-1"),
                 ("auth_callback_url", "http://127.0.0.1:12345/authorize"),
-                ("machine_id", "mach"),
+                // ★ `machine_id` 必须**逐字**等于设备身份里的 `telemetry.machineId`
+                // （合成身份是 `mach-1`），而不是任何自造值 —— 改造前这里放的是
+                // `oauth_device.json` 里那个自造值，上游因此回 20403。
+                ("machine_id", "mach-1"),
                 ("device_id", "dev"),
                 ("x_device_id", "dev"),
-                ("x_machine_id", "mach"),
-                ("x_device_brand", hostname.as_str()),
+                ("x_machine_id", "mach-1"),
+                ("x_device_brand", "System Product Name"),
                 ("x_device_type", "windows"),
-                ("x_os_version", "Windows"),
+                ("x_os_version", "Windows 11 Pro"),
                 ("x_env", ""),
-                ("x_app_version", "3.3.100"),
+                ("x_app_version", "0.1.69"),
                 ("x_app_type", "stable"),
                 ("code_challenge", "challenge-1"),
                 ("code_challenge_method", "S256"),
@@ -1773,8 +2012,7 @@ mod tests {
         for variant in [TraeVariant::TraeWork, TraeVariant::Trae, TraeVariant::Global] {
             let url = build_authorize_url(
                 variant,
-                &synthetic_identity(),
-                "m",
+                &synthetic_facts(synthetic_identity()),
                 1,
                 "t",
                 "c",
@@ -1799,7 +2037,7 @@ mod tests {
     #[test]
     fn authorize_url_splits_by_the_right_axis() {
         let url_of = |variant| {
-            build_authorize_url(variant, &synthetic_identity(), "m", 1, "t", "c")
+            build_authorize_url(variant, &synthetic_facts(synthetic_identity()), 1, "t", "c")
         };
         let key_of = |variant| {
             let url = url_of(variant);
@@ -1832,8 +2070,7 @@ mod tests {
         // 构造与解析必须共用同一个路径常量，否则浏览器跳回来接不住。
         let url = build_authorize_url(
             TraeVariant::TraeWork,
-            &synthetic_identity(),
-            "m",
+            &synthetic_facts(synthetic_identity()),
             1,
             "t",
             "c",
@@ -1865,16 +2102,14 @@ mod tests {
     fn 授权页域随区域分家() {
         let work = build_authorize_url(
             TraeVariant::TraeWork,
-            &synthetic_identity(),
-            "m",
+            &synthetic_facts(synthetic_identity()),
             1,
             "t",
             "c",
         );
         let global = build_authorize_url(
             TraeVariant::Global,
-            &synthetic_identity(),
-            "m",
+            &synthetic_facts(synthetic_identity()),
             1,
             "t",
             "c",
@@ -1924,8 +2159,7 @@ mod tests {
         let identity = identity_with_device_id("2292929806738024");
         let url = build_authorize_url(
             TraeVariant::TraeWork,
-            &identity,
-            "machine-xyz",
+            &synthetic_facts(identity.clone()),
             17388,
             "trace-1",
             "chal-1",
@@ -1942,10 +2176,14 @@ mod tests {
             Some(identity.device_id.as_str()),
             "x_device_id 与 device_id 必须是同一个值"
         );
-        // `machine_id` 是另一条身份（本机自造），**不等于** device_id 才对。
+        // `machine_id` 是另一条身份：必须取自设备身份里的 `telemetry.machineId`
+        // （合成身份 = `mach-1`）—— **不是** `oauth_device.json` 里那个自造值。
+        // 改造前这里放的是自造值，于是与请求体的 `DeviceInfo.MachineID` 不一致，
+        // 上游回 `20403/040036 Token device not match`。
         assert_eq!(
             params.get("machine_id").map(String::as_str),
-            Some("machine-xyz")
+            Some(identity.machine_id.as_str()),
+            "授权 URL 的 machine_id 必须与设备身份同源（自造值 ⇒ 必然 20403）"
         );
         assert_ne!(
             params.get("machine_id"),
@@ -1954,6 +2192,66 @@ mod tests {
         );
         // 说明：源码级「不存在自造 device_id 的调用路径」由 `cargo test` 之外的
         // `grep` 门禁核对（自引用断言写不出来——测试源码本身就会命中关键字）。
+    }
+
+    /// ★★ 本轮缺陷的**直接护栏**：授权 URL 与兑换请求体里，同一件事实只能有一个值。
+    ///
+    /// ## 现场（2026-09-24 用户报障）
+    ///
+    /// 上游回 `20403/040036: Token device not match`。根因是下面每一对都各取了一份来源：
+    ///
+    /// | 同源对 | 改造前授权 URL | 改造前请求体 |
+    /// |:--|:--|:--|
+    /// | 机器标识 | 自造值（`oauth_device.json`） | `telemetry.machineId` |
+    /// | 应用版本 | IDE 线常量 `3.3.100` | 安装目录版本 `1.107.1` |
+    /// | 设备型号 | `COMPUTERNAME` | 空串 |
+    /// | 系统版本 | 写死 `Windows` | 空串 |
+    ///
+    /// 真机客户端的做法是「两处取同一个对象」—— 本用例把这条不变量钉死：
+    /// **任一对改回「两处各取一份」都会立刻变红**，失败信息直接给出两侧的值。
+    #[test]
+    fn authorize_url_and_exchange_body_share_the_same_device_facts() {
+        for variant in [TraeVariant::TraeWork, TraeVariant::Trae, TraeVariant::Global] {
+            let facts = synthetic_facts(identity_with_device_id("dev-same-source"));
+            let url = build_authorize_url(variant, &facts, 17388, "trace-1", "chal-1");
+            let params = parse_query(url.split_once('?').expect("授权 URL 必须带查询串").1);
+            let body = build_exchange_payload("en1oxy7wnw8j9n", "ac-1", "verifier-1", &facts);
+            let device = body.get("DeviceInfo").expect("必须有 DeviceInfo").clone();
+
+            let param = |key: &str| {
+                params
+                    .get(key)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| panic!("{variant:?} 的授权 URL 缺 {key}: {url}"))
+                    .to_string()
+            };
+            let field = |key: &str| {
+                device
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("{variant:?} 的 DeviceInfo 缺 {key}: {device:?}"))
+                    .to_string()
+            };
+            let top = |key: &str| {
+                body.get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("{variant:?} 的请求体缺 {key}"))
+                    .to_string()
+            };
+
+            // ① 机器标识：`machine_id` / `x_machine_id` ↔ `DeviceInfo.MachineID`
+            assert_eq!(param("machine_id"), field("MachineID"), "{variant:?} 的 machine_id 与 MachineID 不同源");
+            assert_eq!(param("x_machine_id"), field("MachineID"), "{variant:?} 的 x_machine_id 与 MachineID 不同源");
+            // ② 应用版本：`x_app_version` ↔ `ClientVersion` ↔ `IDEVersion`
+            assert_eq!(param("x_app_version"), field("ClientVersion"), "{variant:?} 的 x_app_version 与 ClientVersion 不同源");
+            assert_eq!(param("x_app_version"), top("IDEVersion"), "{variant:?} 的 x_app_version 与 IDEVersion 不同源");
+            // ③ 设备型号：`x_device_brand` ↔ `DeviceInfo.DeviceModel`
+            assert_eq!(param("x_device_brand"), field("DeviceModel"), "{variant:?} 的 x_device_brand 与 DeviceModel 不同源");
+            // ④ 系统版本：`x_os_version` ↔ `DeviceInfo.OSVersion`
+            assert_eq!(param("x_os_version"), field("OSVersion"), "{variant:?} 的 x_os_version 与 OSVersion 不同源");
+            // ⑤ 操作系统名：`x_device_type` ↔ `DeviceInfo.OSInfo`
+            assert_eq!(param("x_device_type"), field("OSInfo"), "{variant:?} 的 x_device_type 与 OSInfo 不同源");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2102,12 +2400,15 @@ mod tests {
     #[test]
     fn build_exchange_payload_has_deviceinfo_and_no_deviceproof() {
         let identity = synthetic_identity();
-        let payload = build_exchange_payload("ono9krqynydwx5", "ac-1", "verifier-1", &identity);
+        let facts = synthetic_facts(identity.clone());
+        let payload = build_exchange_payload("ono9krqynydwx5", "ac-1", "verifier-1", &facts);
 
         let device_info = payload.get("DeviceInfo").expect("必须有 DeviceInfo");
+        // ★ `PlatformCode` 按**产品线**派生：合成身份是 TraeWork ⇒ SOLO 线 ⇒ `SOLO_PC`。
+        // 反例就是本轮修掉的真实缺陷（写死 IDE_PC ⇒ 上游 20403）。
         assert_eq!(
             device_info.get("PlatformCode").and_then(|v| v.as_str()),
-            Some("IDE_PC")
+            Some("SOLO_PC")
         );
         assert_eq!(
             device_info.get("DeviceType").and_then(|v| v.as_str()),
@@ -2126,13 +2427,15 @@ mod tests {
             device_info.get("DevicePublicKey").and_then(|v| v.as_str()),
             Some(identity.public_key_pem.as_str())
         );
+        // ★ 应用版本三处同源：取自**安装包版本**（`manifest.json` 的 `appVersion`），
+        // **不是**安装目录 `resources/app/package.json` 的内核版本（本机 1.107.1）。
         assert_eq!(
             device_info.get("ClientVersion").and_then(|v| v.as_str()),
-            Some("1.107.1")
+            Some("0.1.69")
         );
         assert_eq!(
             payload.get("IDEVersion").and_then(|v| v.as_str()),
-            Some("1.107.1")
+            Some("0.1.69")
         );
         assert_eq!(payload.get("AuthCode").and_then(|v| v.as_str()), Some("ac-1"));
         assert_eq!(
@@ -2156,6 +2459,7 @@ mod tests {
                 "ac-1",
                 "verifier-1",
                 "dev-1",
+                "SOLO_PC",
                 code_key,
             );
             let map = payload.as_object().unwrap();
@@ -2164,9 +2468,10 @@ mod tests {
             assert!(map.contains_key(code_key), "缺少 {code_key}");
             assert!(map.contains_key("CodeVerifier"));
             assert!(map.contains_key("DeviceID"));
+            // `PlatformCode` 由调用方按产品线传入（**不再**是写死的 IDE 线常量）。
             assert_eq!(
                 map.get("PlatformCode").and_then(|v| v.as_str()),
-                Some("IDE_PC")
+                Some("SOLO_PC")
             );
             assert!(payload.get("DeviceProof").is_none());
             assert!(payload.get("DeviceInfo").is_none());
@@ -2174,8 +2479,8 @@ mod tests {
         }
     }
 
-    /// ★ 结构护栏：`exchange_auth_code` 只接受 `&DeviceIdentity`（**没有私钥字段**），
-    /// 因此「AuthCode 路径误用私钥」是编译错误而不是评审项。
+    /// ★ 结构护栏：`exchange_auth_code` 只接受 `&ClientFacts`（其 `identity` 字段
+    /// **没有私钥字段**），因此「AuthCode 路径误用私钥」是编译错误而不是评审项。
     ///
     /// 这条注释即断言：若有人把签名改成接受 `&DeviceCredential`，本文件将无法编译
     /// （`synthetic_identity()` 只造得出 `DeviceIdentity`）。
@@ -2189,7 +2494,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_exchange_host_falls_back_to_variant_icube_base() {
+    fn resolve_exchange_host_falls_back_to_variant_account_base() {
         // 正常：原样使用（只去尾斜杠）。
         let (host, used) = resolve_exchange_host(Some("https://api.trae.cn"), TraeVariant::TraeWork);
         assert_eq!(host, "https://api.trae.cn");
@@ -2197,12 +2502,18 @@ mod tests {
         let (host, used) = resolve_exchange_host(Some("  https://api.trae.cn/  "), TraeVariant::TraeWork);
         assert_eq!(host, "https://api.trae.cn");
         assert!(!used);
-        // 缺失 / 空串：回落该变体的 icube_base。
+        // 缺失 / 空串：回落该变体的 **account_base**（真机客户端兑换打的就是它，
+        // 见 `resolve_exchange_host` 的说明）。曾经回落成 `icube_base`（另一台主机）。
         for missing in [None, Some(""), Some("   ")] {
             let (host, used) = resolve_exchange_host(missing, TraeVariant::Global);
-            assert_eq!(host, "https://icube-normal.trae.ai");
+            assert_eq!(host, "https://grow-normal.trae.ai");
             assert!(used, "回落必须被标记，以便留痕");
         }
+        // 阳性对照：CN 侧的 account_base 与 icube_base **不是**同一个值，
+        // 否则本用例根本分不出「回落到哪一台主机」。
+        let (cn, _) = resolve_exchange_host(None, TraeVariant::TraeWork);
+        assert_eq!(cn, "https://api.trae.cn");
+        assert_ne!(cn, endpoints_for(TraeVariant::TraeWork).icube_base);
     }
 
     // -----------------------------------------------------------------------
@@ -2854,12 +3165,13 @@ mod tests {
         let (port, captured) = mock_upstream(1, body).await;
 
         let identity = synthetic_identity();
+        let facts = synthetic_facts(identity.clone());
         let exchanged = exchange_auth_code(
             TraeVariant::TraeWork,
             &format!("http://127.0.0.1:{port}"),
             "ac-1",
             "verifier-1",
-            &identity,
+            &facts,
         )
         .await
         .expect("主变体应交换成功");
@@ -3074,17 +3386,31 @@ mod tests {
         }
     }
 
-    /// ★ 成功页取名与落库区域：昵称 → userId → 占位，且区域按**持久化轴**取。
+    /// ★ 成功页取名与落库位置：昵称 → userId → 占位；
+    /// 落库位置按**应用 → 产品 → 区域**三段写全，区域按**持久化轴**取。
     ///
     /// 纯函数，不碰端口与 home（避免 lib 单测并行时的进程级环境串味）。
     #[test]
-    fn success_page_prefers_name_then_user_id_and_uses_persistence_region() {        let named = success_page(
+    fn success_page_prefers_name_then_user_id_and_uses_persistence_region() {
+        let named = success_page(
             &json!({"name": "小明", "userId": "u-1"}),
             TraeVariant::TraeWork,
         );
         assert!(named.contains("账号 [小明] 登录成功"), "{named}");
-        // TraeWork 的持久化区域是**国内版**（与 Trae 共用一本库）。
-        assert!(named.contains("国内版"), "{named}");
+        // ★ 整句逐字对拍：应用名 + 产品名 + 区域，缺一段都算「页面没说清账号进了哪」。
+        // 现场（2026-09-24 用户报障）：只写「国内版」时用户读不出是哪个应用的哪个产品
+        // —— 本应用的 WorkBuddy 分区同样有「国内版」。
+        assert!(
+            named.contains("账号已添加到 Buddy Switch 的 Trae（国内版）账号库，可关闭此页面返回应用。"),
+            "成功页必须写全「应用 → 产品 → 区域」: {named}"
+        );
+        // ★ 反面：**不得**出现程序位名（`Trae Work` / `Trae CN`）。
+        // 持久化轴是区域，两条产品线共用一本国内库 ⇒ 写程序名会让另一条线的用户
+        // 以为提示在骗人（见 `success_page` 的说明）。
+        assert!(
+            !named.contains("Trae Work") && !named.contains("Trae CN"),
+            "成功页出现了程序位名，会让共用同一本库的另一条线用户误判: {named}"
+        );
 
         // 上游没给昵称时退回 userId —— 与前端 `result.name || result.userId` 同款。
         let unnamed = success_page(&json!({"name": "", "userId": "u-1"}), TraeVariant::TraeWork);
@@ -3092,7 +3418,11 @@ mod tests {
 
         let empty = success_page(&json!({}), TraeVariant::Global);
         assert!(empty.contains("未知账号"), "{empty}");
-        assert!(empty.contains("国际版"), "{empty}");
+        // 区域随变体分家：国际版必须是「国际版」，且同样写全三段。
+        assert!(
+            empty.contains("账号已添加到 Buddy Switch 的 Trae（国际版）账号库"),
+            "{empty}"
+        );
     }
 
     /// ★★ `Content-Length` 必须是**字节数**，否则浏览器按声明长度**截断**结果页。

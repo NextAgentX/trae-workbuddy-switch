@@ -46,12 +46,17 @@ pub const DEFAULT_HTTP_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS 
 /// 覆盖用户主目录的环境变量名（仅用于可移植部署 / 测试隔离）。
 pub const BUDDY_SWITCH_HOME_ENV: &str = "BUDDY_SWITCH_HOME";
 
-/// 旧版环境变量名（`wb-switch` 时期）。**仅为兼容保留**：已设置它的用户升级后
-/// 不会被静默忽略。新变量名优先级更高，两者同时设置时以新变量为准。
-const LEGACY_HOME_ENV: &str = "WB_SWITCH_HOME";
-
-/// 旧版数据目录名（`wb-switch` 时期）。**仅为兼容保留**：见 [`store_dir`]。
-const LEGACY_STORE_DIR_NAME: &str = ".wb-switch";
+// 这里曾有两个「`wb-switch` 时期」的兼容项，已于 2026-09-23 删除：
+//   - 环境变量 `WB_SWITCH_HOME`
+//   - 数据目录回落 `~/.wb-switch`
+//
+// **不要重新加回**：`~/.wb-switch` 是另一个独立项目（`changexbc/workbuddy-switch`）的
+// **固定数据目录**（对方 `wb-switch-core` 里硬编码 `home_dir().join(".wb-switch")`，
+// 无环境变量、无回落）。两边有 12 个同名文件（`accounts.json`、`workbuddy_exe.json`、
+// `credit_usage_snapshots.json`、`official_usage_cache.json`、`backups/` 等），而
+// `workbuddy_exe.json` 的 schema 互不兼容（本项目的 `{"exe":...}` 对方读不出，反之亦然）。
+// 一旦回落，本项目就会接管对方的活数据目录，并用自己的 schema 覆盖对方文件。
+// 本项目与对方各自独立、不得相互替换，因此只认 [`store_dir`] 里的 `~/.buddy-switch`。
 
 /// 用户主目录。
 ///
@@ -120,10 +125,7 @@ static HOME_OVERRIDE_WARNED: Once = Once::new();
 /// - 其他（相对路径 / 不存在 / 是普通文件）→ `None`，并在本进程内**最多**打印
 ///   一次 `stderr` 警告后回落真实 home。
 fn home_dir_override() -> Option<PathBuf> {
-    // 新变量名优先；未设置时回退旧变量名（兼容既有配置）。
-    let value = std::env::var(BUDDY_SWITCH_HOME_ENV)
-        .or_else(|_| std::env::var(LEGACY_HOME_ENV))
-        .ok()?;
+    let value = std::env::var(BUDDY_SWITCH_HOME_ENV).ok()?;
     if value.trim().is_empty() {
         // 未设置或空白：保持改造前的回落行为，绝不产生任何副作用。
         return None;
@@ -168,7 +170,7 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 把 home 覆盖指向某个目录，并在 drop 时**恢复原值**（两个变量名都恢复）。
+/// 把 home 覆盖指向某个目录，并在 drop 时**恢复原值**。
 ///
 /// 只改不还原是这里最容易犯的错：`set_var` 到临时目录、结束时只删目录不删变量，
 /// 于是变量继续指向一个**已不存在的目录**，后续所有测试都吃一次
@@ -178,7 +180,6 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 pub(crate) struct HomeOverrideGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
     previous_new: Option<std::ffi::OsString>,
-    previous_legacy: Option<std::ffi::OsString>,
 }
 
 #[cfg(test)]
@@ -188,15 +189,10 @@ impl HomeOverrideGuard {
     pub(crate) fn set(dir: &std::path::Path) -> Self {
         let lock = env_lock();
         let previous_new = std::env::var_os(BUDDY_SWITCH_HOME_ENV);
-        let previous_legacy = std::env::var_os(LEGACY_HOME_ENV);
-        // 旧变量名会让 `home_dir_override` 在其被忽略时顶上来，一并清掉，
-        // 保证「设置后一定是这个目录」。
-        std::env::remove_var(LEGACY_HOME_ENV);
         std::env::set_var(BUDDY_SWITCH_HOME_ENV, dir);
         Self {
             _lock: lock,
             previous_new,
-            previous_legacy,
         }
     }
 }
@@ -208,26 +204,18 @@ impl Drop for HomeOverrideGuard {
             Some(value) => std::env::set_var(BUDDY_SWITCH_HOME_ENV, value),
             None => std::env::remove_var(BUDDY_SWITCH_HOME_ENV),
         }
-        match self.previous_legacy.take() {
-            Some(value) => std::env::set_var(LEGACY_HOME_ENV, value),
-            None => std::env::remove_var(LEGACY_HOME_ENV),
-        }
     }
 }
 
+/// 本项目的数据目录：**恒定** `~/.buddy-switch`。
+///
+/// 这里**刻意不做任何回落**（包括曾经的 `~/.wb-switch`）：那个目录属于另一个独立项目
+/// `changexbc/workbuddy-switch`，对方在其 `wb-switch-core` 里硬编码
+/// `home_dir().join(".wb-switch")`。两边有 12 个同名文件，且 `workbuddy_exe.json`
+/// 的 schema 互不兼容 —— 一旦回落，本项目会接管对方的活数据目录并覆盖对方文件。
+/// 本项目与对方各自独立、不得相互替换，故只认 `~/.buddy-switch`。
 pub fn store_dir() -> PathBuf {
-    let home = home_dir();
-    let dir = home.join(".buddy-switch");
-    if dir.exists() {
-        return dir;
-    }
-    // 兼容旧版目录：新目录尚不存在、而旧版目录存在时继续沿用旧目录。
-    // 否则重命名会让既有账号、密钥、缓存「凭空消失」（文件仍在，但程序读新目录）。
-    let legacy = home.join(LEGACY_STORE_DIR_NAME);
-    if legacy.exists() {
-        return legacy;
-    }
-    dir
+    home_dir().join(".buddy-switch")
 }
 
 pub fn accounts_file() -> PathBuf {
@@ -1481,11 +1469,12 @@ mod tests {
         assert_ne!(OverrideReject::NotAbsolute, OverrideReject::NotDir);
     }
 
-    /// 旧数据目录 `.wb-switch` 的兼容回落必须成立（品牌化重命名的保命绳）。
+    /// `store_dir()` **恒定**返回 `~/.buddy-switch`：即使 `~/.wb-switch` 存在
+    /// （那是另一个独立项目 `changexbc/workbuddy-switch` 的固定数据目录），也**绝不**被接管。
     ///
-    /// 场景：老用户升级后 `~/.buddy-switch` 尚不存在，而 `~/.wb-switch` 里有账号、
-    /// 密钥与缓存。此时 `store_dir()` **必须**继续返回旧目录——否则程序会去读一个
-    /// 空的新目录，表现为「升级后账号全部消失」（文件其实还在，只是读错了地方）。
+    /// 这条护栏防止两项目相互替换：双方有 12 个同名文件（`accounts.json`、
+    /// `workbuddy_exe.json`、`credit_usage_snapshots.json`、`backups/` 等），
+    /// 而 `workbuddy_exe.json` 的 schema 互不兼容 —— 一旦接管就会互相覆盖。
     ///
     /// 用隔离的临时 home 验证，绝不触碰真实 `~/.buddy-switch` / `~/.wb-switch`。
     ///
@@ -1494,63 +1483,70 @@ mod tests {
     /// 重复取用会**自死锁**，且因为测试线程互相等待，会连带把其他同样需要该锁的
     /// 测试（`trae::paths`、`trae::logs`）一起拖住，表现为整个测试进程挂死。
     #[test]
-    fn store_dir_falls_back_to_legacy_when_new_absent() {
+    fn store_dir_never_adopts_foreign_wb_switch_dir() {
         let home = std::env::temp_dir().join(format!(
-            "buddy-switch-legacy-store-{}",
+            "buddy-switch-store-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let new_dir = home.join(".buddy-switch");
-        let legacy_dir = home.join(".wb-switch");
+        let foreign_dir = home.join(".wb-switch");
         std::fs::create_dir_all(&home).expect("create isolated home");
 
         // 取锁 + 指向隔离 home，均由本 guard 负责（持锁至 drop）。
         let _guard = HomeOverrideGuard::set(&home);
 
-        // 1) 两个目录都不存在 → 创建并返回新目录（全新安装）。
-        let fresh = store_dir();
-        assert_eq!(fresh, new_dir, "全新安装应使用新目录");
+        // 1) 两个目录都不存在 → 新目录（全新安装）。
+        assert_eq!(store_dir(), new_dir, "全新安装应使用 ~/.buddy-switch");
 
-        // 2) 仅旧目录存在 → 落到旧目录，既有的账号数据才不会「消失」。
-        std::fs::create_dir_all(&legacy_dir).expect("create legacy dir");
+        // 2) 只有「对方」目录存在 → 仍然用新目录，绝不接管。
+        //    这正是最危险的场景：用户已装对方、首次运行本项目。
+        std::fs::create_dir_all(&foreign_dir).expect("create foreign dir");
         assert_eq!(
             store_dir(),
-            legacy_dir,
-            "新目录不存在而旧目录存在时必须沿用旧目录"
+            new_dir,
+            "~/.wb-switch 属于另一个独立项目，绝不可被接管"
         );
 
-        // 3) 新目录也存在 → 新目录优先（用户已迁移完成的场景）。
+        // 3) 两目录并存 → 同样只用新目录。
         std::fs::create_dir_all(&new_dir).expect("create new dir");
-        assert_eq!(store_dir(), new_dir, "两目录并存时新目录优先");
+        assert_eq!(store_dir(), new_dir, "两目录并存时仍只用 ~/.buddy-switch");
 
         std::fs::remove_dir_all(&home).expect("cleanup isolated home");
     }
 
-    /// `BUDDY_SWITCH_HOME` 覆盖优先级：新变量名 > 旧变量名 `WB_SWITCH_HOME`。
+    /// 旧环境变量 `WB_SWITCH_HOME` 已**不再被识别**。
     ///
-    /// 两者同时设置时必须以新变量为准；只看旧变量会让已迁移的用户被指回旧路径。
+    /// 它曾用于指向旧数据目录 `~/.wb-switch`（另一个独立项目的数据目录）；
+    /// 继续认它等于让对方的数据目录被本项目接管。只有 `BUDDY_SWITCH_HOME` 生效。
     #[test]
-    fn buddy_switch_home_env_wins_over_legacy_env() {
+    fn legacy_wb_switch_home_env_is_ignored() {
         let _lock = env_lock();
         let base = std::env::temp_dir().join(format!(
-            "buddy-switch-home-priority-{}",
+            "buddy-switch-home-ignored-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let new_home = base.join("new-home");
         let legacy_home = base.join("legacy-home");
         std::fs::create_dir_all(&new_home).expect("create new home");
-        std::fs::create_dir_all(&legacy_home).expect("create legacy home");
+        let foreign_store = legacy_home.join(".wb-switch");
+        std::fs::create_dir_all(&foreign_store).expect("create foreign store");
 
-        // 先只设旧变量 → 生效（`HomeOverrideGuard::set` 只写新变量名，故这里手动
-        // 设旧变量名，验证兼容回退链本身仍然工作）。
-        let previous_legacy = std::env::var_os(LEGACY_HOME_ENV);
         let previous_new = std::env::var_os(BUDDY_SWITCH_HOME_ENV);
-        std::env::remove_var(BUDDY_SWITCH_HOME_ENV);
-        std::env::set_var(LEGACY_HOME_ENV, legacy_home.as_os_str());
-        assert_eq!(home_dir(), legacy_home, "仅旧变量设置时应生效");
+        let previous_legacy = std::env::var_os("WB_SWITCH_HOME");
 
-        // 两个都设 → 新变量优先
+        // 只设旧变量、且该目录下真的存在 `.wb-switch` → 仍必须被忽略。
+        std::env::remove_var(BUDDY_SWITCH_HOME_ENV);
+        std::env::set_var("WB_SWITCH_HOME", legacy_home.as_os_str());
+        assert_ne!(
+            store_dir(),
+            foreign_store,
+            "旧变量 WB_SWITCH_HOME 不得把本项目指向 ~/.wb-switch"
+        );
+
+        // 新变量生效。
         std::env::set_var(BUDDY_SWITCH_HOME_ENV, new_home.as_os_str());
-        assert_eq!(home_dir(), new_home, "新变量名必须优先于旧变量名");
+        assert_eq!(home_dir(), new_home, "BUDDY_SWITCH_HOME 必须生效");
+        assert_eq!(store_dir(), new_home.join(".buddy-switch"));
 
         // 还原（含 panic 时靠测试进程结束兜底，但不依赖它）。
         match previous_new {
@@ -1558,8 +1554,8 @@ mod tests {
             None => std::env::remove_var(BUDDY_SWITCH_HOME_ENV),
         }
         match previous_legacy {
-            Some(value) => std::env::set_var(LEGACY_HOME_ENV, value),
-            None => std::env::remove_var(LEGACY_HOME_ENV),
+            Some(value) => std::env::set_var("WB_SWITCH_HOME", value),
+            None => std::env::remove_var("WB_SWITCH_HOME"),
         }
 
         std::fs::remove_dir_all(&base).expect("cleanup");

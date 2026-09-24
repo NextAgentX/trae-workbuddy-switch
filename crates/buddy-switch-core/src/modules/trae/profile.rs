@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use crate::modules::trae::account;
 use crate::modules::trae::icube;
 use crate::modules::trae::jwt;
 use crate::modules::trae::paths;
@@ -332,12 +333,9 @@ pub fn import_local_login_for(variant: TraeVariant) -> Result<LocalLogin, String
     // 正是按 `fn *_dir_for` 找取值点）与后来的读者。
     let data_dir = icube::login_state_dir_for(variant)
         .or_else(|| platform::select_data_dir_for(variant))
-        .ok_or_else(|| {
-            format!(
-                "未找到【{}】的数据目录，请先启动一次该客户端并登录",
-                variant.display_name()
-            )
-        })?;
+        // 与 OAuth 侧**共用同一条**「为什么读不到」的解释（区分「没装」/「装了但从没启动过」）。
+        // 两个入口各拼一套说法，迟早会出现「一个说没装、另一个说没启动」的自相矛盾。
+        .ok_or_else(|| platform::data_dir_missing_reason(variant))?;
     local_login_from_dir(&data_dir, variant)
 }
 
@@ -933,6 +931,52 @@ pub fn set_current_account_for(variant: TraeVariant, user_id: &str) -> Result<()
         return Err("非法的账号 ID".into());
     }
     store::atomic_write_text(&current_account_file_for(variant), user_id)
+}
+
+/// 客户端**此刻实际登录**的账号 uid —— 读客户端 userData，**不读**本应用的记账文件。
+///
+/// ## 为什么必须有它（用户报障：「TraeWork 登录了还显示未登录」）
+///
+/// [`current_account_for`] 读的是 `current_account.txt`，那是**本应用自己的记账**，
+/// 全仓只有两条写入路径（[`switch_to_for`] 切换成功、[`save_current_login_for`] 保存登录态）。
+/// 于是凡登录动作不经过这两条路 —— 用户在客户端里自己登录、或在应用里点
+/// 「OAuth 网页登录」（`oauth::perform_login` **只落账号库**，不碰客户端）——
+/// 展示端就只能看到「未登录」，**哪怕客户端明明登着人**。
+///
+/// 真机现场（2026-09-24）：CN 客户端 `storage.json` 有 `iCubeAuthInfo://icube.cloudide`、
+/// `checkin_accounts.json` 里也有同一账号（JackDev），而 `profiles/current_account.txt`
+/// **不存在** —— 状态条因此报「未登录」。
+///
+/// ## 目录选择与**导入侧**同源
+///
+/// 走 [`icube::login_state_dir_for`]（「登录态在哪个候选目录里」），与
+/// [`import_local_login_for`] 同源。⚠️ **不是** [`snapshot_data_dir_for`]：那个是
+/// **写**侧来源（首个存在的候选），在「登录态不在首个候选里」的机器上会读空
+/// （本机就是：`TRAE SOLO CN` 有登录态）。
+///
+/// ## 只认 iCube 信封，**不走明文兜底**
+///
+/// [`local_login_from_dir`] 在「该目录没有信封**键**」时会去扫 `logs/` 里的明文 ——
+/// 那是**跨账号留存**的，正是 R6 收口要防的东西。用于**展示**会直接产生谎报：
+/// 客户端其实没登录，却因为上一账号的 token 还躺在日志里而被报成「已登录: 那个人」。
+/// 故本函数只读客户端自己写下的登录态副本（信封）。
+///
+/// ## 刻意**不判过期**
+///
+/// token 过期 ≠ 客户端没登录着这个人（客户端会自己续期；`expiredAt` 只影响**续期**路径）。
+/// 判过期会把「登录着、token 刚过期」错报成「未登录」—— 与本次要修的症状同类。
+/// 反例见 `overview_reports_the_client_login_even_without_a_bookkeeping_file` 的姊妹用例。
+///
+/// 读不到（没装 / 没启动过 / 没登录 / 信封解不开）一律 `None`，由调用方决定回落 ——
+/// 本函数**不报错**：状态条少一个账号，远好过整页报错。
+fn client_login_uid_for(variant: TraeVariant) -> Option<String> {
+    let dir = icube::login_state_dir_for(variant)?;
+    let info = icube::cloudide_auth_info_from_dir(&dir, variant).ok()?;
+    // `userId` 直接取（信封自己写的，比解 JWT 更直接）；缺失时才解 token ——
+    // 与 `icube_login_candidate_from_dir` 的回落链**同序**，两处不要各写一套。
+    info.user_id
+        .filter(|uid| !uid.is_empty())
+        .or_else(|| jwt::user_id_of(&jwt::authorization_header(&info.token)))
 }
 
 /// 人类可读的文件大小。
@@ -1767,10 +1811,42 @@ pub fn overview() -> Value {
 /// `platform::detect_data_dir_for`：后者今天是前者的薄封装、两者同值，
 /// 但一旦写侧的选择器策略调整（R1 之后只允许改这一个地方），直调会让本字段
 /// **悄悄停留在旧语义**，而注释还在声称「同源」。
+///
+/// ## `currentAccount` 与 `currentAccountName` 必须**同时**下发的理由
+///
+/// 前者是身份（uid），后者是给人看的名字（账号库 `name`），两者都源自
+/// **同一时刻的同一个 uid**。只发一个都不行：
+/// 只有 uid ⇒ 界面上「已登录」是一串 16 位数字；只有名字 ⇒ 前端无法判断
+/// 卡片上哪个账号是当前账号（相等比较必须比身份）。分两次请求各取一个则会出现
+/// 「名字已更新、身份还是旧的」这种半更新状态。
+///
+/// ## `currentAccount` 的取值来源：**客户端优先，本应用记账兜底**（★ 2026-09-24 改）
+///
+/// 曾经只读 [`current_account_for`]（`current_account.txt`）。那是**本应用自己的记账**，
+/// 只在「切换」与「保存登录态」两条路径上写 ⇒ 用户在客户端里自己登录、或走
+/// 「OAuth 网页登录」（只落账号库），状态条就**恒报「未登录」**。用户报障原文：
+/// 「TraeWork 登录了还显示未登录」。现在先问客户端（[`client_login_uid_for`]），
+/// 读不到才回落到记账文件 —— 回落的理由：客户端信封解不开/不存在时，
+/// 本应用记下的那个 uid 仍是「上一次确知的状态」，比凭空报「未登录」更有信息量。
+///
+/// ⚠️ 顺带修正一处**旧注释的过度承诺**：本字段曾经声称与 [`snapshot_data_dir_for`]
+/// 的目录「同源」，但它读的从来是 `profiles*/current_account.txt`，与客户端数据目录
+/// **没有任何关系**（`dataDir` 才是那个字段）。现已删掉该说法。
 pub fn overview_for(variant: TraeVariant) -> Value {
+    let current = client_login_uid_for(variant).or_else(|| current_account_for(variant));
+    // 「当前账号」是**两个事实**，刻意不合并成一个字段：
+    // `currentAccount` 是**身份**（uid，前端拿它做 `logins[x] === account.userId` 这类相等比较），
+    // `currentAccountName` 只是**展示名**（账号库里的 `name`；库里没有该 uid 时为 `null`，
+    // 由界面回落 uid —— 见 `account::display_name_for` 的说明）。
+    // 合并会两头都坏：前端拿名字比较会在**改名**后失配；后端若为「好看」把身份换成人名，
+    // 就等于拿展示值当身份。故两个都出，调用方各取所需。
+    let current_name = current
+        .as_deref()
+        .and_then(|user_id| account::display_name_for(variant, user_id));
     json!({
         "profiles": list_profiles_for(variant).iter().map(ProfileInfo::to_json).collect::<Vec<_>>(),
-        "currentAccount": current_account_for(variant),
+        "currentAccount": current,
+        "currentAccountName": current_name,
         "dataDir": snapshot_data_dir_for(variant).map(|dir| dir.to_string_lossy().to_string()),
         "clientRunning": platform::is_running_for(variant),
         "coreEntryCount": CORE_ENTRIES.len(),
@@ -2352,12 +2428,21 @@ mod tests {
     }
 
     /// `overview` 的每个字段都必须取自**传入变体**（不能只有槽位列表分家）。
+    ///
+    /// ## 为什么从 `HomeOverrideGuard` 换成 `TempEnv`（★ 2026-09-24）
+    ///
+    /// `currentAccount` 改为「客户端优先」之后，本用例会去读**客户端 userData**
+    /// （`platform::data_dir_base()` 在 Windows 上读 `APPDATA`）。只隔离
+    /// `BUDDY_SWITCH_HOME` 的旧写法于是会读到**真机**的 Trae 目录 ——
+    /// 真机上恰好登着账号时，`TraeWork` 那两条 `None` 断言就会红。
+    /// 这正是 [`crate::modules::trae::test_support`] 模块头第 3 条错法
+    /// （「只隔离其中一个变量」）的现场，故改用 `TempEnv`（两个变量一起隔离）。
+    ///
+    /// fixture 只铺 `iCubeAuthInfo://icube-dc:*` 设备凭证、**没有** cloudide 信封
+    /// ⇒ 客户端探测必然读空，本用例断言的就仍是「记账文件按变体分家」这一件事。
     #[test]
     fn overview_is_scoped_to_the_variant() {
-        let dir = std::env::temp_dir().join(format!("trae-overview-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let _guard = crate::modules::config::HomeOverrideGuard::set(&dir);
+        let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
 
         set_current_account_for(TraeVariant::Trae, "u-cn").unwrap();
         let cn_slot = paths::profiles_dir_for(TraeVariant::Trae).join("u-cn");
@@ -2388,9 +2473,91 @@ mod tests {
         );
     }
 
+    /// ★ 状态条的「已登录」必须来自**客户端**，而不是本应用的记账文件。
+    ///
+    /// ## 对应用户报障
+    ///
+    /// 「TraeWork 登录了还显示未登录」。真因：标记只读 `current_account.txt`，
+    /// 而它只在「切换」与「保存登录态」两条路径上写 —— 用户走「OAuth 网页登录」
+    /// （只落账号库）或在客户端里自己登录，标记就永远是「未登录」。
+    ///
+    /// ## 反例（改坏会红）
+    ///
+    /// 把 `overview_for` 的取值改回 `current_account_for(variant)` ⇒ 本用例第一段断言红。
+    ///
+    /// ## 为什么用「末位候选装着登录态」
+    ///
+    /// 与真机同形（首位 `TRAE SOLO CN`、登录态只在其一）。若实现退化成读
+    /// `snapshot_data_dir_for`（首个存在的候选），就会读到一个**没有信封**的目录 ⇒
+    /// 报「未登录」⇒ 本用例红。这正是「目录选择必须与导入侧同源」的护栏。
+    #[cfg(windows)]
+    #[test]
+    fn overview_reports_the_client_login_even_without_a_bookkeeping_file() {
+        let exp = chrono::Utc::now().timestamp() + 3600;
+        let env = crate::modules::trae::test_support::TempEnv::empty();
+        let variant = TraeVariant::TraeWork;
+        let count = platform::data_dir_names_for(variant).len();
+
+        // 全部候选都存在；**只有末位**装着登录态、且它最活跃。
+        let mut cells = vec![(true, false, false); count];
+        cells[count - 1] = (true, true, true);
+        let grid = icube::test_support::write_selection_grid(&env.appdata(), variant, &cells, exp);
+        let client_uid = grid.cells[count - 1].user_id.clone();
+
+        // 前置：**没有**记账文件（复现用户现场）。这一条不过，本用例就证明不了什么。
+        assert_eq!(
+            current_account_for(variant),
+            None,
+            "前置：必须没有 current_account.txt，否则复现不出用户现场"
+        );
+
+        let value = overview_for(variant);
+        assert_eq!(
+            value.get("currentAccount").and_then(Value::as_str),
+            Some(client_uid.as_str()),
+            "客户端登着 {client_uid}，状态条不得报「未登录」"
+        );
+        // 展示名键必须仍在（值可以是 null：账号库还没采集到这条记录）。
+        assert!(value.get("currentAccountName").is_some(), "currentAccountName 键不得缺失");
+    }
+
+    /// ★ 展示端**不得**走明文兜底：客户端没有登录态时，日志里的旧 token 不算「已登录」。
+    ///
+    /// ## 为什么这条必须单独钉（R6 在**展示**侧的对应物）
+    ///
+    /// [`local_login_from_dir`] 在「该目录没有信封**键**」时会去扫 `logs/` 里的明文 ——
+    /// 那是**跨账号留存**的：客户端切换过账号之后，上一账号的 token 仍在日志里。
+    /// 导入侧早已按「键存在与否」收口（R6）。展示侧若图省事直接调 `local_login_from_dir`，
+    /// 就会把一个**客户端此刻并未登录**的账号报成「已登录: 那个人」——
+    /// 比报「未登录」更坏：用户会以为切换器管着那个账号。
+    ///
+    /// 反例：把 `client_login_uid_for` 的实现换成 `local_login_from_dir` ⇒ 本用例红。
+    #[cfg(windows)]
+    #[test]
+    fn overview_never_reports_a_plaintext_log_token_as_the_current_login() {
+        let exp = chrono::Utc::now().timestamp() + 3600;
+        let env = crate::modules::trae::test_support::TempEnv::empty();
+        let variant = TraeVariant::TraeWork;
+
+        // 客户端**没有**登录态信封（只有设备无关的普通键），但日志里躺着一条有效 token。
+        let count = platform::data_dir_names_for(variant).len();
+        let cells = vec![(true, false, true); count];
+        let _grid = icube::test_support::write_selection_grid(&env.appdata(), variant, &cells, exp);
+        write_stale_plaintext_logs(&env, variant, "5555555555555555", exp);
+
+        let value = overview_for(variant);
+        assert_eq!(
+            value.get("currentAccount"),
+            Some(&Value::Null),
+            "日志里的旧 token 不得被当成「当前登录」——那会把上一账号报成当前账号"
+        );
+    }
+
+
     /// 客户端打包后的 JS（模板串 `Cloud-IDE-JWT ${e}`）不得被误当成凭据。
     #[test]
     fn scan_jwt_tokens_ignores_js_templates() {        let js = r#"if(n.headers={...t.headers,Authorization:`Cloud-IDE-JWT ${e}`},null==a)"#;
+
         assert!(
             scan_jwt_tokens(js).is_empty(),
             "JS 模板串被误判成 token：{:?}",
@@ -2558,12 +2725,59 @@ mod tests {
         assert!(value.get("size_bytes").is_none());
     }
 
+    /// `currentAccountName` 取自账号库：查得到给名字，查不到给 **`null`**（键始终在）。
+    ///
+    /// 反例（改坏会红）：
+    /// - 把 uid 当展示名下发 → 界面又变回那串 16 位数字，正是本次要修的；
+    /// - 查不到时伪造「未知账号」这类**非空**文案 → 调用方再也分不清
+    ///   「真有个叫未知账号的人」与「库里没有这条记录」；
+    /// - 展示名覆盖身份字段 → 前端的相等比较会在改名后失配。
+    #[test]
+    fn overview_resolves_current_account_name_from_the_library() {
+        let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
+        let variant = TraeVariant::Trae;
+        set_current_account_for(variant, "u-named").unwrap();
+
+        // 库里还没有这条记录（用户刚在客户端里登录、尚未采集）⇒ 键在、值为 null。
+        let before = overview_for(variant);
+        assert_eq!(before.get("currentAccountName"), Some(&Value::Null));
+        assert_eq!(
+            before.get("currentAccount").and_then(Value::as_str),
+            Some("u-named")
+        );
+
+        let mut file = account::load_accounts_for(variant);
+        file.accounts.push(account::RawAccount {
+            name: "JackDev".into(),
+            user_id: Some("u-named".into()),
+            jwt: String::new(),
+            refresh_token: None,
+            added_at: None,
+            updated_at: None,
+        });
+        account::save_accounts_for(variant, &file).unwrap();
+
+        let after = overview_for(variant);
+        assert_eq!(
+            after.get("currentAccountName").and_then(Value::as_str),
+            Some("JackDev")
+        );
+        // 身份字段**不因展示名而变**：卡片上的相等比较靠它。
+        assert_eq!(
+            after.get("currentAccount").and_then(Value::as_str),
+            Some("u-named")
+        );
+    }
+
     #[test]
     fn overview_never_panics() {
         let value = overview();
         for key in [
             "profiles",
             "currentAccount",
+            // 展示名：**必须有这个键**（值可以是 `null`）—— 前端按它渲染
+            // 「已登录: <名字>」，键缺失会让界面回落到 uid，静默退化成本次要修的样子。
+            "currentAccountName",
             "dataDir",
             "clientRunning",
             "coreEntryCount",

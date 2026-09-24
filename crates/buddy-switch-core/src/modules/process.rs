@@ -163,16 +163,19 @@ fn image_name_from_path_str(s: &str) -> &str {
 
 /// 本工具自身的映像名（忽略 .exe、大小写）。
 ///
-/// `wb-switch` 是**旧版 exe 名**，必须保留：`config.rs` 至今仍兼容旧目录
-/// （`WB_SWITCH_HOME` / `~/.wb-switch`），说明用户机器上可能还留着旧版二进制。
-/// 若这里不认它，工具会把正在运行的旧版自己当成「外部 WorkBuddy 进程」处理
-/// （最坏情况是误杀或重复启动），而旧版名恰恰是最容易被漏掉的一个。
+/// 只认**本项目自己**的映像名。每个调用点都把它用作**排除条件**
+/// （「这不是 WorkBuddy 目标，别碰」），方向偏向「不碰」而不是「误杀」。
+///
+/// **不要在这里列举别的工具的名字**（曾经列过几个同族名字，已删）：所有调用点的
+/// **最终判据**都是精确匹配 —— [`is_workbuddy_image_name_for`] 要求与区域映像名表
+/// （`WorkBuddy` / `CodeBuddy` / `WorkBuddyAI` / `CodeBuddy AI` …）**逐字相等**，
+/// `codebuddy_cn_ide::is_codebuddy_cn_windows_exe` 同样要求 stem 恰为 `CodeBuddy CN`
+/// （或位于 `CodeBuddy CN\` 目录下的 `CodeBuddy.exe`）。⇒ 任何第三方工具都命中不了
+/// 这两个判据，逐一列举既无必要，也会让本项目与其它项目产生**文字上的耦合**。
+/// 对应的护栏见单测 `workbuddy_image_name_is_exact_not_substring`。
 pub(crate) fn is_self_image_name(name: &str) -> bool {
     let stem = image_stem(image_name_from_path_str(name));
-    stem.eq_ignore_ascii_case("workbuddy-switch")
-        || stem.eq_ignore_ascii_case("buddy-switch")
-        || stem.eq_ignore_ascii_case("BuddySwitch")
-        || stem.eq_ignore_ascii_case("wb-switch")
+    stem.eq_ignore_ascii_case("buddy-switch") || stem.eq_ignore_ascii_case("BuddySwitch")
 }
 
 /// 精确匹配该 region 的 WorkBuddy / CodeBuddy **映像**（禁止子串命中
@@ -630,7 +633,9 @@ foreach ($hive in $unHives) {
     $dn = $_.GetValue('DisplayName')
     if (-not $dn) { return }
     $dnl = [string]$dn
-    if ($dnl -match 'workbuddy-switch|buddy-switch|BuddySwitch') { return }
+    # 排除本工具自己的卸载项。其它工具的名字**不在这里列举** —— 下方 Rust 侧
+    # 按「精确等于区域映像名」收口，任何第三方工具都进不来（见 is_self_image_name）。
+    if ($dnl -match 'buddy-switch|BuddySwitch') { return }
     if ($dnl -notmatch '__PRODUCT_REGEX__') { return }
     $icon = $_.GetValue('DisplayIcon')
     if ($icon) { $out += [string]$icon }
@@ -723,7 +728,8 @@ pub fn windows_workbuddy_exe_path() -> Option<PathBuf> {
 // - 一律用 `ps -axo pid=,args=` 全量输出，在 Rust 内做**大小写敏感**子串匹配；
 //   不直接裸用 pgrep/pkill 字符串（pgrep -f 是大小写不敏感子串匹配，会把命令行
 //   里恰好引用路径的无关进程一并命中，实测不可靠）。
-// - 排除自身 pid 与 args 含 buddy-switch / workbuddy-switch / BuddySwitch 的 PID（自排除）。
+// - 排除自身 pid 与 args 含 `buddy-switch` / `BuddySwitch` 的 PID（自排除；
+//   前者按子串匹配，已覆盖所有以它结尾的同族名字，无需逐一列举）。
 // - 「主进程（GUI）」= argv 含 `<app>/Contents/MacOS/`，仅用于 footer「运行中」
 //   语义与启动成功校验；「包内任意进程」= argv 含 `<app>`（含 Contents/MacOS 与
 //   Contents/Resources 下的守护子进程），用于 close 的最终清杀与 launch 前的保险
@@ -796,7 +802,8 @@ fn ps_row_matches_any(args: &str, patterns: &[String]) -> bool {
 }
 
 /// 从 `ps -axo pid=,args=` 全量输出中收集命中模式的 (pid, args)。
-/// 过滤：排除自身 pid；排除 args 含 buddy-switch / workbuddy-switch / BuddySwitch 的 PID。
+/// 过滤：排除自身 pid；排除 args 含 `buddy-switch` / `BuddySwitch` 的 PID
+/// （`buddy-switch` 按子串匹配，已覆盖所有以它结尾的同族名字，无需逐一列举）。
 /// 结果按 pid 去重。残留误杀面仅剩「用户进程的 args 主动引用目标 .app 路径」
 /// 这一刻意场景（对齐 Windows 契约记录的残余风险）。
 #[cfg(target_os = "macos")]
@@ -810,10 +817,7 @@ pub(crate) fn filter_ps_rows(stdout: &str, patterns: &[String], self_pid: u32) -
         if pid == self_pid {
             continue;
         }
-        if args.contains("buddy-switch")
-            || args.contains("workbuddy-switch")
-            || args.contains("BuddySwitch")
-        {
+        if args.contains("buddy-switch") || args.contains("BuddySwitch") {
             continue;
         }
         if !ps_row_matches_any(&args, patterns) {
@@ -1463,14 +1467,19 @@ mod tests {
 
     #[test]
     fn self_image_names_are_detected() {
-        assert!(is_self_image_name("workbuddy-switch"));
-        assert!(is_self_image_name("workbuddy-switch.exe"));
-        assert!(is_self_image_name("WB-SWITCH.EXE"));
         assert!(is_self_image_name("buddy-switch"));
-        assert!(is_self_image_name(r"C:\apps\workbuddy-switch.exe"));
+        assert!(is_self_image_name("buddy-switch.exe"));
+        assert!(is_self_image_name("BUDDY-SWITCH.EXE"));
+        assert!(is_self_image_name("BuddySwitch"));
+        assert!(is_self_image_name(r"C:\apps\buddy-switch.exe"));
         assert!(!is_self_image_name("WorkBuddy.exe"));
         assert!(!is_self_image_name("WorkBuddy"));
         assert!(!is_self_image_name("CodeBuddy.exe"));
+        // ★ 别的同名族工具**不是**「自己」：它们由**精确判据**排除，
+        // 而不是靠这张自排除名单。这条钉住「本函数只认本项目自己的名字」，
+        // 防止有人再把别的工具名塞回来（那会让两个项目在文字上耦合）。
+        assert!(!is_self_image_name("some-other-switch"));
+        assert!(!is_self_image_name("some-other-switch.exe"));
     }
 
     #[test]

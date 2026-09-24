@@ -85,7 +85,7 @@ impl TempEnv {
 
         let previous_home = std::env::var_os(BUDDY_SWITCH_HOME_ENV);
         let previous_appdata = std::env::var_os("APPDATA");
-        // 新变量名优先于旧的 `WB_SWITCH_HOME`，故设了它就无需再动旧变量。
+        // `BUDDY_SWITCH_HOME` 是唯一被识别的 home 覆盖变量。
         std::env::set_var(BUDDY_SWITCH_HOME_ENV, &home);
         std::env::set_var("APPDATA", &appdata);
 
