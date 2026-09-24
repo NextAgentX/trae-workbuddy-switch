@@ -221,6 +221,7 @@ fn api_routes() -> Router {
         )
         // 打开 Trae 数据目录（非 Windows 返回结构化 Unsupported）。
         .route("/api/trae/open-data-dir", post(api_trae_open_data_dir))
+        .route("/api/trae/launch-client", post(api_trae_launch_client))
         .route("/api/trae/gateway/logs", get(api_trae_gateway_logs))
         .route(
             "/api/trae/gateway/logs/clear",
@@ -309,10 +310,18 @@ async fn api_status(RawQuery(query): RawQuery) -> Response {
     };
     let current = auth.as_ref().and_then(|a| {
         let acct = a.get("account").cloned().unwrap_or_else(|| json!({}));
+        // 展示字段先归一成「字符串或 null」再下发：认证文件里 `nickname` 可能是对象
+        // （见 core `account::display_str` 的文档），裸透传会让前端整棵树崩掉
+        // ⇒ 窗口一片白（issue #2）。**与 tauri 侧 `commands.rs::build_app_status` 逐字同构**。
+        //
+        // `nickname` 额外多一道**账号库回落**：新版客户端把它存成加密信封，
+        // 读不到时若直接下发 null，界面就只能显示 uid（用户报障）。回落规则与
+        // 「为什么账号库是同源的」全在 `account::current_nickname_for` 一处，
+        // 这里**不要**自己再写一遍条件。
         Some(json!({
-            "uid": acct.get("uid"),
-            "nickname": acct.get("nickname"),
-            "email": acct.get("email"),
+            "uid": account::display_str(&acct, "uid"),
+            "nickname": account::current_nickname_for(region, &acct),
+            "email": account::display_str(&acct, "email"),
         }))
     });
     json_ok(json!({
@@ -678,11 +687,16 @@ async fn api_switch_progress() -> Response {
 async fn api_sessions(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     match session::current_user_uid_for(region) {
-        Some(uid) => json_ok(json!({
-            "sessions": session::list_sessions_for_user_for(region, &uid),
-            "current": uid,
-        })),
-        None => json_ok(json!({ "sessions": [], "current": null })),
+        Some(uid) => {
+            let resp = session::list_sessions_with_fallback_for(region, &uid);
+            json_ok(json!({
+                "sessions": resp.get("sessions").cloned().unwrap_or_else(|| json!([])),
+                "current": uid,
+                "source": resp.get("source").cloned().unwrap_or_else(|| json!("db")),
+                "warning": resp.get("warning").cloned(),
+            }))
+        }
+        None => json_ok(json!({ "sessions": [], "current": null, "source": "empty" })),
     }
 }
 
@@ -1792,6 +1806,15 @@ async fn api_trae_open_data_dir(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// POST /api/trae/launch-client —— 启动该变体的 Trae 客户端（OAuth 的前置动作）。
+async fn api_trae_launch_client(Json(body): Json<Value>) -> Response {
+    let variant = parse_trae_variant(body.get("variant").and_then(Value::as_str));
+    match trae::handlers::launch_client_for(variant) {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
 async fn api_trae_gateway_logs() -> Response {
     let state = crate::trae_gateway_host::shared_state();
     json_ok(json!({ "logs": state.log.list() }))
@@ -2158,6 +2181,228 @@ mod tests {
         assert_eq!(accounts[0]["needsRelogin"], json!(false));
     }
 
+    /// 回归护栏（issue #2 / win11）：**展示字段若不是字符串，接口不得原样透出**。
+    ///
+    /// 现场：CN `workbuddy-desktop.info` 的 `account.nickname` 不是字符串（对象）⇒
+    /// ① 区域 Tab 用模板串拼出「已登录: [object Object]」；
+    /// ② 「当前账号：{name}」把同一个值当 **React 子节点**渲染 ⇒ React 抛
+    ///    「Objects are not valid as a React child」⇒ 没有 ErrorBoundary ⇒ 整棵树
+    ///    卸载 ⇒ 窗口一片白（用户看到的现象）。
+    ///
+    /// 这里钉的是**形状不变量**而不是某个具体字段：`current` 的每个展示字段
+    /// 只能是字符串或 null。三种非字符串形态（对象 / 数组 / 数字）一起覆盖，
+    /// 因为「后端某天把数字写进 nickname」与「对象」对前端是同一类事故
+    /// （前者会 `[object Object]` 之外还让 `{name}.trim()` 之类直接抛错）。
+    #[tokio::test]
+    async fn status_current_never_leaks_non_string_display_fields() {
+        let _guard = test_guard();
+        isolated_home();
+
+        // 凭据域留空 ⇒ `region_of("")` 判定为 Cn（与真实 CN 认证文件同 region），
+        // 否则会被安全红线 F 拦成 regionMismatch、`current` 直接为 null，用例恒真。
+        let auth_file = buddy_switch_core::modules::auth_file::auth_file_path_for(Region::Cn);
+        std::fs::create_dir_all(auth_file.parent().unwrap()).expect("create auth dir");
+
+        // ---- 第一段：非字符串形态（对象 / 数组）不得透出 ----
+        std::fs::write(
+            &auth_file,
+            r#"{"account":{"uid":{"nested":true},"nickname":{"zh":"小明"},"email":["a@b.c"]},"auth":{"accessToken":"tok"}}"#,
+        )
+        .expect("seed auth file");
+
+        let (status, body) = call_api(Method::GET, "/api/status?region=cn", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let current = &body["current"];
+        assert!(
+            current.is_object(),
+            "认证文件存在且域匹配时 current 必须是对象：{body}"
+        );
+        for key in ["uid", "nickname", "email"] {
+            let value = &current[key];
+            assert!(
+                value.is_null() || value.is_string(),
+                "status.current.{key} 必须是字符串或 null，实际透出了 {value}：{body}"
+            );
+        }
+
+        // ---- 第二段（阳性对照）：合法值不得被归一误伤 ----
+        // 纯数字昵称是**合法数据**（有人昵称就是数字），必须保留成字符串。
+        // 没有这一段的话，「无脑全置 null」的偷懒实现也能让上面的断言全绿。
+        std::fs::write(
+            &auth_file,
+            r#"{"account":{"uid":"u-1","nickname":12345,"email":"a@b.c"},"auth":{"accessToken":"tok"}}"#,
+        )
+        .expect("reseed auth file");
+
+        let (status, body) = call_api(Method::GET, "/api/status?region=cn", None).await;
+        // 最后再清理，避免种子泄漏到其它用例。
+        let _ = std::fs::remove_file(&auth_file);
+
+        assert_eq!(status, StatusCode::OK);
+        let current = &body["current"];
+        assert_eq!(current["uid"], json!("u-1"), "字符串字段必须原样保留：{body}");
+        assert_eq!(
+            current["nickname"],
+            json!("12345"),
+            "数字昵称必须归一成字符串、而不是被丢掉：{body}"
+        );
+        assert_eq!(
+            current["email"],
+            json!("a@b.c"),
+            "字符串字段必须原样保留：{body}"
+        );
+    }
+
+    /// ★ 新版客户端的加密昵称：`/api/status` 的 `current.nickname` 必须回落**账号库**。
+    ///
+    /// 现场（2026-09-24 用户截图）：认证文件里 `account.nickname` 是
+    /// `{"$wbEncrypted":1,"envelope":"…"}` ⇒ `display_str` 给 `null` ⇒
+    /// 区域页签拼出「已登录: 31da0a95-6637-4f5e-adee-f7f08a6f86fd」（一串 UUID）。
+    /// 账号库里本来就有同一个 uid 的昵称，按 uid 取回来即可。
+    ///
+    /// **阳性对照**（第 3 段）是这条用例的关键：它排「无条件覆盖」的偷懒实现 ——
+    /// 老客户端明文昵称必须压过账号库里的（可能是过期的）名字。
+    #[tokio::test]
+    async fn status_current_nickname_falls_back_to_account_library() {
+        let _guard = test_guard();
+        isolated_home();
+
+        let auth_file = buddy_switch_core::modules::auth_file::auth_file_path_for(Region::Cn);
+        std::fs::create_dir_all(auth_file.parent().unwrap()).expect("create auth dir");
+
+        // ---- 第一段：认证文件读不到昵称（加密信封）⇒ 用账号库里的名字 ----
+        seed_accounts(
+            Region::Cn,
+            json!([{
+                "id": "seeded-cn-1", "uid": "uid-encrypted", "nickname": "Jackey",
+                "access_token": "AT",
+            }]),
+        );
+        std::fs::write(
+            &auth_file,
+            r#"{"account":{"uid":"uid-encrypted","nickname":{"$wbEncrypted":1,"envelope":"eyJzdWl0ZSI6MX0="}},"auth":{"accessToken":"tok"}}"#,
+        )
+        .expect("seed auth file");
+
+        let (status, body) = call_api(Method::GET, "/api/status?region=cn", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["current"]["nickname"],
+            json!("Jackey"),
+            "读不到认证文件昵称时必须回落账号库，否则界面只能显示 uid：{body}"
+        );
+        assert_eq!(body["current"]["uid"], json!("uid-encrypted"));
+
+        // ---- 第二段：账号库里也没有该 uid ⇒ 如实落 null，把回落链留给前端 ----
+        std::fs::write(
+            &auth_file,
+            r#"{"account":{"uid":"uid-unknown","nickname":{"$wbEncrypted":1}},"auth":{"accessToken":"tok"}}"#,
+        )
+        .expect("reseed auth file");
+        let (status, body) = call_api(Method::GET, "/api/status?region=cn", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["current"]["nickname"],
+            Value::Null,
+            "库里没有该账号时不得凭空造名字：{body}"
+        );
+
+        // ---- 第三段（阳性对照）：认证文件有明文昵称 ⇒ 必须原样用，不被库覆盖 ----
+        std::fs::write(
+            &auth_file,
+            r#"{"account":{"uid":"uid-encrypted","nickname":"认证文件里的名字"},"auth":{"accessToken":"tok"}}"#,
+        )
+        .expect("reseed auth file");
+        let (status, body) = call_api(Method::GET, "/api/status?region=cn", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["current"]["nickname"],
+            json!("认证文件里的名字"),
+            "认证文件读得到昵称时不得被账号库覆盖：{body}"
+        );
+
+        // 清理，避免种子泄漏到其它用例。
+        let _ = std::fs::remove_file(&auth_file);
+        clear_accounts(Region::Cn);
+    }
+
+    /// 同一条不变量的**账号库**版本：`account_meta` 是脱敏白名单，白名单里的展示
+    /// 字段同样只能是字符串或 null。`/api/accounts` 与 Tauri `get_accounts` 共用它，
+    /// 所以这里断言的就是桌面端账号卡片拿到的东西。
+    ///
+    /// 现场对照：卡片用 `const name = account.nickname || account.uid || "未命名账号"`
+    /// 直接渲染 `{name}`，对象会走与上面完全相同的崩溃路径；
+    /// `account.email.split("@")`、`account.remark?.trim()` 则会直接抛 TypeError。
+    #[tokio::test]
+    async fn account_meta_never_leaks_non_string_display_fields() {
+        let _guard = test_guard();
+        let home = isolated_home();
+
+        let accounts_file = home.join(".buddy-switch").join("accounts.json");
+        std::fs::create_dir_all(accounts_file.parent().unwrap()).expect("create store dir");
+
+        // ---- 第一段：白名单里每个展示字段都喂脏值（`id` 也要覆盖 ——
+        // 导入文件可以自带 `id`，见 `export_import::merge_import_record`）----
+        std::fs::write(
+            &accounts_file,
+            r#"[{"id":{"nested":true},"uid":{"nested":true},"nickname":{"zh":"小明"},"email":["a@b.c"],
+                "enterpriseName":{"name":"某公司"},"needs_relogin_reason":{"code":1},"remark":{"text":"备注"}}]"#,
+        )
+        .expect("seed accounts");
+
+        let (status, body) = call_api(Method::GET, "/api/accounts", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let account = &body["accounts"][0];
+        for key in [
+            "id",
+            "uid",
+            "nickname",
+            "email",
+            "enterpriseName",
+            "needsReloginReason",
+            "remark",
+        ] {
+            let value = &account[key];
+            assert!(
+                value.is_null() || value.is_string(),
+                "accounts[0].{key} 必须是字符串或 null，实际透出了 {value}：{body}"
+            );
+        }
+
+        // ---- 第二段（阳性对照）：干净数据必须逐字不变，且**时间戳不得被字符串化** ----
+        // `expiresAt` 必须保持数字，否则 `account-card.tsx` 的
+        // `typeof account.expiresAt === "number"` 会静默失效（过期提示再也不出现）。
+        std::fs::write(
+            &accounts_file,
+            r#"[{"id":"a1","uid":"u1","nickname":12345,"email":"x@y.z","enterpriseName":"某公司",
+                "needs_relogin":true,"needs_relogin_reason":"刷新失败","remark":"备注","expiresAt":123456}]"#,
+        )
+        .expect("reseed accounts");
+
+        let (status, body) = call_api(Method::GET, "/api/accounts", None).await;
+        let _ = std::fs::remove_file(&accounts_file);
+
+        assert_eq!(status, StatusCode::OK);
+        let account = &body["accounts"][0];
+        assert_eq!(account["id"], json!("a1"), "字符串 id 必须原样保留：{body}");
+        assert_eq!(account["uid"], json!("u1"), "字符串 uid 必须原样保留：{body}");
+        assert_eq!(
+            account["nickname"],
+            json!("12345"),
+            "数字昵称必须归一成字符串、而不是被丢掉：{body}"
+        );
+        assert_eq!(account["email"], json!("x@y.z"));
+        assert_eq!(account["enterpriseName"], json!("某公司"));
+        assert_eq!(account["needsRelogin"], json!(true));
+        assert_eq!(account["needsReloginReason"], json!("刷新失败"));
+        assert_eq!(account["remark"], json!("备注"));
+        assert_eq!(
+            account["expiresAt"],
+            json!(123456),
+            "时间戳必须保持数字（前端按 number 判定过期）：{body}"
+        );
+    }
+
     /// 修复 `/api/sessions` 的空态断言（原 `sessions == []` 跑在「没有 workbuddy.db」的
     /// 隔离 home 上，**恒真、打不红**，无法发现「认证 uid → sessions 表 → 响应」这条
     /// 链路上的任何回归）。此处播种一个真实的 `workbuddy.db` 与认证文件，断言**恰好**
@@ -2241,8 +2486,14 @@ mod tests {
         let _ = std::fs::remove_file(&auth_file);
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(exact_keys(&body), set_of(&["sessions", "current"]));
+        // `source` / `warning` 由 `list_sessions_with_fallback_for` 透传：db 可读时为
+        // `source:"db"`、`warning:null`（降级扫描时 warning 才为非空文本）。
+        assert_eq!(
+            exact_keys(&body),
+            set_of(&["sessions", "current", "source", "warning"])
+        );
         assert_eq!(body["current"], json!(UID), "current must come from the seeded auth file");
+        assert_eq!(body["source"], json!("db"), "db 可读时应标 source=db");
 
         let sessions = body["sessions"].as_array().expect("sessions array");
         let ids: Vec<&str> = sessions.iter().filter_map(|s| s["id"].as_str()).collect();

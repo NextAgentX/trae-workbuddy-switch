@@ -98,6 +98,20 @@ function sliceBalanced(text, openIndex) {
   throw new Error("sliceBalanced: 括号未闭合");
 }
 
+/**
+ * `call` 调用点的匹配前缀：`call` + **可选的泛型实参** + `(` + 空白。
+ *
+ * 为什么放行泛型（真实踩过，2026-09-23）：`call<AppStatus>("get_status", …)` 是
+ * 完全正常的 TS 写法 —— 返回类型无法从实参推断时（例如后面接
+ * `.then(normalizeAppStatus)`）**必须**显式写出来。原来的 `call\s*\(` 不认泛型，
+ * 于是这两条调用点直接扫不到，护栏反过来报「ROUTES["get_status"] 是死路由」。
+ *
+ * 这里的取舍：护栏的职责是「每个 `call` 的命令名都要有路由」，**不是**限制代码
+ * 怎么写（检查脚本不得左右代码设计）。放行泛型不会削弱它 —— 只是让本该被扫到的
+ * 调用点重新进入扫描范围；`[^(]*?` 顺带兼容 `Record<string, number>` 这类嵌套 `<>`。
+ */
+const CALL_PREFIX = String.raw`(?<![\w.$])call\s*(?:<[^(]*?>\s*)?\(\s*`;
+
 /** 从 api.ts 的 ROUTES 表提取 { cmd, method, path } 列表。 */
 function extractRoutes(apiTs) {
   const anchor = apiTs.indexOf("const ROUTES");
@@ -120,7 +134,7 @@ function extractRoutes(apiTs) {
 function extractCallCommands(apiTs) {
   // 先剥注释：注释中的示例调用不构成契约（见 stripComments 的说明）。
   const source = stripComments(apiTs);
-  const re = /(?<![\w.$])call\s*\(\s*"([^"]+)"/g;
+  const re = new RegExp(`${CALL_PREFIX}"([^"]+)"`, "g");
   const cmds = new Set();
   let m;
   while ((m = re.exec(source)) !== null) cmds.add(m[1]);
@@ -299,7 +313,7 @@ function extractSingleValueParamCommands(commandsRs) {
 function extractCallArgKeys(apiTs) {
   const source = stripComments(apiTs);
   const map = new Map();
-  const re = /(?<![\w.$])call\s*\(\s*"([^"]+)"\s*(,)?/g;
+  const re = new RegExp(`${CALL_PREFIX}"([^"]+)"\\s*(,)?`, "g");
   let m;
   while ((m = re.exec(source)) !== null) {
     const cmd = m[1];

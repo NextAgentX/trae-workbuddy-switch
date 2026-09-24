@@ -265,6 +265,7 @@ pub fn run() {
             commands::revoke_trae_api_key,
             commands::delete_trae_api_key,
             commands::open_trae_data_dir,
+            commands::trae_launch_client,
             commands::get_trae_gateway_logs,
             commands::clear_trae_gateway_logs,
         ])
