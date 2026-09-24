@@ -7,8 +7,10 @@
 //! WorkBuddy 5.x 数据三件套（缺一不可）：
 //!   1) 正文：`~/.workbuddy/projects/{workspace}/{cid}.jsonl`（JSONL 含 sessionId 字段）
 //!   2) 元数据：`~/.workbuddy/workbuddy.db` sessions 表（id = conversation id = UUID）
-//!   3) 云端映射：`~/.workbuddy/edge-sync-mapping-v2.db` edge_sync_mapping
+//!   3) 云端映射：`~/.workbuddy/edge-sync-mapping-v{N}.db` edge_sync_mapping
 //!      （session_id=conversation_id，msg_channel=convmsg:{uid} 决定云端归属）
+//!      ⚠️ 档位号 **N 会随客户端升级往上搬**（实测 v2 → v3 → v4），由
+//!      [`edge_sync_db_path_for`] 动态发现，**不要写死**。
 
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -56,8 +58,57 @@ fn edge_sync_db_path() -> PathBuf {
     edge_sync_db_path_for(Region::Cn)
 }
 
+/// 边车映射库的文件名前缀 / 后缀（`edge-sync-mapping-v{N}.db`）。
+const EDGE_SYNC_DB_PREFIX: &str = "edge-sync-mapping-v";
+const EDGE_SYNC_DB_SUFFIX: &str = ".db";
+
+/// 老客户端用的档位名：一个都不存在时回落到它（保持历史行为）。
+const EDGE_SYNC_DB_LEGACY: &str = "edge-sync-mapping-v2.db";
+
+/// region 会话边车映射数据库路径。
+///
+/// # 为什么要**动态发现档位号**（2026-09-24 真机实测）
+///
+/// 客户端把该库的档位号一路往上搬：真机上 `~/.workbuddy/` 只剩 **v4**（v2 已迁走），
+/// `~/.workbuddy-ai/` 同时留着 **v3 与 v4**（v3 的 WAL 停在 09-23 19:24，v4 的一直在写）。
+/// 写死 v2 的后果**不是报错**而是**静默**：`insert_edge_sync_mapping` 会新建一个空的
+/// v2 库、找不到 `edge_sync_mapping` 表、返回 `false` ⇒ 每次会话复制都提示
+/// 「云端映射注册失败」。
+///
+/// # 取法：**档位号最大**的那个已存在的库
+///
+/// - 只有 v4 ⇒ v4（真机国内版的形态）；
+/// - v3 与 v4 并存 ⇒ **v4**（v3 是上一代、客户端已不再读它；写进去等于没写）；
+/// - 只有 v2 ⇒ v2（老客户端）；
+/// - 一个都没有 ⇒ 回落 v2（历史默认；客户端不存在时建哪个都是空的）。
+///
+/// ⚠️ 刻意**不**用「最低档位优先」：那会在 v3/v4 并存的机器上选中已经没人读的 v3，
+/// 把「静默失效」换个地方重演。也不写死 v4：档位号还会继续涨。
 fn edge_sync_db_path_for(region: Region) -> PathBuf {
-    session_data_dir(region).join("edge-sync-mapping-v2.db")
+    let dir = session_data_dir(region);
+    match latest_edge_sync_db_version(&dir) {
+        Some(version) => dir.join(format!("{EDGE_SYNC_DB_PREFIX}{version}{EDGE_SYNC_DB_SUFFIX}")),
+        None => dir.join(EDGE_SYNC_DB_LEGACY),
+    }
+}
+
+/// 扫目录取 `edge-sync-mapping-v{N}.db` 里**最大**的 N；一个都没有返回 `None`。
+///
+/// 只认 `.db` 本体：`-shm` / `-wal` 是 SQLite 的边车文件，不参与选档
+/// （`edge-sync-mapping-v3.db-wal` 的 `strip_suffix(".db")` 天然失败，自动排除）。
+fn latest_edge_sync_db_version(dir: &Path) -> Option<u32> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let version = name
+                .to_str()?
+                .strip_prefix(EDGE_SYNC_DB_PREFIX)?
+                .strip_suffix(EDGE_SYNC_DB_SUFFIX)?;
+            version.parse::<u32>().ok()
+        })
+        .max()
 }
 
 /// 当前认证账号的 uid（CN 认证文件 account.uid）。
@@ -487,20 +538,58 @@ fn push_jsonl_session(path: &Path, out: &mut Vec<(i64, Value)>) {
     ));
 }
 
-/// 备份 workbuddy.db（含 -wal/-shm），返回主库备份路径。对照 `backup_workbuddy_db`。
-fn backup_workbuddy_db(region: Region, backup_root: &Path) -> Option<PathBuf> {
-    let db = workbuddy_db_path_for(region);
+/// 备份 workbuddy.db（含 -wal/-shm）。
+///
+/// 返回值刻意用 `Result<Option<PathBuf>, String>` 三态，而不是 `Option<PathBuf>`：
+///
+/// | 返回 | 含义 |
+/// | --- | --- |
+/// | `Ok(Some(path))` | 备份成功 |
+/// | `Ok(None)` | **无需**备份（源库不存在）—— 不是失败 |
+/// | `Err(msg)` | **备份失败** —— 必须让用户知道 |
+///
+/// 为什么不能只用 `Option`：`None` 会把「无需备份」与「备份失败」压成同一个值，
+/// 调用方就无法只对后者报警。这正是本次修的缺陷 —— 三个副本原先都用
+/// `let _ = std::fs::copy(..)` 吞掉错误、然后**无条件**返回备份路径，
+/// 于是报告里 `backup` 字段永远有值，用户以为有回滚点，真出事才发现备份目录是空的。
+/// （纪律：**失败不得谎报成功**。）
+///
+/// 判据：**主库**（`workbuddy.db` 本体）复制失败即整体失败，并**删掉半截文件**——
+/// 一个截断的 `workbuddy.db` 看起来像可用备份，比没有更坏。
+/// `-wal` / `-shm` 是 SQLite 的边车文件，缺失或复制失败不致命（主库仍是完整一致的），
+/// 只记一行 stderr 便于排查。
+fn backup_workbuddy_db(region: Region, backup_root: &Path) -> Result<Option<PathBuf>, String> {
+    backup_db_to(workbuddy_db_path_for(region), backup_root)
+}
+
+/// [`backup_workbuddy_db`] 的**纯函数形态**（显式入参，测试用，不碰进程级 home）。
+///
+/// 与 `account::library_display_name_in` 同款拆分理由：单测不该依赖 `BUDDY_SWITCH_HOME`。
+fn backup_db_to(db: PathBuf, backup_root: &Path) -> Result<Option<PathBuf>, String> {
     if !db.is_file() {
-        return None;
+        return Ok(None);
     }
-    std::fs::create_dir_all(backup_root).ok()?;
-    for suffix in ["", "-wal", "-shm"] {
+    std::fs::create_dir_all(backup_root).map_err(|e| format!("创建备份目录失败: {e}"))?;
+    let main_target = backup_root.join("workbuddy.db");
+    if let Err(error) = std::fs::copy(&db, &main_target) {
+        if let Err(cleanup) = std::fs::remove_file(&main_target) {
+            eprintln!(
+                "[session] 备份失败后清理半截文件也失败（{}）：{cleanup}",
+                main_target.display()
+            );
+        }
+        return Err(format!("复制 {} 失败: {error}", db.display()));
+    }
+    for suffix in ["-wal", "-shm"] {
         let src = PathBuf::from(format!("{}{}", db.to_string_lossy(), suffix));
         if src.is_file() {
-            let _ = std::fs::copy(&src, backup_root.join(format!("workbuddy.db{suffix}")));
+            if let Err(error) = std::fs::copy(&src, backup_root.join(format!("workbuddy.db{suffix}")))
+            {
+                eprintln!("[session] 备份边车文件 {suffix} 失败（主库仍完整）：{error}");
+            }
         }
     }
-    Some(backup_root.join("workbuddy.db"))
+    Ok(Some(main_target))
 }
 
 /// 把 source_uid 的一个会话复制为 target_uid 的新会话（路径 B：生成新 id）。
@@ -598,7 +687,12 @@ pub fn copy_session_to_user_cross(
     //    降级：源 / 目标 db 不可用时不再 Err，而是 Ok(false) 表达「没写索引行」；
     //    调用方根据这个信号决定是否在报告里加 warning（jsonl 仍可继续复制）。
     let backup_root = backup_dir().join("sessions").join(utc_iso());
-    backup_workbuddy_db(target_region, &backup_root);
+    // ★ 备份结果必须**如实**进报告：失败时 `backup` 落 null（前端 `types.ts` 已声明
+    //   为 `string | null` 且有 `if (res.backup)` 守卫），而不是照旧报一个不存在的路径。
+    let (backup, backup_error) = match backup_workbuddy_db(target_region, &backup_root) {
+        Ok(path) => (path, None),
+        Err(error) => (None, Some(error)),
+    };
     let session_row_written = insert_session_copy(
         &workbuddy_db_path_for(source_region),
         &workbuddy_db_path_for(target_region),
@@ -622,15 +716,20 @@ pub fn copy_session_to_user_cross(
         &new_cid,
     );
 
-    // 降级警告：jsonl 复制成功但索引行没写 → 用户重启 WorkBuddy 即可看到。
+    // 降级警告：**备份失败最优先**（它关系「还能不能回滚」），其次才是索引行 / 云端映射。
     // 真正阻塞的失败（jsonl 也复制失败）已在前面步骤显式无声返回，
     // 这里**不**为此再加 warning，避免「既不报错也不警告」式的静默降级。
-    let warning = if jsonl_copied && !session_row_written {
-        Some("目标账号的会话索引不可写；已复制正文，请重启 WorkBuddy 让其重建索引".to_string())
-    } else if jsonl_copied && !mapping_written {
-        Some("云端映射注册失败；新会话暂时无法在 WorkBuddy 中显示云端历史".to_string())
-    } else {
-        None
+    let warning = match backup_error {
+        Some(error) => Some(format!(
+            "复制前备份失败（{error}）；本次复制没有可回滚的备份点，请手动备份后重试"
+        )),
+        None if jsonl_copied && !session_row_written => Some(
+            "目标账号的会话索引不可写；已复制正文，请重启 WorkBuddy 让其重建索引".to_string(),
+        ),
+        None if jsonl_copied && !mapping_written => {
+            Some("云端映射注册失败；新会话暂时无法在 WorkBuddy 中显示云端历史".to_string())
+        }
+        None => None,
     };
 
     let mut report = json!({
@@ -639,7 +738,7 @@ pub fn copy_session_to_user_cross(
         "jsonlCopied": jsonl_copied,
         "sessionRowWritten": session_row_written,
         "mappingWritten": mapping_written,
-        "backup": backup_root.to_string_lossy().to_string(),
+        "backup": backup.map(|path| path.to_string_lossy().to_string()),
         "deduplicated": false,
         "ledgerWritten": ledger_written,
     });
@@ -1063,13 +1162,120 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// ★ 备份失败**不得**谎报有备份（本次修复的护栏）。
+    ///
+    /// 现场：三个副本原先都用 `let _ = std::fs::copy(..)` 吞掉错误、然后**无条件**
+    /// 返回备份路径 ⇒ 报告里 `backup` 字段永远有值，用户以为有回滚点，
+    /// 真出事时才发现备份目录是空的（比不备份更坏）。
+    ///
+    /// 可证伪：把 `backup_db_to` 改回「忽略 `copy` 结果、无条件返回路径」，
+    /// 「必须报错」的两条断言即红。
+    ///
+    /// ⚠️ 失败分支的构造方式：不能拿**目录**当源库 —— 那会被 `is_file()` 挡在
+    /// 前面、走「无需备份」分支（本用例初版就这么写错了，红得毫无意义）。
+    /// 这里改用两种真的会失败、且三平台行为一致的构造。
+    #[test]
+    fn backup_failure_is_reported_instead_of_faked() {
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-backup-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // 1) 源库不存在 ⇒ `Ok(None)`：「无需备份」不是失败。
+        let missing = root.join("nope.db");
+        assert_eq!(backup_db_to(missing, &root.join("dest")).unwrap(), None);
+
+        // 2) 备份目录建不出来（父路径是个普通文件）⇒ 必须 Err，不得返回路径。
+        let source = root.join("real.db");
+        std::fs::write(&source, b"sqlite-ish").unwrap();
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, b"not a dir").unwrap();
+        let error = backup_db_to(source.clone(), &blocker.join("dest"))
+            .expect_err("备份目录建不出来时必须报错");
+        assert!(error.contains("创建备份目录失败"), "文案应指明原因：{error}");
+
+        // 3) 目标位置已被一个**目录**占住 ⇒ 复制必失败 ⇒ 必须 Err。
+        let occupied = root.join("occupied");
+        std::fs::create_dir_all(occupied.join("workbuddy.db")).unwrap();
+        let error = backup_db_to(source.clone(), &occupied).expect_err("复制失败时必须报错");
+        assert!(error.contains("复制"), "文案应指明是复制失败：{error}");
+
+        // 4) 阳性对照：正常路径必须真的复制出文件并返回目标路径。
+        let dest = root.join("dest");
+        let path = backup_db_to(source, &dest)
+            .unwrap()
+            .expect("源库存在时必须备份成功");
+        assert_eq!(path, dest.join("workbuddy.db"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"sqlite-ish");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn db_paths_point_to_home() {
         // 用 Path 组件比较，避免 Windows `\` / Unix `/` 分隔符差异。
-        assert!(workbuddy_db_path().ends_with(std::path::Path::new(".workbuddy").join("workbuddy.db")));
-        assert!(edge_sync_db_path()
-            .to_string_lossy()
-            .ends_with("edge-sync-mapping-v2.db"));
+        // ⚠️ 边车映射库**不在这里断言文件名**：它按档位动态发现（见下一条用例），
+        // 而本用例读的是**真实 home**，真机上只有 v4 ⇒ 写死 v2 的断言会假失败。
+        assert!(workbuddy_db_path()
+            .ends_with(std::path::Path::new(".workbuddy").join("workbuddy.db")));
+    }
+
+    /// 边车映射库的档位发现：**取最大档位**、只认 `.db` 本体、都没有才回落 v2。
+    ///
+    /// 现场（2026-09-24 真机）：`~/.workbuddy/` 只有 v4；`~/.workbuddy-ai/` 同时有
+    /// v3 与 v4。写死 v2 会让 `insert_edge_sync_mapping` 建空库、找不到表、返回
+    /// `false` ⇒ 每次会话复制都提示「云端映射注册失败」（**静默**，不报错）。
+    #[test]
+    fn edge_sync_db_version_is_discovered_not_hardcoded() {
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-edge-sync-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let cn_dir = root.join(".workbuddy");
+        std::fs::create_dir_all(&cn_dir).expect("create dir");
+        let guard = crate::modules::config::HomeOverrideGuard::set(&root);
+
+        // 一个都没有 ⇒ 回落 v2（历史默认；客户端不在时建哪个都是空的）。
+        assert_eq!(latest_edge_sync_db_version(&cn_dir), None);
+        assert_eq!(edge_sync_db_path(), cn_dir.join("edge-sync-mapping-v2.db"));
+
+        // 真机国内版形态：只有 v4 ⇒ v4。
+        std::fs::write(cn_dir.join("edge-sync-mapping-v4.db"), b"x").expect("seed v4");
+        assert_eq!(edge_sync_db_path(), cn_dir.join("edge-sync-mapping-v4.db"));
+
+        // 上一代残留 v3 与 v4 并存 ⇒ 必须取 v4（v3 客户端已不再读，写进去等于没写）。
+        std::fs::write(cn_dir.join("edge-sync-mapping-v3.db"), b"x").expect("seed v3");
+        assert_eq!(
+            edge_sync_db_path(),
+            cn_dir.join("edge-sync-mapping-v4.db"),
+            "并存的低档位不得把高档位顶掉"
+        );
+
+        // SQLite 边车文件不参与选档：`v7.db-wal` 的 `strip_suffix(".db")` 天然失败。
+        std::fs::write(cn_dir.join("edge-sync-mapping-v7.db-wal"), b"x").expect("seed wal");
+        assert_eq!(
+            latest_edge_sync_db_version(&cn_dir),
+            Some(4),
+            "-wal / -shm 不得被当成独立档位"
+        );
+
+        // 前向兼容：档位号还会继续涨，不能只认 v2/v4 两张白名单。
+        std::fs::write(cn_dir.join("edge-sync-mapping-v9.db"), b"x").expect("seed v9");
+        assert_eq!(latest_edge_sync_db_version(&cn_dir), Some(9));
+
+        // 老客户端只有 v2 ⇒ v2（v3 / v4 / v9 与边车文件都要先清掉）。
+        std::fs::remove_file(cn_dir.join("edge-sync-mapping-v3.db")).expect("remove v3");
+        std::fs::remove_file(cn_dir.join("edge-sync-mapping-v4.db")).expect("remove v4");
+        std::fs::remove_file(cn_dir.join("edge-sync-mapping-v9.db")).expect("remove v9");
+        std::fs::remove_file(cn_dir.join("edge-sync-mapping-v7.db-wal")).expect("remove wal");
+        assert_eq!(edge_sync_db_path(), cn_dir.join("edge-sync-mapping-v2.db"));
+
+        // 目录不存在 ⇒ 同样回落 v2（不得 panic）。
+        assert_eq!(latest_edge_sync_db_version(&root.join("nope")), None);
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 会话目录与数据库路径必须按 region 隔离（PRD G1 / D2）。

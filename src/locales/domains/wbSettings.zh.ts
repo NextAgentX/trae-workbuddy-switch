@@ -92,6 +92,7 @@ export const zh = {
   // ---- 账号切换 ----
   "wbSettings.switch.groupTitle": "账号切换",
   "wbSettings.switch.loadFailed": "账号切换配置加载失败",
+  "wbSettings.switch.saved": "账号切换设置已保存",
   "wbSettings.switch.copySessionsLabel": "切换账号时默认复制会话",
   "wbSettings.switch.copySessionsDesc": "打开后，切换账号时会默认勾选「复制会话」并全选当前账号的会话；仍可在弹窗里逐条取消。",
   "wbSettings.switch.pinCurrentLabel": "把当前账号置顶",
@@ -112,6 +113,7 @@ export const zh = {
 
   // ---- API 网关 ----
   "wbSettings.gateway.groupTitle": "API 网关",
+  "wbSettings.gateway.saved": "网关配置已保存",
   "wbSettings.gateway.bindLabel": "网关默认监听地址",
   "wbSettings.gateway.bindDesc": "默认仅监听回环地址；0.0.0.0 表示允许局域网访问",
   "wbSettings.gateway.bindLoopback": "127.0.0.1（仅本机）",
@@ -130,7 +132,7 @@ export const zh = {
   "wbSettings.schedule.intro": "六类任务各自独立开关与小时表，到点由调度器触发。小时使用 24 小时制本地时间，可配置多个小时点。改完可用「立即执行」当场跑一轮验证，无需等到下一个整点。",
   "wbSettings.schedule.task.checkin.label": "签到",
   "wbSettings.schedule.task.checkin.desc": "自动签到各账号",
-  "wbSettings.schedule.task.travel.label": "猫猫旅行",
+  "wbSettings.schedule.task.travel.label": "自动旅行",
   "wbSettings.schedule.task.travel.desc": "派猫猫出门旅行并领取奖励",
   "wbSettings.schedule.task.activity.label": "活跃地图",
   "wbSettings.schedule.task.activity.desc": "活跃地图上报，点亮连登",

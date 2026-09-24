@@ -1,4 +1,4 @@
-import { ArrowRight, Check, CircleCheck, Clock3, Coins, Ellipsis, Loader2, Pencil, PlaneTakeoff, RefreshCw, Sparkles, Star, StickyNote, Trash2 } from "lucide-react";
+import { ArrowRight, Check, CircleCheck, Clock3, Coins, Ellipsis, Loader2, Pencil, PlaneTakeoff, QrCode, RefreshCw, Sparkles, Star, StickyNote, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/product-marks";
 import { cn } from "@/lib/utils";
+import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
 import { demoModeEnabled } from "@/lib/demo-mode";
 import { displayText } from "@/lib/display-text";
 import { useT, type Translate } from "@/lib/i18n";
@@ -208,6 +209,14 @@ interface Props {
   codebuddyCnIdeBusy?: boolean;
   codebuddyCnIdeLoading?: boolean;
   onSwitchCodebuddyCnIde?: (a: AccountMeta) => void;
+  /**
+   * 打开「OAuth 扫码添加」。
+   *
+   * 只在 `credit.reason === ENCRYPTED_CREDENTIAL_REASON` 时用到：这类账号的凭据
+   * 我方解不开，光把错误摆出来用户不知道下一步做什么。卡片自己开不了弹窗
+   *（弹窗由页面持有），所以走回调。
+   */
+  onAddPlaintextAccount?: () => void;
   featuresDisabled?: boolean;
   /** 紧凑模式：头部缩成一条、按钮图标化、无 footer */
   compact?: boolean;
@@ -243,7 +252,7 @@ function ProductCurrentState({ product, compact = false }: { product: "workbuddy
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, onSaveRemark, todayCheckedIn, travelStatus, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, onSaveRemark, todayCheckedIn, travelStatus, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, onAddPlaintextAccount, featuresDisabled = true, compact = false }: Props) {
   const t = useT();
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [remarkEditing, setRemarkEditing] = useState(false);
@@ -591,10 +600,34 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         ) : !credit ? (
           <div className="py-3 text-sm text-muted-foreground">{t("wbAccounts.card.waitingCredits")}</div>
         ) : !credit.ok ? (
-          <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-destructive" title={credit.error}>
-            <Coins className="size-4 shrink-0" />
-            <span className="min-w-0 truncate">{credit.error || t("wbAccounts.card.creditFailed")}</span>
-          </div>
+          /*
+           * ★ 凭据是加密信封（客户端 5.6 起）时**不能**走下面那条 `truncate` 单行：
+           * 那句错误文案本身就是「该怎么办」的唯一指引（重新登录 / OAuth 扫码添加），
+           * 截成 `…` 等于把出路一起截掉 —— 2026-09-24 用户截图里就是这种形态。
+           *
+           * 判据用结果自带的 `reason`（后端契约常量），**不解析文案**。
+           */
+          credit.reason === ENCRYPTED_CREDENTIAL_REASON ? (
+            <div className="min-w-0 py-3 text-sm text-destructive">
+              <div className="flex items-start gap-2">
+                <Coins className="mt-0.5 size-4 shrink-0" />
+                <span className="min-w-0 flex-1">{credit.error || t("wbAccounts.card.creditFailed")}</span>
+              </div>
+              {onAddPlaintextAccount && (
+                <div className="mt-2.5 pl-6">
+                  <Button size="sm" variant="outline" onClick={onAddPlaintextAccount}>
+                    <QrCode />
+                    {t("wbAccounts.card.addPlaintextAccount")}
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-destructive" title={credit.error}>
+              <Coins className="size-4 shrink-0" />
+              <span className="min-w-0 truncate">{credit.error || t("wbAccounts.card.creditFailed")}</span>
+            </div>
+          )
         ) : (
           <>
             <div className="flex items-baseline gap-x-3 gap-y-1">

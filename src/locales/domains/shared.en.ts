@@ -117,7 +117,7 @@ export const en = {
   "shared.demo.trae.log.jwtRefreshed": "JWT auto-refresh succeeded: user={uid} new expiry={hours}h",
   "shared.demo.trae.log.deviceReset": "Device identifier reset complete: {count} items applied",
   // ---- Trae: unsupported capabilities (greyed-out cards) ----
-  "shared.demo.cap.travel": "Auto travel (cat dispatch)",
+  "shared.demo.cap.travel": "Auto travel",
   "shared.demo.cap.travelReason": "The Trae client has no API for that activity, and this tool has no matching backend implementation.",
   "shared.demo.cap.cli": "CodeBuddy CLI / IDE integration",
   "shared.demo.cap.cliReason": "CodeBuddy belongs to the WorkBuddy ecosystem; the Trae section does not offer integration or switching for that client.",

@@ -64,6 +64,7 @@ export const en = {
 
   // ---- Empty state (not installed / not signed in) ----
   "wbAccounts.empty.notDetected": "WorkBuddy {version} not detected",
+  "wbAccounts.empty.notLoggedInTitle": "WorkBuddy {version} is not signed in",
   "wbAccounts.empty.possibleReasons": "Possible reasons:",
   "wbAccounts.empty.reasonNotInstalled": "{version} WorkBuddy desktop app not installed",
   "wbAccounts.empty.reasonNoLogin": "Installed but never signed in (no auth file generated)",
@@ -73,6 +74,11 @@ export const en = {
   "wbAccounts.empty.copyPathToast": "Path copied",
   "wbAccounts.empty.recheck": "Re-check",
   "wbAccounts.empty.importLocal": "Import from this device",
+
+  // ---- Current sign-in (not saved to the account library yet) ----
+  "wbAccounts.currentLogin.title": "Signed in as {name}",
+  "wbAccounts.currentLogin.unsaved": "This account is not saved in the account library yet, so it is not listed below. Save it to manage it in the list (switch / check-in / credits).",
+  "wbAccounts.currentLogin.save": "Save to account library",
 
   // ---- Account card ----
   "wbAccounts.card.forever": "Valid indefinitely",
@@ -119,6 +125,7 @@ export const en = {
   "wbAccounts.card.loadingCredits": "Loading credits…",
   "wbAccounts.card.waitingCredits": "Waiting for credit data…",
   "wbAccounts.card.creditFailed": "Failed to load credits",
+  "wbAccounts.card.addPlaintextAccount": "Add via OAuth QR scan",
   "wbAccounts.card.creditPacks": "{n} credit packs",
   "wbAccounts.card.expireSoon": "{amount} credits expire within 7 days",
   "wbAccounts.card.nextExpiry": "Next expiry {date}",

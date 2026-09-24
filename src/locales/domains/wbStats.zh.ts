@@ -98,6 +98,7 @@ export const zh = {
   "wbStats.credit.loadingResources": "正在加载资源包…",
   "wbStats.credit.noCurrentResource": "尚未采集当前资源包。",
   "wbStats.credit.resourceQueryFail": "积分资源查询失败",
+  "wbStats.credit.fixEncryptedCredential": "前往账号管理添加明文凭据账号",
   "wbStats.credit.noResources": "当前没有可展示的资源包。",
   "wbStats.credit.expired": "已到期",
   "wbStats.credit.expiringSoon": "7 天内到期",

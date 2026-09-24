@@ -342,6 +342,15 @@ function normalizeAccountMeta(account: AccountMeta): AccountMeta {
   };
 }
 
+/**
+ * 后端 `credits::ENCRYPTED_CREDENTIAL_REASON` 的前端镜像。
+ *
+ * 改值**必须两边同步**（`crates/buddy-switch-core/src/modules/credits.rs`）。
+ * 用它的地方只有「要不要把『用 OAuth 扫码添加』这个出口摆出来」这一件事 ——
+ * 判据不能退化成解析 `credit.error` 的中文文案。
+ */
+export const ENCRYPTED_CREDENTIAL_REASON = "encrypted_credential";
+
 /** 同 {@link normalizeAccountMeta}，作用于 `status.current`（区域 Tab 与徽标 tooltip 都读它）。 */
 function normalizeAppStatus(status: AppStatus): AppStatus {
   if (!status?.current) return status;

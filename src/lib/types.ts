@@ -349,6 +349,16 @@ export interface CreditExpiry {
   expired?: boolean;
   resources?: CreditResource[];
   error?: string;
+  /**
+   * **机器可读**的失败原因（后端 `credits::ENCRYPTED_CREDENTIAL_REASON`）。
+   *
+   * `"encrypted_credential"` = 该账号的凭据是客户端 5.6 的加密信封，我方解不开
+   * ⇒ 签到 / 积分 / Token 统计都做不了，只能用「切换账号」。
+   *
+   * ⚠️ 判据必须用这个字段，**不要**去匹配 `error` 的中文文案 ——
+   * 文案一改，界面上「该怎么办」的引导就静默消失，且不会变红。
+   */
+  reason?: string | null;
 }
 
 export interface CreditStatsSummary {

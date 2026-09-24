@@ -1,5 +1,6 @@
 pub mod account;
 pub mod activity;
+pub mod at_rest;
 pub mod auth_file;
 pub mod cat;
 pub mod catalog;

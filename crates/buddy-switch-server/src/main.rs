@@ -14,7 +14,7 @@ mod trae_gateway_host;
 use serde_json::json;
 
 use buddy_switch_core::modules::{
-    account, auth_file, config, process, rotate, schedule, scheduler, update,
+    account, auth_file, config, process, region::Region, rotate, schedule, scheduler, update,
 };
 
 fn default_port() -> u16 {
@@ -136,16 +136,33 @@ fn spawn_background_task(task: BackgroundTask) {
     }
 }
 
+/// 状态快照的 `current` 段：**纯函数形态**（显式入参，测试用，不碰磁盘）。
+///
+/// 与 core `account::library_display_name_in` 同款拆分理由：**单测不该依赖进程级
+/// `BUDDY_SWITCH_HOME`**。进程级 env 是全局状态，同一测试二进制内并行跑用例时，
+/// 一个改 home 的用例会把其它用例一起带红（本仓已踩过多次）。
+///
+/// ⚠️ 展示字段一律归一（[`account::display_str`] / [`account::current_nickname_for`]）：
+/// 认证文件里 `nickname` 可能是对象（脏值）或 WorkBuddy 5.6 的加密信封，裸透传会把
+/// 对象当 React 子节点渲染。这是上游 PR #75 的**第 3 处同构透传点** ——
+/// 本仓 `api.rs` / `commands.rs` 早已归一，CLI 这一处此前漏了
+/// （PR #75 里对应的提交 `4b000ac` 就是「补上漏掉的那一处」）。
+fn snapshot_from_root(root: &serde_json::Value) -> serde_json::Value {
+    let acct = root.get("account").cloned().unwrap_or_else(|| json!({}));
+    json!({
+        "uid": account::display_str(&acct, "uid"),
+        "nickname": account::current_nickname_for(Region::Cn, &acct),
+        "email": account::display_str(&acct, "email"),
+    })
+}
+
+/// 状态快照的 `current` 段（从认证文件读；无认证文件返回 `None`）。
+fn current_account_snapshot() -> Option<serde_json::Value> {
+    Some(snapshot_from_root(&auth_file::read_auth_file()?))
+}
+
 fn print_status() {
-    let auth = auth_file::read_auth_file();
-    let current = auth.as_ref().and_then(|a| {
-        let acct = a.get("account").cloned().unwrap_or_else(|| json!({}));
-        Some(json!({
-            "uid": acct.get("uid"),
-            "nickname": acct.get("nickname"),
-            "email": acct.get("email"),
-        }))
-    });
+    let current = current_account_snapshot();
     let running = process::is_workbuddy_running();
     println!("Buddy Switch v{}", update::APP_VERSION);
     println!("WorkBuddy 运行中: {}", if running { "是" } else { "否" });
@@ -283,5 +300,52 @@ mod tests {
                 task.as_str()
             );
         }
+    }
+
+    // ⚠️ 本模块**刻意不设**「改 `BUDDY_SWITCH_HOME` 的用例」：`api.rs` 的测试模块
+    // 有它自己的 `TEST_LOCK`，两把锁互不相识 ⇒ 同一测试二进制内并行跑时照样互相踩
+    // （2026-09-24 实测：本模块一个改 home 的用例把 `api.rs` 的 7 条用例带红）。
+    // 凡需要隔离的取值逻辑，一律抽成**纯函数形态**（见 [`snapshot_from_root`]）。
+
+    /// CLI `status` 的展示字段必须**归一**：对象 / 加密信封一律落 `null`。
+    ///
+    /// 这是上游 PR #75 的**第 3 处同构透传点**（本仓 `api.rs` / `commands.rs` 早已
+    /// 归一，只有 CLI 漏了）。回归形态：裸透传会让 `nickname` 变成
+    /// `{"$wbEncrypted":1,…}` 对象，终端 / 界面上就是 `[object Object]`。
+    ///
+    /// 可证伪：把 [`snapshot_from_root`] 改回 `acct.get("nickname")` 裸透传，
+    /// 第一条断言（`is_null() || is_string()`）即红。
+    #[test]
+    fn status_snapshot_normalizes_display_fields() {
+        // 脏值 + 加密信封：一律落 null（信封我方解不开，交给终端 / 前端回落）。
+        let encrypted = snapshot_from_root(&json!({
+            "account": {
+                "uid": "uid-cli-probe",
+                "nickname": {"$wbEncrypted": 1, "envelope": "x"},
+                "email": {"zh": "对象脏值"},
+            }
+        }));
+        for key in ["uid", "nickname", "email"] {
+            let value = &encrypted[key];
+            assert!(
+                value.is_null() || value.is_string(),
+                "{key} 必须是字符串或 null，不得是对象：{value}"
+            );
+        }
+        assert_eq!(encrypted["uid"], "uid-cli-probe", "字符串 uid 必须原样保留");
+
+        // 阳性对照：干净数据必须**逐字保留**，数字 uid 转文本。
+        // （明文昵称走 `current_nickname_for` 的**早退**分支，不会去读账号库。）
+        let clean = snapshot_from_root(&json!({
+            "account": {"uid": 12345, "nickname": "小明", "email": "a@b.c"}
+        }));
+        assert_eq!(clean["uid"], "12345");
+        assert_eq!(clean["nickname"], "小明");
+        assert_eq!(clean["email"], "a@b.c");
+
+        // 缺 `account` 段也不得 panic（历史 / 半截认证文件）。
+        let empty = snapshot_from_root(&json!({}));
+        assert!(empty["uid"].is_null());
+        assert!(empty["nickname"].is_null());
     }
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
+import { useNavigate } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Rectangle, XAxis, YAxis } from "recharts";
 import {
   ArrowDown,
@@ -12,6 +13,7 @@ import {
   CircleAlert,
   CircleCheck,
   Loader2,
+  QrCode,
   Sparkles,
   RefreshCw,
   TrendingDown,
@@ -39,6 +41,7 @@ import {
 } from "@/components/ui/chart";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import * as api from "@/lib/api";
+import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
 import { regionFilterLabel, regionLabel } from "@/lib/region";
 import { cn } from "@/lib/utils";
 import { getStackedSegmentVisualLayout } from "@/lib/stacked-bar-visuals";
@@ -720,6 +723,7 @@ function AccountTable({
 
 function ResourceBreakdown({ credit, loading }: { credit?: CreditExpiry; loading?: boolean }) {
   const t = useT();
+  const navigate = useNavigate();
   if (loading) {
     return (
       <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground sm:px-5">
@@ -735,7 +739,25 @@ function ResourceBreakdown({ credit, loading }: { credit?: CreditExpiry; loading
     return (
       <div className="flex items-start gap-2 px-4 py-8 text-sm text-destructive sm:px-5">
         <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{credit.error || t("wbStats.credit.resourceQueryFail")}</span>
+        <div className="min-w-0 flex-1">
+          <span>{credit.error || t("wbStats.credit.resourceQueryFail")}</span>
+          {/*
+            凭据是加密信封时，光把错误摆出来用户不知道下一步做什么 ——
+            唯一可行的出路是「OAuth 扫码添加」（那条链路拿到的 token 是明文）。
+            ⚠️ 不在这里直接开弹窗：本页缓存了统计数据，新增账号后还得点「刷新统计」，
+            所以把人送到账号管理页，那里添加完会自动刷新列表。
+
+            判据用 `credit.reason`（后端契约常量）而不是解析中文文案。
+          */}
+          {credit.reason === ENCRYPTED_CREDENTIAL_REASON && (
+            <div className="mt-3">
+              <Button size="sm" variant="outline" onClick={() => navigate("/")}>
+                <QrCode />
+                {t("wbStats.credit.fixEncryptedCredential")}
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }

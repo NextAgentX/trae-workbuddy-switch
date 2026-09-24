@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use crate::modules::account::{account_display_name, build_auth_headers, load_accounts};
+use crate::modules::account::{
+    account_display_name, build_auth_headers, envelope_token_error, load_accounts,
+};
 use crate::modules::config::{
     http_request, load_checkin_config, load_travel_cache, load_travel_config, now_ms, now_secs,
     save_travel_cache, with_travel_cache_lock, RunFlagGuard, TRAVEL_API_PREFIX,
@@ -86,6 +88,10 @@ fn is_unauthorized(resp: &Value) -> bool {
 
 /// 发旅行接口请求；遇到未授权且存在 refresh token 时刷新一次并重试。
 async fn travel_request(path: &str, method: &str, body: Option<Value>, account: &Value) -> Value {
+    // 加密信封凭据短路：不发空 Bearer，直接给出可读错误（上游 PR #95 的同款处理）。
+    if let Some(err) = envelope_token_error(account) {
+        return json!({"code": -2, "message": err});
+    }
     let url = format!("{WORKBUDDY_API_ENDPOINT}{path}");
     let headers = build_travel_headers(account);
     let mut resp = http_request(&url, method, body.clone(), Some(&headers)).await;
@@ -1008,6 +1014,30 @@ pub fn travel_display(account_id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归上游 issue #94：信封凭据的旅行请求在入口短路并返回可读错误，
+    /// 不发出空 `Bearer`（此前会被网关 401 后把整页 HTML 回显到界面）。
+    ///
+    /// 可证伪：删掉 `travel_request` 开头那段短路，本用例会真的发网络请求
+    /// ⇒ `code` 不再是 `-2` ⇒ 红。
+    #[tokio::test]
+    async fn envelope_credentials_short_circuit_before_request() {
+        let account = json!({
+            "id": "envelope-only",
+            "access_token": {"$wbEncrypted": 1, "envelope": "…"},
+            "refresh_token": {"$wbEncrypted": 1, "envelope": "…"},
+        });
+        let resp = travel_request("/whatever", "POST", Some(json!({})), &account).await;
+        assert_eq!(resp["code"], -2, "应在发请求之前短路：{resp}");
+        let message = resp["message"].as_str().expect("message 应为字符串");
+        assert!(message.contains("加密信封"), "文案应可读：{message}");
+
+        // 阳性对照：明文凭据不得被这道护栏判定（问同一个谓词，不发网络请求）。
+        assert!(
+            envelope_token_error(&json!({"id": "plain", "access_token": "AT"})).is_none(),
+            "明文凭据不得被信封护栏拦下"
+        );
+    }
 
     #[test]
     fn retryable_skips_are_not_terminal() {

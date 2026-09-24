@@ -342,7 +342,7 @@ async fn api_accounts(RawQuery(query): RawQuery) -> Response {
         "region": region,
         "accounts": account::load_accounts_for(region)
             .iter()
-            .map(account::account_meta)
+            .map(|a| account::account_meta_for(region, a))
             .collect::<Vec<_>>(),
         "current": auth_file::read_auth_file_for(region)
             .and_then(|a| a.get("account").and_then(|x| x.get("uid")).and_then(|x| x.as_str()).map(String::from)),
@@ -629,15 +629,36 @@ async fn api_switch(Json(body): Json<Value>) -> Response {
         .get("shareSessions")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let copy_ids: Vec<String> = body
-        .get("copySessionIds")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    // ★ 非法条目**整包拒绝**，不静默丢弃（对照上游 `c614e1f7`）。
+    //
+    // 静默丢弃的后果不是报错而是**半成品**：切换照常执行、只是少复制几条会话，
+    // 报告里数量对不上，用户以为全复制了。明确 400 比「看起来成功」好得多。
+    // 这也让本路由与 Tauri 侧对称 —— 那边是 `Option<Vec<String>>`，
+    // serde 反序列化失败即整包报错（见 `src-tauri/src/commands.rs` 的 `copy_session_ids`）。
+    let copy_ids: Vec<String> = match body.get("copySessionIds") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut ids = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(id) => ids.push(id.to_string()),
+                    None => {
+                        return json_err(
+                            format!("copySessionIds 含非法条目（每条必须是字符串）: {item}"),
+                            StatusCode::BAD_REQUEST,
+                        )
+                    }
+                }
+            }
+            ids
+        }
+        Some(other) => {
+            return json_err(
+                format!("copySessionIds 必须是字符串数组，收到: {other}"),
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    };
 
     {
         let mut running = SWITCH_RUNNING.lock().unwrap();

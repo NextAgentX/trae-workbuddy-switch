@@ -1,7 +1,7 @@
 {
   "name": "buddy-switch-rust",
   "private": true,
-  "version": "2026.9.241700",
+  "version": "2026.9.241955",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
     "tauri:dev:screenshot": "node scripts/run-with-env.mjs BUDDY_SWITCH_SCREENSHOT_DEMO=1 VITE_DEMO_MODE=1 -- tauri dev",
     "check:api": "node scripts/check-api-contract.cjs",
     "build": "tsc && npm run check:api && vite build",
+    "build:fast": "vite build",
     "build:demo": "tsc && node scripts/run-with-env.mjs VITE_DEMO_MODE=1 VITE_PAGES_DEMO=1 -- vite build --outDir dist-demo",
     "preview": "vite preview",
     "tauri": "tauri",

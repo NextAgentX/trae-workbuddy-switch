@@ -492,8 +492,20 @@ mod tests {
         assert_eq!(result.skipped_duplicate, 50);
     }
 
+    /// 记忆文件按 region 隔离、按 uid 命名。
+    ///
+    /// ## 为什么必须持 `env_lock()`
+    ///
+    /// 断言的两侧（`memory_file_for` 与 `memory_dir_for`）都是**无入参**的路径函数，
+    /// 每次调用都重读进程级 `BUDDY_SWITCH_HOME`。lib 单测在同一进程里并行跑，
+    /// 只要有别的用例（`HomeOverrideGuard` 系列）在这两次读取之间换掉该变量，
+    /// 就会出现「左侧真实 home、右侧临时 home」的**假失败**
+    /// （2026-09-24 实测：新增一条网络端到端用例改变调度时序后本用例开始红，
+    /// 报 `left: …\Temp\buddy-switch-current-nickname-…\.workbuddy\memory`）。
+    /// 修法是让本用例与所有改 home 的用例互斥，而不是给断言加容错。
     #[test]
     fn memory_paths_are_region_scoped_and_named_by_uid() {
+        let _lock = crate::modules::config::env_lock();
         let cn = memory_file_for(Region::Cn, "uid-a");
         let global = memory_file_for(Region::Global, "uid-a");
         assert_ne!(cn, global, "CN / Global 记忆文件必须隔离");

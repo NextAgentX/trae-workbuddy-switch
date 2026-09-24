@@ -676,6 +676,7 @@ function SwitchBehaviorCard() {
     setSaving(true);
     try {
       setConfig(await api.saveSwitchConfig(merged));
+      toast.success(t("wbSettings.switch.saved"));
     } catch (e) {
       // 失败时退回改动前的值，界面不停留在「看起来已保存」的状态。
       setConfig(previous);
@@ -829,6 +830,7 @@ function GatewaySettingsCard() {
     setSaving(true);
     try {
       await saveConfig({ ...config, ...next });
+      toast.success(t("wbSettings.gateway.saved"));
     } catch (e) {
       toast.error(t("wbSettings.common.saveFailed"), { description: api.asError(e) });
     } finally {

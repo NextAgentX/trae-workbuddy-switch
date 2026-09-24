@@ -8,7 +8,9 @@ use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use crate::modules::account::{account_display_name, build_auth_headers};
+use crate::modules::account::{
+    account_display_name, build_auth_headers, envelope_token_error,
+};
 use crate::modules::config::{http_request, load_checkin_config, now_ms, WORKBUDDY_API_ENDPOINT};
 use crate::modules::credit_usage;
 use crate::modules::refresh::{ensure_fresh_token_for, refresh_account_token_for};
@@ -345,6 +347,12 @@ pub async fn authenticated_post_for(
     url: &str,
     body: Value,
 ) -> Value {
+    // 加密信封凭据短路：不发空 Bearer，也不进入刷新重试链路（上游 PR #95 的同款处理）。
+    // 放在 `ensure_fresh_token_for` **之前**：信封 `refresh_token` 本来就刷不动
+    // （`as_str()` 取不到值 ⇒ 刷新链路会自己报「需重新登录」），先拦住能省一次无谓请求。
+    if let Some(err) = envelope_token_error(account) {
+        return json!({"code": -2, "message": err});
+    }
     let config = load_checkin_config();
     let mut working_account = ensure_fresh_token_for(region, account.clone(), &config).await;
     let mut response = post_with_account(&working_account, url, body.clone()).await;
@@ -707,8 +715,39 @@ pub async fn get_credit_expiry(account: &Value) -> Value {
     get_credit_expiry_for(Region::Cn, account).await
 }
 
+/// 失败结果的**机器可读**原因：凭据是客户端 5.6 的加密信封（我方解不开）。
+///
+/// 前端拿它决定要不要在错误旁边挂「用 OAuth 扫码添加」按钮。
+/// ⚠️ 这不是给用户看的文案 —— 展示文案是同一个结果里的 `error` 字段；
+/// 它是**契约常量**，改值必须同步前端（`src/lib/types.ts` 的 `CreditExpiry.reason`
+/// 与两处 `=== "encrypted_credential"` 比较）。
+pub const ENCRYPTED_CREDENTIAL_REASON: &str = "encrypted_credential";
+
 /// 按 region 查询单账号的积分资源及到期时间。
 pub async fn get_credit_expiry_for(region: Region, account: &Value) -> Value {
+    // ★ 加密信封凭据短路（2026-09-24 用户截图：卡片上显示
+    // `服务端返回 HTML 错误页：401 Authorization Required`）。
+    //
+    // 为什么这里必须单独拦一次：本函数走的是 `post_with_account`（三条新接口 + 旧接口回退
+    // + 401 重试全都用它），**不是** `authenticated_post_for` —— 后者开头那道
+    // `envelope_token_error` 拦不到这条路径。而 `post_with_account` 会把信封
+    // 静默折成**空 `Bearer`** ⇒ 上游 401 ⇒ openresty 的整页 HTML 被回显给用户。
+    //
+    // 在公开入口拦一次即可覆盖下面所有分支；返回结构与函数末尾的失败分支保持同形，
+    // 前端 `credit.error` 会直接显示这句可照做的中文提示。
+    if let Some(err) = envelope_token_error(account) {
+        return json!({
+            "ok": false,
+            "accountId": account.get("id").cloned().unwrap_or(Value::Null),
+            "accountName": account_display_name(account),
+            "error": err,
+            // ★ 机器可读的失败原因：前端要在 `credit.error` 旁边挂「用 OAuth 扫码添加」
+            // 这个出口按钮，判据**不能**去解析上面那句中文文案（文案一改，按钮静默消失）。
+            // 常量由 [`ENCRYPTED_CREDENTIAL_REASON`] 给出，改值时两边一起改。
+            "reason": ENCRYPTED_CREDENTIAL_REASON,
+        });
+    }
+
     let account_id = account.get("id").cloned().unwrap_or(Value::Null);
     let now = now_ms();
     let responses = fetch_new_resource_responses(region, account).await;
@@ -756,6 +795,89 @@ pub async fn get_credit_expiry_for(region: Region, account: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归上游 issue #94：信封凭据在 `authenticated_post_for` **入口**短路，
+    /// 不发空 `Bearer`，也不进入刷新重试链路。
+    ///
+    /// 可证伪：删掉 `authenticated_post_for` 开头那段短路，本用例会进入
+    /// `ensure_fresh_token_for` → 真的发网络请求 ⇒ `code` 不再是 `-2` ⇒ 红。
+    #[tokio::test]
+    async fn envelope_credentials_short_circuit_before_request() {
+        let account = json!({
+            "id": "envelope-only",
+            "access_token": {"$wbEncrypted": 1, "envelope": "…"},
+            "refresh_token": {"$wbEncrypted": 1, "envelope": "…"},
+        });
+        let resp =
+            authenticated_post_for(Region::Cn, &account, "https://example.invalid/api", json!({}))
+                .await;
+        assert_eq!(resp["code"], -2, "应在发请求之前短路：{resp}");
+        let message = resp["message"].as_str().expect("message 应为字符串");
+        assert!(message.contains("加密信封"), "文案应可读：{message}");
+
+        // 阳性对照：明文凭据不得被这道护栏判定（问同一个谓词，不发网络请求）。
+        assert!(
+            envelope_token_error(&json!({"id": "plain", "access_token": "AT"})).is_none(),
+            "明文凭据不得被信封护栏拦下"
+        );
+    }
+
+    /// ★ 回归 2026-09-24 用户截图：卡片上显示
+    /// `服务端返回 HTML 错误页：401 Authorization Required`。
+    ///
+    /// `get_credit_expiry_for` 走的是 `post_with_account`（三条新接口 + 旧接口回退 +
+    /// 401 重试），**不经过** `authenticated_post_for` 那道短路 ⇒ 必须在**它自己的入口**
+    /// 再拦一次，否则信封被折成空 `Bearer` 发出去，把 openresty 的整页 HTML 回显到卡片。
+    ///
+    /// 可证伪：删掉 `get_credit_expiry_for` 开头那段短路，本用例会真的发网络请求
+    /// ⇒ 拿回 401 HTML ⇒ `error` 不再是可读中文 ⇒ 红。
+    #[tokio::test]
+    async fn credit_expiry_short_circuits_on_envelope_credential() {
+        let account = json!({
+            "id": "envelope-only",
+            "uid": "uid-envelope",
+            "domain": "www.workbuddy.cn",
+            "access_token": {"$wbEncrypted": 1, "envelope": "…"},
+            "refresh_token": {"$wbEncrypted": 1, "envelope": "…"},
+        });
+        let result = get_credit_expiry_for(Region::Cn, &account).await;
+
+        assert_eq!(result["ok"], false, "信封凭据必须在入口短路：{result}");
+        let message = result["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("加密信封"),
+            "必须给可读中文提示，而不是把上游 401 的 HTML 回显到卡片上：{message}"
+        );
+        assert!(
+            !message.contains("Authorization Required"),
+            "不得把 openresty 的错误页当作用户可见文案：{message}"
+        );
+
+        // ★ 机器可读原因：前端的「用 OAuth 扫码添加」按钮靠它决定是否出现。
+        //
+        // 为什么必须钉住：判据一旦退化成「解析 `error` 文案里含某几个字」，
+        // 文案一改按钮就**静默消失**（不会变红）—— 本仓已有同类事故的纪律记录。
+        assert_eq!(
+            result["reason"], json!(ENCRYPTED_CREDENTIAL_REASON),
+            "信封凭据必须带回契约常量 reason，前端不能靠解析中文文案判断：{result}"
+        );
+        assert_eq!(result["accountId"], json!("envelope-only"));
+
+        // 阳性对照（**不发网络请求**）：明文凭据不进这个分支 ⇒ 结构上不可能带上
+        // `encrypted_credential`。否则界面会对正常账号也喊「去扫码」。
+        let plain = json!({
+            "id": "plain-token",
+            "uid": "uid-plain",
+            "domain": "www.workbuddy.cn",
+            "access_token": "AT",
+        });
+        assert!(
+            envelope_token_error(&plain).is_none(),
+            "明文凭据不得被信封判据命中（否则 `reason` 会误标到正常账号上）"
+        );
+        // 契约常量本身也钉住：改值必须同步前端 `src/lib/api.ts` 的同名常量。
+        assert_eq!(ENCRYPTED_CREDENTIAL_REASON, "encrypted_credential");
+    }
 
     /// 资源查询 origin 必须按 region 选择。
     ///

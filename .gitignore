@@ -51,9 +51,6 @@ npm/platform/*/bin/
 # CodeGraph 索引数据库（体积大且可重建）
 .codegraph/
 
-# 第三方参考代码（非本项目源码，存在授权风险）
-reference/
-
 # 发布交付物（含 exe 安装包与设计文档草稿）
 deliverables/
 

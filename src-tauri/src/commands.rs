@@ -140,7 +140,7 @@ pub fn get_accounts(region: Option<String>) -> Value {
     let region = parse_region(region.as_deref());
     let metas: Vec<Value> = account::load_accounts_for(region)
         .iter()
-        .map(account::account_meta)
+        .map(|a| account::account_meta_for(region, a))
         .collect();
     json!({ "region": region, "accounts": metas })
 }
@@ -794,7 +794,7 @@ pub async fn refresh_account_token(
     let region = parse_region(region.as_deref());
     let acc = account::find_account_for(region, &account_id).ok_or("账号不存在")?;
     let fresh = refresh::refresh_account_token_for(region, acc).await;
-    Ok(account::account_meta(&fresh))
+    Ok(account::account_meta_for(region, &fresh))
 }
 
 // ---------------------------------------------------------------------------

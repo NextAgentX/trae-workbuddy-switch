@@ -68,6 +68,25 @@ fn active_account_id_from_state() -> Option<String> {
         .map(str::to_string)
 }
 
+/// 注入 CN IDE 前把产品域规范到 **CodeBuddy** 域。
+///
+/// WorkBuddy 与 CodeBuddy 是同一账号体系的两种产品域写法（`www.workbuddy.cn` /
+/// `www.codebuddy.cn`）。注入进去的会话由客户端按 `product.json` 解析，写成 WorkBuddy
+/// 域时会落到错误的 product 分支、读不到 `enterpriseEndpoint`。
+/// ⇒ 同一账号体系内的两种写法在这里收敛成一种（对照上游 `3c2da11b`）。
+///
+/// 空域回落 CN IDE 自己的域：账号库里的历史记录可能没有 `domain` 字段（手动添加 /
+/// 早期导入），空串注入进去会让客户端无从解析。**必须给默认值，不能透传空串。**
+///
+/// 只替换「产品域」这一段，`www.` 前缀等其余部分原样保留。
+fn codebuddy_cn_domain_for(raw: &str) -> String {
+    let domain = raw.trim();
+    if domain.is_empty() {
+        return "www.codebuddy.cn".to_string();
+    }
+    domain.replace("workbuddy.cn", "codebuddy.cn")
+}
+
 /// 构造注入到 CN IDE 的会话 JSON（与 CN 客户端登录态写入结构一致）。
 pub fn build_session_json(acc: &Value) -> String {
     let uid = get_str(acc, "uid").unwrap_or_default();
@@ -78,7 +97,8 @@ pub fn build_session_json(acc: &Value) -> String {
     let enterprise_name = get_str(acc, "enterpriseName")
         .or_else(|| get_str(acc, "enterprise_name"))
         .unwrap_or_default();
-    let domain = get_str(acc, "domain").unwrap_or_default();
+    // ★ 产品域必须规范化：`domain` 在下面出现两处（顶层与 `auth`），都取自这个变量。
+    let domain = codebuddy_cn_domain_for(&get_str(acc, "domain").unwrap_or_default());
     let refresh_token = get_str(acc, "refresh_token").unwrap_or_default();
     let access_token = get_str(acc, "access_token").unwrap_or_default();
     let token_type = get_str(acc, "token_type").unwrap_or_else(|| "Bearer".to_string());
@@ -934,8 +954,14 @@ pub fn launch_codebuddy_cn() -> Result<(), String> {
 pub fn status() -> Value {
     let data_dir = codebuddy_cn_data_dir();
     let db_path = codebuddy_cn_state_db_path();
-    let installed = codebuddy_cn_app_path().is_some()
-        || data_dir.as_ref().map(|p| p.exists()).unwrap_or(false);
+    // 客户端是否**已安装**：只看客户端本体是否存在。
+    //
+    // ⚠️ 刻意**不**把「数据目录存在」也算进来。那个判据曾经造成自我维持的误报：
+    // 只读探测（`read_codebuddy_cn_secret`）会把 `globalStorage` 目录建出来
+    // ⇒ 下次 `status()` 看到目录存在就报 `installed = true` ⇒ 界面显示「已接入」
+    // 并放开 IDE 切换，而客户端根本没装。上游 issue #91 修的就是这个形状
+    // （「installed 收敛为客户端存在性」）。
+    let installed = codebuddy_cn_app_path().is_some();
     let db_exists = db_path.as_ref().map(|p| p.exists()).unwrap_or(false);
     let running = is_codebuddy_cn_running();
 
@@ -1043,7 +1069,9 @@ pub fn detect_current_account() -> Result<Value, String> {
             "found": true,
             "matched": true,
             "accountId": id,
-            "account": account::account_meta(&acc),
+            // 本模块是 CN 专有：昵称必须走 `account_meta_for` 才能在库内昵称为
+            // 加密信封时回落到客户端明文快照，否则卡片标题会显示 uid。
+            "account": account::account_meta_for(crate::modules::region::Region::Cn, &acc),
             "uid": uid,
         }));
     }
@@ -1059,6 +1087,63 @@ pub fn detect_current_account() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ `installed` 必须**只**跟随客户端本体（本次修复的护栏）。
+    ///
+    /// 现场（本机实测 2026-09-24）：`%APPDATA%\CodeBuddy CN\User\globalStorage` 是一个
+    /// **空目录**（2026-09-23 14:10 由只读探测的 `create_dir_all` 建出来的），而
+    /// `C:\Program Files\CodeBuddy CN` 与 `%LOCALAPPDATA%\Programs\CodeBuddy CN` 都不存在
+    /// ⇒ 旧判据 `app_path().is_some() || data_dir.exists()` 把「我们自己的探测建出来的
+    /// 空目录」当成了「客户端已接入」，界面显示「已接入」并放开 IDE 切换按钮。
+    /// 而且它**自我维持**：用户删掉目录，下次进账号页又被建回来。
+    ///
+    /// 断言刻意写成**不变量**（`installed` 与 `appPath` 同真同假），而不是
+    /// `installed == false` —— 后者会在真装了客户端的机器上假失败。
+    ///
+    /// 可证伪：把 `status()` 的 `installed` 改回 `|| data_dir.exists()`，
+    /// 在「数据目录存在但客户端未装」的机器上本用例即红（本机就是这种机器）。
+    #[test]
+    fn installed_follows_client_presence_only() {
+        let status = status();
+        assert_eq!(
+            status["installed"],
+            status["appPath"].is_string(),
+            "installed 必须与 appPath 同真同假（只看客户端本体，不看数据目录）：{status}"
+        );
+    }
+
+    /// ★ 注入前产品域必须规范化（对照上游 `3c2da11b`）。
+    ///
+    /// 可证伪：把 `build_session_json` 里的 `codebuddy_cn_domain_for(..)` 去掉，
+    /// 后三条断言即红（顶层与 `auth` 里那份都会是 `www.workbuddy.cn`）。
+    #[test]
+    fn injected_session_normalizes_product_domain() {
+        // 空域必须回落 CN IDE 自己的域 —— 透传空串会让客户端无从解析。
+        assert_eq!(codebuddy_cn_domain_for(""), "www.codebuddy.cn");
+        assert_eq!(codebuddy_cn_domain_for("   "), "www.codebuddy.cn");
+        // 同一账号体系的两种写法收敛成一种。
+        assert_eq!(codebuddy_cn_domain_for("www.workbuddy.cn"), "www.codebuddy.cn");
+        // 已是目标域则原样保留。
+        assert_eq!(codebuddy_cn_domain_for("www.codebuddy.cn"), "www.codebuddy.cn");
+
+        let session = build_session_json(&json!({
+            "uid": "u1",
+            "nickname": "小明",
+            "access_token": "AT",
+            "domain": "www.workbuddy.cn",
+        }));
+        let parsed: Value = serde_json::from_str(&session).expect("注入的会话必须是合法 JSON");
+        assert_eq!(parsed["domain"], "www.codebuddy.cn");
+        assert_eq!(
+            parsed["auth"]["domain"], "www.codebuddy.cn",
+            "auth 里那份也要一起规范化（两处取自同一个变量）"
+        );
+
+        // 缺 `domain` 的历史账号：必须补默认域，不能留空。
+        let legacy = build_session_json(&json!({"uid": "u2", "access_token": "AT"}));
+        let parsed: Value = serde_json::from_str(&legacy).expect("合法 JSON");
+        assert_eq!(parsed["domain"], "www.codebuddy.cn");
+    }
 
     #[test]
     fn session_json_includes_uid_plus_token() {

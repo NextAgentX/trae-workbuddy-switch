@@ -85,6 +85,7 @@ export const en = {
   // ---- Account switching ----
   "wbSettings.switch.groupTitle": "Account switching",
   "wbSettings.switch.loadFailed": "Failed to load account switching settings",
+  "wbSettings.switch.saved": "Account switching settings saved",
   "wbSettings.switch.copySessionsLabel": "Copy sessions by default when switching",
   "wbSettings.switch.copySessionsDesc": "When enabled, switching accounts preselects \"Copy sessions\" and selects all sessions of the current account; you can still deselect them one by one in the dialog.",
   "wbSettings.switch.pinCurrentLabel": "Pin the current account to the top",
@@ -105,6 +106,7 @@ export const en = {
 
   // ---- API gateway ----
   "wbSettings.gateway.groupTitle": "API gateway",
+  "wbSettings.gateway.saved": "Gateway settings saved",
   "wbSettings.gateway.bindLabel": "Default gateway listen address",
   "wbSettings.gateway.bindDesc": "Listens on the loopback address by default; 0.0.0.0 allows LAN access",
   "wbSettings.gateway.bindLoopback": "127.0.0.1 (this machine only)",
@@ -123,7 +125,7 @@ export const en = {
   "wbSettings.schedule.intro": "Each of the six tasks has its own toggle and hour table, and is triggered by the scheduler when due. Hours use 24-hour local time and multiple hour points can be set. Use \"Run now\" to verify right away without waiting for the next full hour.",
   "wbSettings.schedule.task.checkin.label": "Check-in",
   "wbSettings.schedule.task.checkin.desc": "Check in all accounts automatically",
-  "wbSettings.schedule.task.travel.label": "Cat travel",
+  "wbSettings.schedule.task.travel.label": "Auto travel",
   "wbSettings.schedule.task.travel.desc": "Send the cat travelling and claim the rewards",
   "wbSettings.schedule.task.activity.label": "Activity map",
   "wbSettings.schedule.task.activity.desc": "Report to the activity map and light up the login streak",

@@ -210,7 +210,7 @@ pub async fn oauth_poll_for(region: Region, login_id: &str) -> Value {
         }
     };
 
-    let result = account::account_meta(&account);
+    let result = account::account_meta_for(region, &account);
     let mut map = oauth_states().lock().unwrap();
     if let Some(info) = map.get_mut(login_id) {
         info.done = true;

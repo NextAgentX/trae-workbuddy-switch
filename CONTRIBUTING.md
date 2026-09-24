@@ -99,10 +99,6 @@ cargo test        # Rust 单元测试
 - **本项目采用 [PolyForm Noncommercial License 1.0.0](./LICENSE)**：提交贡献即表示你同意该贡献以同一许可分发，并确认你有权提交这些代码。说明见 [docs/LICENSING.md](docs/LICENSING.md)
 - 请勿在 Issue / PR 中粘贴完整的 token 或账号凭据，即使是自己的
 
-## 关于 `reference/` 目录
-
-`reference/` 是从各客户端及相关项目提取的**只读参考材料**，用于对照数据结构与协议。它不是本项目代码的一部分，请勿在其中添加业务逻辑，也不要把它当作实现来源照搬。
-
 ## 有问题在哪问
 
 - 用法问题、Bug、功能建议 → [Issues](https://github.com/NextAgentX/trae-workbuddy-switch/issues)

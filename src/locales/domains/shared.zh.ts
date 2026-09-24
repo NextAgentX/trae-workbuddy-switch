@@ -133,7 +133,7 @@ export const zh = {
   "shared.demo.trae.log.jwtRefreshed": "JWT 自动刷新成功: user={uid} 新到期={hours}h",
   "shared.demo.trae.log.deviceReset": "设备标识重置完成: {count} 项生效",
   // ---- Trae：平台做不到的维度（置灰卡） ----
-  "shared.demo.cap.travel": "自动旅行（派猫猫）",
+  "shared.demo.cap.travel": "自动旅行",
   "shared.demo.cap.travelReason": "Trae 客户端没有该活动接口，本工具也无对应后端实现。",
   "shared.demo.cap.cli": "CodeBuddy CLI / IDE 接入",
   "shared.demo.cap.cliReason": "CodeBuddy 属 WorkBuddy 生态，Trae 分区不提供该客户端的接入与切换。",

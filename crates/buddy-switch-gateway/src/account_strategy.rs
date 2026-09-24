@@ -63,7 +63,7 @@ impl AccountSelector {
         region: Region,
         strategy: &AccountStrategy,
     ) -> Result<Value, GatewayError> {
-        match strategy {
+        let account = match strategy {
             AccountStrategy::Current => {
                 // 安全红线 F：先用 core 的校验读取（region 不符 → RegionMismatch，
                 // 且不发起任何上游请求），再导入账号并二次防御校验。
@@ -99,7 +99,20 @@ impl AccountSelector {
                 ensure_region(&account, region)?;
                 Ok(account)
             }
+        }?;
+
+        // 加密信封凭据不得送进网关：`build_chat_headers` 会把信封折成**空 `Bearer`**，
+        // 上游只会回 401，而用户看到的是网关的 HTML 错误页。
+        //
+        // ★ 这条是「本机导入接受信封」（core `imported_account_from_root` 的
+        //   `plain_text_or_envelope` 改造）的**必要配套**：改造之前 `Current` 策略会因
+        //   导入失败而报 `NoCredential`（响亮、可行动），改造之后就会静默发出空 Bearer。
+        //   三种策略都可能选出信封账号（`Pinned` / `MaxCredits` 走账号库，而库里在
+        //   明文过期后也会被信封接管），故拦在 match 之后而不是各分支里。
+        if account::is_envelope(&account, "access_token") {
+            return Err(GatewayError::EncryptedCredential { region });
         }
+        Ok(account)
     }
 }
 

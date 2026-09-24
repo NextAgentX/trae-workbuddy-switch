@@ -15,7 +15,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::modules::account::{account_display_name, build_auth_headers, load_accounts_for};
+use crate::modules::account::{
+    account_display_name, build_auth_headers, envelope_token_error, load_accounts_for,
+};
 use crate::modules::config::{
     add_checkin_log, http_request, load_checkin_config, load_checkin_logs, now_ms, RunFlagGuard,
     CHECKIN_API_PREFIX,
@@ -97,6 +99,10 @@ fn is_unauthorized(resp: &Value) -> bool {
 
 /// 按 region 发签到相关请求；遇到未授权且存在 refresh token 时刷新一次并重试。
 async fn checkin_request_for(region: Region, path: &str, account: &Value) -> Value {
+    // 加密信封凭据短路：不发空 Bearer，直接给出可读错误（上游 PR #95 的同款处理）。
+    if let Some(err) = envelope_token_error(account) {
+        return json!({"code": -2, "message": err});
+    }
     let url = format!("{}{path}", region_spec(region).billing_base);
     let headers = build_auth_headers(account);
     let mut resp = http_request(&url, "POST", Some(json!({})), Some(&headers)).await;
@@ -394,6 +400,33 @@ pub async fn run_checkin_all_for(region: Region) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归上游 issue #94：信封凭据的签到请求应在入口短路并返回可读错误，
+    /// 不发出空 `Bearer`（此前会被网关 401 后把整页 HTML 回显到界面）。
+    ///
+    /// 可证伪：删掉 `checkin_request_for` 开头那段短路，本用例会真的去请求
+    /// `www.codebuddy.cn/whatever`（或直接超时/报错），`code` 不再是 `-2`、
+    /// `message` 里也不会有「加密信封」⇒ 两条断言都红。
+    #[tokio::test]
+    async fn envelope_credentials_short_circuit_before_request() {
+        let account = json!({
+            "id": "envelope-only",
+            "variant": "cn",
+            "access_token": {"$wbEncrypted": 1, "envelope": "…"},
+            "refresh_token": {"$wbEncrypted": 1, "envelope": "…"},
+        });
+        let resp = checkin_request_for(Region::Cn, "/whatever", &account).await;
+        assert_eq!(resp["code"], -2, "应在发请求之前短路：{resp}");
+        let message = resp["message"].as_str().expect("message 应为字符串");
+        assert!(message.contains("加密信封"), "文案应可读：{message}");
+
+        // 阳性对照：明文凭据不得被这道护栏判定。直接问**同一个**判定函数，
+        // 避免在单测里真的发网络请求（断言的是同一个谓词，不是另写一份判据）。
+        assert!(
+            envelope_token_error(&json!({"id": "plain", "access_token": "AT"})).is_none(),
+            "明文凭据不得被信封护栏拦下"
+        );
+    }
 
     /// 签到模块的运行标志（`CHECKIN_RUNNING` / `CHECKIN_ACCOUNTS_RUNNING`）是**进程级
     /// 全局**的，cargo test 默认多线程并发跑用例时会互相污染：

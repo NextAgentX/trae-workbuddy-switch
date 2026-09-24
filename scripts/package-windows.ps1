@@ -28,10 +28,17 @@
 .PARAMETER SkipStamp
   跳过版本戳写入，沿用 package.json 里的现有版本（调试构建流程时用）。
 
+.PARAMETER Fast
+  快速模式：前端只跑 `vite build`，跳过 `tsc` 全量类型检查与 `npm run check:api`
+  （前端 API 契约门禁）。省下的时间都在前端，Rust 侧照常编译。
+  ⚠️ 改动过 Tauri 命令 / api.ts 路由时不要用 —— 契约门禁正是靠 check:api 兜底的，
+  跳过后「前端调用与后端命令对不上」这类问题会一路带进安装包里。
+
 .EXAMPLE
   .\scripts\package-windows.ps1
   .\scripts\package-windows.ps1 -Mode debug
   .\scripts\package-windows.ps1 -SkipStamp
+  .\scripts\package-windows.ps1 -Fast
 
 .NOTES
   也可以直接双击仓库根目录的 build-exe.cmd。
@@ -42,7 +49,8 @@ param(
   [string]$Mode = "release",
   [string]$SignPassword = "buddy-switch-dev",
   [string]$OutDir = "deliverables",
-  [switch]$SkipStamp
+  [switch]$SkipStamp,
+  [switch]$Fast
 )
 
 $ErrorActionPreference = "Stop"
@@ -180,6 +188,9 @@ Write-Step "3/5" "检测 updater 签名密钥 ..."
 $keyPath = Join-Path $env:USERPROFILE ".buddy-switch\buddy-switch-updater.key"
 $tempCfg = $null
 $signing = $false
+# 需要临时改写的 tauri 配置项（bundle / build …）先攒在这里，最后合并成**一个** --config 文件：
+# tauri 只接受最后一份 --config，拆成多个文件会互相覆盖。
+$cfgOverrides = [ordered]@{}
 
 # 用「能否读到内容」判断，而不是 Test-Path / FileInfo.Exists ——
 # 本工作区的元数据探测偶发假报 False（见 .workbuddy/memory/MEMORY-2-tooling.md）。
@@ -198,8 +209,25 @@ if ($keyText) {
 } else {
   # 缺密钥时若 createUpdaterArtifacts=true，tauri 会直接构建失败 → 用临时配置关掉它。
   Write-Host ("      未找到 {0}，仅打本地安装包（跳过 updater 签名）。" -f $keyPath) -ForegroundColor Yellow
-  $tempCfg = Join-Path $env:TEMP ("buddy-switch-no-updater-{0}.json" -f $PID)
-  Set-Content -LiteralPath $tempCfg -Encoding UTF8 -Value '{ "bundle": { "createUpdaterArtifacts": false } }'
+  $cfgOverrides["bundle"] = @{ createUpdaterArtifacts = $false }
+}
+
+# -Fast：把 beforeBuildCommand 换成 `npm run build:fast`（只跑 vite build）。
+# 仍会完整重建前端 —— 只是不做类型检查与契约门禁，dist 一定是新的。
+if ($Fast) {
+  Write-Host "      -Fast：跳过 tsc 类型检查与 check:api（改过 Tauri 命令时不要用）。" -ForegroundColor Yellow
+  $cfgOverrides["build"] = @{ beforeBuildCommand = "npm run build:fast" }
+}
+
+if ($cfgOverrides.Count -gt 0) {
+  $tempCfg = Join-Path $env:TEMP ("buddy-switch-build-cfg-{0}.json" -f $PID)
+  # 显式 **无 BOM** 的 UTF-8：`Set-Content -Encoding UTF8` 在 PS 5.1 会带 BOM，
+  # tauri 解析配置首字节就会撞上，报错信息完全看不出是编码问题。
+  [System.IO.File]::WriteAllText(
+    $tempCfg,
+    ($cfgOverrides | ConvertTo-Json -Depth 5),
+    (New-Object System.Text.UTF8Encoding($false))
+  )
 }
 
 # ---------------------------------------------------------------- 4. 构建

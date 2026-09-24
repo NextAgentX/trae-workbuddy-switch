@@ -12,6 +12,8 @@ pub enum GatewayError {
     Unauthorized(String),
     /// 该 region 无可用账号 → 401
     NoCredential { region: Region },
+    /// 选中的账号只有加密信封凭据 → 401（可读指引；见 `account::envelope_token_error`）
+    EncryptedCredential { region: Region },
     /// 凭据 region 不符 → 401（安全红线 F，含修复指引）
     RegionMismatch(RegionMismatch),
     /// 上游失败 → 按 kind 映射
@@ -32,6 +34,7 @@ impl GatewayError {
         match self {
             GatewayError::Unauthorized(_)
             | GatewayError::NoCredential { .. }
+            | GatewayError::EncryptedCredential { .. }
             | GatewayError::RegionMismatch(_) => 401,
             GatewayError::Upstream { kind, .. } => match kind {
                 UpstreamErrorKind::HardCredit => 402,
@@ -51,6 +54,7 @@ impl GatewayError {
         match self {
             GatewayError::Unauthorized(_) => "unauthorized",
             GatewayError::NoCredential { .. } => "no_credential",
+            GatewayError::EncryptedCredential { .. } => "encrypted_credential",
             GatewayError::RegionMismatch(_) => "region_mismatch",
             GatewayError::Upstream { kind, .. } => match kind {
                 UpstreamErrorKind::HardCredit => "hard_credit",
@@ -71,6 +75,14 @@ impl GatewayError {
             GatewayError::Unauthorized(message) => message.clone(),
             GatewayError::NoCredential { region } => format!(
                 "未找到已登录的{}账号，请在桌面端登录该版本后重试",
+                region_display(*region)
+            ),
+            // ★ 与 NoCredential 刻意分开：这条的用户**其实已经登录了**，
+            // 说「未找到已登录的账号」会把人引到错的方向（去重新登录桌面端）。
+            // 真正要做的是让该账号在本应用里重新取得**明文**凭据。
+            GatewayError::EncryptedCredential { region } => format!(
+                "选中的{}账号凭据是 WorkBuddy 加密信封态，网关无法用它发起请求；\
+                 请在 Buddy Switch 中对该账号重新登录（或 OAuth 扫码添加）以取得明文凭据",
                 region_display(*region)
             ),
             GatewayError::RegionMismatch(mismatch) => mismatch.message(),
@@ -125,6 +137,30 @@ mod tests {
         assert_eq!(GatewayError::NoCredential { region: Region::Cn }.status(), 401);
         assert_eq!(GatewayError::BadRequest("x".into()).status(), 400);
         assert_eq!(GatewayError::Internal("x".into()).status(), 502);
+    }
+
+    /// 信封凭据必须与「未找到已登录账号」**分开**。
+    ///
+    /// 混用会把排查引向错的方向：这条的用户其实**已经登录了**，让他「去桌面端登录」
+    /// 是无效指引；真正要做的是让该账号在本应用里重新取得**明文**凭据。
+    #[test]
+    fn encrypted_credential_is_a_distinct_readable_401() {
+        let error = GatewayError::EncryptedCredential { region: Region::Cn };
+        assert_eq!(error.status(), 401);
+        assert_eq!(error.type_name(), "encrypted_credential");
+        assert_ne!(
+            error.type_name(),
+            GatewayError::NoCredential { region: Region::Cn }.type_name(),
+            "不得与 no_credential 混为一谈"
+        );
+
+        let message = error.message();
+        assert!(message.contains("加密信封"), "文案应可读：{message}");
+        assert!(message.contains("WorkBuddy"), "应点名是哪个区域：{message}");
+        assert!(
+            message.contains("重新登录"),
+            "应给出可行动的做法：{message}"
+        );
     }
 
     #[test]

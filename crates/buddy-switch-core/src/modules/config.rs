@@ -961,13 +961,34 @@ pub async fn http_request_with_proxy(
                 serde_json::from_str(&text).unwrap_or_else(|_| {
                     json!({
                         "code": status.as_u16(),
-                        "message": text.chars().take(500).collect::<String>(),
+                        "message": normalize_error_body(&text),
                     })
                 })
             }
         }
         Err(e) => json!({"code": -1, "message": e.to_string()}),
     }
+}
+
+/// 非 JSON 错误响应体归一化：网关（openresty / APISIX 等）的 401 / 5xx 常返回
+/// **整页 HTML**，原样截断会把 `<html>…` 整段塞进通知与界面卡片。
+///
+/// - HTML ⇒ 提取 `<title>` 作为可读信息（如 `401 Authorization Required`）；
+/// - 其余 ⇒ 保持原有的 500 字符截断。
+fn normalize_error_body(text: &str) -> String {
+    if text.trim_start().starts_with('<') {
+        let title = text
+            .split_once("<title>")
+            .and_then(|(_, rest)| rest.split_once("</title>"))
+            .map(|(title, _)| title.trim())
+            .unwrap_or_default();
+        return if title.is_empty() {
+            "服务端返回 HTML 错误页（无标题）".to_string()
+        } else {
+            format!("服务端返回 HTML 错误页：{title}")
+        };
+    }
+    text.chars().take(500).collect::<String>()
 }
 
 /// 通用 HTTP 请求，返回原始响应（状态码 + 响应头 + 响应体），可选是否跟随重定向。
@@ -1062,6 +1083,13 @@ pub async fn authed_json_request_for(
     account: &Value,
     extra_headers: &HashMap<String, String>,
 ) -> (u16, Value) {
+    // 加密信封凭据短路：`build_auth_headers` 会把信封折成**空 Bearer**，
+    // 发出去只会换回上游 401（以及整页 HTML）。这里直接给可读错误。
+    // 401 是刻意的：调用方（growth / school / cat）都按「非 2xx = 失败」处理，
+    // 并把 `message` 透出给用户；信封态**不是**可刷新状态，不该走下面的 401 刷新分支。
+    if let Some(err) = crate::modules::account::envelope_token_error(account) {
+        return (401, json!({"code": -2, "message": err}));
+    }
     let mut headers = crate::modules::account::build_auth_headers(account);
     for (k, v) in extra_headers {
         headers.insert(k.clone(), v.clone());
@@ -1093,6 +1121,94 @@ pub async fn authed_json_request_for(
 mod tests {
     use super::*;
     use crate::modules::region::Region;
+
+    /// 回归上游 issue #94：网关 401 返回的**整页 HTML** 要归一化为可读信息，
+    /// 不能把 `<html>…` 原样塞进通知与界面卡片。
+    #[test]
+    fn normalize_error_body_extracts_html_title() {
+        let html = "<html>\n<head><title>401 Authorization Required</title></head>\n\
+                    <body>\n<center><h1>401 Authorization Required</h1></center>\n\
+                    <hr><center>openresty</center>\n</body>\n</html>\n";
+        assert_eq!(
+            normalize_error_body(html),
+            "服务端返回 HTML 错误页：401 Authorization Required"
+        );
+
+        // 前导空白不得让 HTML 判定失效（网关常带 BOM / 换行）。
+        assert_eq!(
+            normalize_error_body("\n  <!DOCTYPE html><html><body>boom</body></html>"),
+            "服务端返回 HTML 错误页（无标题）"
+        );
+
+        // 非 HTML 错误体保持原有的 500 字符截断行为。
+        let plain = "plain gateway error";
+        assert_eq!(normalize_error_body(plain), plain);
+        let long = "x".repeat(600);
+        assert_eq!(normalize_error_body(&long).chars().count(), 500);
+        assert_eq!(normalize_error_body(&long), "x".repeat(500));
+    }
+
+    /// ★ **接线**断言：`http_request_with_proxy` 收到「非 2xx + 整页 HTML」时，
+    /// 必须把错误体归一化后再交给调用方，而不是把 `<html>…` 原样回显。
+    ///
+    /// 与上一条的分工：上一条测**纯函数**，挡不住「调用点又写回 `take(500)`」
+    /// 这类回归（纯函数照样绿 —— 实测确认过）。这条喂一个本地桩服务、走真实的
+    /// reqwest 调用链，才钉得住「调用点确实用了归一化」。
+    ///
+    /// ⚠️ 桩服务**必须先读完请求再回响应**（见下面 `spawn` 里的注释）。
+    /// 回环地址不受 `HTTP_PROXY` 影响，故带代理的环境里同样可跑（已实测）。
+    #[tokio::test]
+    async fn non_json_error_body_is_normalized_end_to_end() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定本地桩服务");
+        let addr = listener.local_addr().expect("取回环地址");
+        tokio::spawn(async move {
+            let Ok((mut stream, _peer)) = listener.accept().await else {
+                return;
+            };
+            // ★ 必须**先读完请求**再回响应：反过来（先写响应再关连接）在 Windows 上会让
+            //   客户端收到 RST，reqwest 报 "error sending request for url"（本用例初版
+            //   实测踩到，且当时 stderr 里看不出原因 —— 别往归一化逻辑上找）。
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !String::from_utf8_lossy(&buf).contains("\r\n\r\n") {
+                match stream.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => buf.extend_from_slice(&chunk[..read]),
+                }
+            }
+
+            let body = "<html><head><title>401 Authorization Required</title></head>\
+                        <body><center><h1>401 Authorization Required</h1></center></body></html>";
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\n\
+                 Content-Type: text/html\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.flush().await;
+        });
+
+        let value =
+            http_request_with_proxy(&format!("http://{addr}/blocked"), "GET", None, None, None)
+                .await;
+
+        assert_eq!(value["code"], 401, "非 2xx 的 code 必须是真实状态码：{value}");
+        let message = value["message"].as_str().expect("message 应为字符串");
+        assert_eq!(
+            message,
+            "服务端返回 HTML 错误页：401 Authorization Required"
+        );
+        assert!(
+            !message.contains("<html>"),
+            "不得把整页 HTML 原样回显给用户：{message}"
+        );
+    }
 
     fn local_timestamp_ms(year: i32, month: u32, day: u32, hour: u32) -> i64 {
         Local

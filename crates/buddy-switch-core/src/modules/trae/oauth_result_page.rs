@@ -7,7 +7,7 @@
 //! 用户看不出「这是登录流程的一部分」还是「页面出错了」。
 //!
 //! 本模块把它换成一张居中的结果卡片（成功 ✓ 绿色 / 失败 ✕ 红色 / 取消 — 灰色），
-//! 与参考实现 `TraeWorkAssistant-main` 的
+//! 与上游项目 `TraeWorkAssistant` 的
 //! `src-tauri/src/commands/oauth_loopback.rs::html_response` **同构**：
 //! 同样的 `.card` 布局、同样的圆底图标 + 标题 + 两段正文。
 //!

@@ -99,10 +99,6 @@ When cleaning up, mind the "smallest committable unit": if A uses a **newly adde
 - **This project is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE)**: by submitting a contribution you agree that it is distributed under the same license, and confirm you have the right to submit it. See [docs/LICENSING.md](docs/LICENSING.md)
 - Do not paste complete tokens or account credentials in an Issue or PR, not even your own
 
-## About the `reference/` directory
-
-`reference/` holds **read-only reference material** extracted from the various clients and related projects, used to compare data structures and protocols. It is not part of this project's code — do not add business logic there, and do not treat it as an implementation source to copy from.
-
 ## Where to ask
 
 - Usage questions, bugs, feature requests → [Issues](https://github.com/NextAgentX/trae-workbuddy-switch/issues)

@@ -144,6 +144,7 @@ Expose the current account's model quota to other local AI tools (Cursor, Claude
 ### WorkBuddy
 
 1. **Add an account**: Accounts page → "Add via OAuth QR" (device flow), "Import local account" or "Import backup"
+   - Since client 5.6, the login-state tokens are stored encrypted. **"Import local account" automatically calls the local client to unwrap that encryption** (requires the WorkBuddy desktop app to be installed), so check-in / credits / token stats work right after importing. If the client is missing or has changed its encryption scheme, the account is **still imported** but can only be used for "Switch"; click "Refresh token" on the account to retry unwrapping
 2. **Switch accounts**: account card → "Switch"; you can optionally copy the current account's sessions along and merge long-term memory and connector configuration into the target account (for cross-version migration you can choose the data source region)
 3. **Automatic check-in / Cat Travel**: toggle them directly at the top of the Accounts page; the Settings page lets you tune parameters, run a check-in immediately and view logs
 4. **Check credit expiry**: the Accounts page automatically queries each account's credit grants; click "Refresh credits" to update manually — grants approaching expiry are highlighted and sorted by urgency

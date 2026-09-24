@@ -77,16 +77,40 @@ pub fn codebuddy_cn_state_db_path() -> Option<PathBuf> {
     codebuddy_cn_data_dir().map(|d| d.join("User").join("globalStorage").join("state.vscdb"))
 }
 
+/// `state.vscdb` 的候选路径（按优先级；只拼路径，不碰磁盘）。
+fn state_db_candidates(root: &Path) -> [PathBuf; 3] {
+    [
+        root.join("User").join("globalStorage").join("state.vscdb"),
+        root.join("globalStorage").join("state.vscdb"),
+        root.join("state.vscdb"),
+    ]
+}
+
+/// 只读探测：在候选里找**已存在**的那个；一个都没有就 `None`。
+///
+/// # 为什么读路径必须与写路径分开（2026-09-24 对照上游 issue #91 修复）
+///
+/// 本函数**绝不产生副作用**（不建目录、不建库）。这与 [`resolve_state_db_path`] 的分工
+/// 是刻意的：后者会为了「将来要写入」而 `create_dir_all`，那对**读**是纯粹的多余副作用 ——
+/// 用户只是打开一下账号页、客户端根本没装，我们却把
+/// `%APPDATA%\CodeBuddy CN\User\globalStorage` 建了出来；随后
+/// `codebuddy_cn_ide::status()` 看到该目录存在就报 `installed = true`
+/// ⇒ 界面显示「已接入」并放开 IDE 切换按钮，而客户端根本不存在。
+/// 更糟的是它**自我维持**：用户删掉目录，下次进页面又被建回来。
+pub fn find_state_db_path_for_read(user_data_dir: Option<&Path>) -> Option<PathBuf> {
+    let root = match user_data_dir {
+        Some(path) => path.to_path_buf(),
+        None => codebuddy_cn_data_dir()?,
+    };
+    state_db_candidates(&root).into_iter().find(|p| p.exists())
+}
+
 pub fn resolve_state_db_path(user_data_dir: Option<&Path>) -> Result<PathBuf, String> {
     let root = match user_data_dir {
         Some(p) => p.to_path_buf(),
         None => codebuddy_cn_data_dir().ok_or_else(|| "无法定位 CodeBuddy CN 数据目录".to_string())?,
     };
-    let candidates = [
-        root.join("User").join("globalStorage").join("state.vscdb"),
-        root.join("globalStorage").join("state.vscdb"),
-        root.join("state.vscdb"),
-    ];
+    let candidates = state_db_candidates(&root);
     if let Some(path) = candidates.iter().find(|p| p.exists()) {
         return Ok(path.clone());
     }
@@ -455,11 +479,15 @@ fn decode_secret_storage_value(raw_value: &str, data_root: &Path) -> Result<Stri
 }
 
 /// 读取并解密 CodeBuddy CN 当前登录 secret（明文 JSON 字符串）。
+///
+/// ⚠️ 这是**只读**入口：走 [`find_state_db_path_for_read`]，**不建目录**。
+/// 历史上它复用 `resolve_state_db_path`，于是「探测一下」就会把客户端的
+/// `globalStorage` 目录建出来，把 `installed` 骗成 `true`（详见前者文档）。
 pub fn read_codebuddy_cn_secret(user_data_dir: Option<&Path>) -> Result<Option<String>, String> {
-    let db_path = resolve_state_db_path(user_data_dir)?;
-    if !db_path.exists() {
+    let Some(db_path) = find_state_db_path_for_read(user_data_dir) else {
+        // 没有已存在的库 ⇒ 「客户端没登录过 / 没装」，不是错误。
         return Ok(None);
-    }
+    };
     let data_root = data_root_from_db(&db_path)?.to_path_buf();
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("打开 state.vscdb 失败: {e}"))?;
@@ -598,6 +626,48 @@ mod tests {
         std::fs::write(&db, b"").unwrap();
         let resolved = resolve_state_db_path(Some(&dir)).unwrap();
         assert_eq!(resolved, db);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★ 只读探测**不得**产生副作用（本次修复的护栏）。
+    ///
+    /// 现场（对照上游 issue #91）：用户只是打开账号页、客户端根本没装，探测却把
+    /// `User/globalStorage` 建了出来；`codebuddy_cn_ide::status()` 随后看到该目录存在
+    /// 就报 `installed = true` ⇒ 界面显示「已接入」并放开 IDE 切换按钮。
+    /// 而且它**自我维持**：用户删掉目录，下次进页面又被建回来。
+    ///
+    /// 可证伪：把 `read_codebuddy_cn_secret` 改回 `resolve_state_db_path`，前三条断言即红。
+    #[test]
+    fn read_probe_never_creates_the_client_data_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "wb-cn-ide-read-probe-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let global_storage = dir.join("User").join("globalStorage");
+
+        // 一个候选都不存在 ⇒ 返回 None，且**不建任何目录**。
+        assert_eq!(find_state_db_path_for_read(Some(&dir)), None);
+        assert_eq!(
+            read_codebuddy_cn_secret(Some(&dir)).expect("探测不该报错"),
+            None
+        );
+        assert!(
+            !global_storage.exists(),
+            "只读探测不得创建 {}",
+            global_storage.display()
+        );
+        assert!(!dir.join("User").exists(), "连 User 这一层也不该被建出来");
+
+        // 对照：**写**路径（inject 走的那条）必须建父目录 —— 两条路径的分工不能被合并，
+        // 否则要么读路径带副作用、要么写路径建不出库。
+        let resolved = resolve_state_db_path(Some(&dir)).expect("写路径应能解析");
+        assert_eq!(resolved, global_storage.join("state.vscdb"));
+        assert!(global_storage.exists(), "写路径必须建出父目录");
+
+        // 建完目录后**仍然**没有库文件 ⇒ 读探测还是 None（不会把空目录当登录态）。
+        assert_eq!(find_state_db_path_for_read(Some(&dir)), None);
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

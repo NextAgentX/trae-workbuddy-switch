@@ -175,7 +175,7 @@ pub const TRAE_EXCHANGE_TOKEN_LEGACY_PATH: &str =
 /// 这里不再写第二份字面量）。参考实现把它标为「真实 Trae **IDE** 登录 URL 实证值」，
 /// 并记着「旧值 `en1oxy7wnw8j9n` 会让授权页停在 billing status 后不回跳」——
 /// 那条观察是在 **IDE** 语境下的，**不能**推广成「SOLO 线也不能用 SOLO 的值」。
-/// 出处：`reference/TraeWorkAssistant-main/src-tauri/src/commands/oauth.rs:20-23`。
+/// 出处：上游项目 `TraeWorkAssistant` 的 `src-tauri/src/commands/oauth.rs:20-23`（不在本仓库）。
 pub const TRAE_OAUTH_CLIENT_ID: &str = variant::OAuthLine::Trae.default_client_id();
 
 /// 授权页 `plugin_version` 参数（抓包固化 2026-09-16）。
@@ -234,7 +234,7 @@ mod tests {
     /// 且注明出处行号，防止后人「按语义顺手改写」。
     ///
     /// 出处：抓包固化 2026-09-16，
-    /// `reference/TraeWorkAssistant-main/src-tauri/src/commands/oauth.rs:22,28-30`。
+    /// 上游项目 `TraeWorkAssistant` 的 `src-tauri/src/commands/oauth.rs:22,28-30`（不在本仓库）。
     #[test]
     fn oauth_constants_match_captured_snapshot() {
         // client_id：旧值 en1oxy7wnw8j9n 会让授权页停在 billing status 后不回跳。

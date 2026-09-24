@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewWindowBuilder, Window, WindowEvent,
 };
@@ -33,11 +33,31 @@ pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
     let menu = build_tray_menu(app)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(menu_bar_icon())
-        .icon_as_template(true)
+        .icon(tray_icon())
+        // template image 是 macOS 菜单栏独有的语义（系统只取 alpha 通道着色）；
+        // 在 Windows / Linux 上它是 no-op，RGB 会原样生效——所以彩色素材（见
+        // `color_icon`）必须在这个开关为 false 的平台上使用，反之亦然。
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip(DEFAULT_TOOLTIP)
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        // macOS 惯例是左键展开菜单；Windows / Linux 惯例是左键=主操作（唤出主窗口），
+        // 菜单交给右键。两个开关必须与下面的 `on_tray_icon_event` 保持一致。
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
+        .on_tray_icon_event(|tray, event| {
+            // macOS 左键必须继续展开菜单——这是 template 图标的既定行为，
+            // 也是上游专门修过的回归点，所以这里先按平台短路。
+            if cfg!(target_os = "macos") {
+                return;
+            }
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open-main-window" => show_main_window(app),
             "open-github" => open_github(app),
@@ -438,12 +458,39 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<Menu<R>>
         .build()
 }
 
+/// 当前平台要用的托盘图标。
+///
+/// macOS 菜单栏是 template image：系统只取 alpha、颜色由菜单栏前景色着色
+/// ⇒ 用 36x36 纯白剪影（RGB 被忽略，深浅色模式都自适应）。
+/// Windows / Linux 没有 template 语义，RGB 原样生效 ⇒ 用 32x32 彩色素材，
+/// 否则浅色任务栏下白色剪影几乎不可见。
+///
+/// 这里刻意用运行时 `cfg!` 而不是 `#[cfg]`：两个素材函数必须在**所有**平台都能
+/// 编译，否则单测没法在 macOS 上验证彩色变体（反向同理）。
+fn tray_icon() -> tauri::image::Image<'static> {
+    if cfg!(target_os = "macos") {
+        menu_bar_icon()
+    } else {
+        color_icon()
+    }
+}
+
+/// macOS 菜单栏 template image：36x36 纯白剪影，颜色交给系统。
 fn menu_bar_icon() -> tauri::image::Image<'static> {
     const ICON: &[u8; 36 * 36 * 4] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/icons/tray-icon-template.rgba"
     ));
     tauri::image::Image::new(ICON, 36, 36)
+}
+
+/// Windows / Linux 通知区图标：32x32，RGB 取自源图真实颜色、alpha 为同一掩码。
+fn color_icon() -> tauri::image::Image<'static> {
+    const COLOR_ICON: &[u8; 32 * 32 * 4] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/icons/tray-icon-color.rgba"
+    ));
+    tauri::image::Image::new(COLOR_ICON, 32, 32)
 }
 
 fn format_checkin_tooltip(value: &Value) -> String {
@@ -475,7 +522,10 @@ fn format_checkin_tooltip(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_checkin_tooltip, is_silent_startup, menu_bar_icon, should_keep_tray_alive};
+    use super::{
+        color_icon, format_checkin_tooltip, is_silent_startup, menu_bar_icon,
+        should_keep_tray_alive,
+    };
     use serde_json::json;
 
     #[test]
@@ -493,6 +543,31 @@ mod tests {
             .rgba()
             .chunks_exact(4)
             .any(|pixel| (1..=254).contains(&pixel[3])));
+        // macOS 只取 alpha，RGB 必须保持纯白；这条也顺手挡住「把彩色素材接到
+        // template 上」的误改。
+        assert!(icon
+            .rgba()
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 0)
+            .all(|pixel| pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255));
+    }
+
+    /// 本次缺陷的护栏：Windows / Linux 没有 template 语义、RGB 原样生效，
+    /// 退回「全白剪影」实现会让最后一条断言变红。
+    #[test]
+    fn color_icon_is_32px_with_source_colors() {
+        let icon = color_icon();
+        assert_eq!((icon.width(), icon.height()), (32, 32));
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| {
+            if pixel[3] == 0 {
+                return false;
+            }
+            let rgb = &pixel[..3];
+            let max = rgb.iter().max().copied().unwrap_or(0);
+            let min = rgb.iter().min().copied().unwrap_or(0);
+            max - min > 12
+        }));
     }
 
     #[test]

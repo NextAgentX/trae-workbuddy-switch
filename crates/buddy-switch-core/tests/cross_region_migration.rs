@@ -159,7 +159,11 @@ fn cross_region_session_copy_writes_only_into_target_region() {
     // ---- 目标：Global（空会话库 + 边车映射库）----
     let global_db = h.join(".workbuddy-ai").join("workbuddy.db");
     drop(create_sessions_db(&global_db));
-    let edge_db = h.join(".workbuddy-ai").join("edge-sync-mapping-v2.db");
+    // 档位号用**当前客户端**的 v4（真机 2026-09-24 实测：v2/v3 已迁走、只剩 v4）。
+    // ★ 这条断言是可证伪的：若 `edge_sync_db_path_for` 退回写死 v2，映射会被写进
+    //   一个新建的空 v2 库、`insert_edge_sync_mapping` 返回 false，下面那条
+    //   「mapping row」查询在 v4 里查不到行 ⇒ 本用例红。
+    let edge_db = h.join(".workbuddy-ai").join("edge-sync-mapping-v4.db");
     fs::create_dir_all(edge_db.parent().expect("edge parent")).expect("create edge dir");
     let edge = Connection::open(&edge_db).expect("open edge db");
     edge.execute_batch(

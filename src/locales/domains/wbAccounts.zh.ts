@@ -67,7 +67,11 @@ export const zh = {
   "wbAccounts.common.notInstalled": "未安装",
 
   // ---- 空态（未安装/未登录） ----
+  // ⚠️ 标题**必须**按 `installed` 分叉：客户端已安装但没登录态时说「未检测到」，
+  // 会让用户以为「应用认为我没装」（2026-09-24 用户报障），且与页签上的
+  // 「已登录/未登录」自相矛盾。
   "wbAccounts.empty.notDetected": "未检测到 WorkBuddy {version}",
+  "wbAccounts.empty.notLoggedInTitle": "WorkBuddy {version} 尚未登录",
   "wbAccounts.empty.possibleReasons": "可能原因：",
   "wbAccounts.empty.reasonNotInstalled": "未安装 {version} WorkBuddy 桌面客户端",
   "wbAccounts.empty.reasonNoLogin": "已安装但从未登录过（未生成认证文件）",
@@ -77,6 +81,13 @@ export const zh = {
   "wbAccounts.empty.copyPathToast": "路径已复制",
   "wbAccounts.empty.recheck": "重新检测",
   "wbAccounts.empty.importLocal": "从本机导入",
+
+  // ---- 当前登录账号（尚未保存进账号库） ----
+  // 账号库为空 ≠ 没有登录态：客户端可能已登录、只是用户还没点过「从本机导入」。
+  // 这时必须把「当前登录的是谁」显示出来，而不是给一张「未检测到」空态卡片。
+  "wbAccounts.currentLogin.title": "当前登录：{name}",
+  "wbAccounts.currentLogin.unsaved": "该账号尚未保存到账号库，因此不出现在下方列表中。保存后即可在列表里管理（切换 / 签到 / 积分）。",
+  "wbAccounts.currentLogin.save": "保存到账号库",
 
   // ---- 账号卡片 ----
   "wbAccounts.card.forever": "长期有效",
@@ -123,6 +134,7 @@ export const zh = {
   "wbAccounts.card.loadingCredits": "积分查询中…",
   "wbAccounts.card.waitingCredits": "等待积分数据…",
   "wbAccounts.card.creditFailed": "积分查询失败",
+  "wbAccounts.card.addPlaintextAccount": "用 OAuth 扫码添加",
   "wbAccounts.card.creditPacks": "{n} 个积分包",
   "wbAccounts.card.expireSoon": "{amount} 积分将在 7 天内到期",
   "wbAccounts.card.nextExpiry": "最近到期 {date}",

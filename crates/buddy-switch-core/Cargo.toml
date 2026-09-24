@@ -1,6 +1,6 @@
 [package]
 name = "buddy-switch-core"
-version = "2026.9.241700"
+version = "2026.9.241955"
 edition = "2021"
 description = "buddy-switch 核心逻辑（账号/切换/会话/签到/更新），不依赖 Tauri，可被桌面端与 HTTP server 复用"
 

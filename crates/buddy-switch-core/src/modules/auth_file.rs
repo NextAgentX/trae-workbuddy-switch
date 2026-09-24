@@ -11,7 +11,7 @@
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
-use crate::modules::account::get_str;
+use crate::modules::account::{get_str, is_envelope, secret_value};
 use crate::modules::config::{atomic_write, backup_dir, now_ms, utc_iso};
 use crate::modules::region::{region_of, region_spec, Region};
 
@@ -242,13 +242,15 @@ pub fn build_auth_obj(acc: &Value) -> Value {
     let expires_at = acc.get("expiresAt").and_then(|v| v.as_i64());
     let now = now_ms();
 
+    // token 可能是明文字符串，也可能是 WorkBuddy 5.6 的加密信封：信封必须**原样写回**，
+    // 由客户端用同一 keyblob 自行解密。降级成空串会静默毁掉客户端登录态。
     obj.insert(
         "accessToken".to_string(),
-        get_str(acc, "access_token").unwrap_or_default().into(),
+        secret_value(acc, "access_token").unwrap_or_else(|| json!("")),
     );
     obj.insert(
         "refreshToken".to_string(),
-        get_str(acc, "refresh_token").unwrap_or_default().into(),
+        secret_value(acc, "refresh_token").unwrap_or_else(|| json!("")),
     );
     obj.insert("tokenType".to_string(), token_type.into());
     obj.insert(
@@ -368,12 +370,17 @@ pub fn write_account_to_auth_file_for(region: Region, acc: &Value) -> Result<(),
     let written: Value =
         serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    // ★ 按**值**比较，不能 `as_str()`。
+    //
+    // token 可能是明文，也可能是 WorkBuddy 5.6 的加密信封对象。用 `as_str()` 时信封
+    // 被折成 `""`，而期望值那边 `get_str` 也只认字符串 ⇒ 同样折成 `""` ⇒ 两侧都空
+    // ⇒ 校验**恒真**，等于给「token 已经被写坏」盖章放行（假阳性比没有校验更坏）。
     let written_token = written
         .get("auth")
         .and_then(|a| a.get("accessToken"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let expect_token = get_str(acc, "access_token").unwrap_or_default();
+        .cloned()
+        .unwrap_or(Value::Null);
+    let expect_token = acc.get("access_token").cloned().unwrap_or(Value::Null);
     if written_token != expect_token {
         return Err("认证文件写后校验失败，未写入目标账号".to_string());
     }
@@ -392,8 +399,47 @@ pub fn import_from_auth_file() -> Option<Value> {
 }
 
 /// 按 region 从当前登录态导入账号。
+///
+/// ★ **导入是解锁信封凭据的唯一收口**（`account::import_local_for` 与网关的
+/// `account_strategy` 都走这里）：客户端 5.6 把 `accessToken` / `refreshToken` /
+/// `nickname` 存成 at-rest 信封，不解开的话签到 / 积分 / Token 统计全都用不了。
+///
+/// 解锁**尽力而为**：本机没装客户端、客户端换了加密实现、取钥超时……都只打日志并
+/// **保留信封**（退回改动前的行为），绝不让「导入」这个动作整体失败 —— 信封账号
+/// 至少还能用于切换。
 pub fn import_from_auth_file_for(region: Region) -> Option<Value> {
-    imported_account_from_root(read_auth_file_for(region)?)
+    let account = imported_account_from_root(read_auth_file_for(region)?)?;
+    if !crate::modules::at_rest::is_unlockable(&account) {
+        return Some(account);
+    }
+    match crate::modules::at_rest::unlock_account_for(region, &account) {
+        Ok(Some(unlocked)) => Some(unlocked),
+        // `None` = 读认证文件与解锁之间字段变了（并发切换），用原值即可。
+        Ok(None) => Some(account),
+        Err(error) => {
+            eprintln!(
+                "[at-rest] 信封凭据未解锁（{}）：{error}；保留信封，账号仍可用于切换",
+                error.code()
+            );
+            Some(account)
+        }
+    }
+}
+
+/// 字段取值：**明文优先**（`get_str`：trim + 空串视为缺失，保持历史回落链），
+/// 明文取不到时接受 WorkBuddy 5.6 的**加密信封**并原样返回。
+///
+/// 为什么不直接用 `account::secret_value` 替掉 `get_str`：`secret_value` 不 trim、
+/// 也不把空串当缺失 ⇒ 会让「`nickname: ""` 且 `name: "X"`」这类历史数据**停在空昵称上**，
+/// 把一条本来会继续往下回落的链子截断。这里保持「明文行为逐字不变、只新增信封这一档」。
+fn plain_text_or_envelope(v: &Value, key: &str) -> Option<Value> {
+    if let Some(text) = get_str(v, key) {
+        return Some(Value::String(text));
+    }
+    if is_envelope(v, key) {
+        return v.get(key).cloned();
+    }
+    None
 }
 
 fn imported_account_from_root(root: Value) -> Option<Value> {
@@ -410,21 +456,25 @@ fn imported_account_from_root(root: Value) -> Option<Value> {
 
     let uid = get_str(&root, "uid").or_else(|| get_str(&account_obj, "uid"));
     let uid = uid.or_else(|| get_str(&account_obj, "id"));
-    let nickname = get_str(&root, "nickname")
-        .or_else(|| get_str(&root, "name"))
-        .or_else(|| get_str(&account_obj, "nickname"))
-        .or_else(|| get_str(&account_obj, "label"));
+    // WorkBuddy 5.6 起 `nickname` / `accessToken` / `refreshToken` 可能是
+    // `{"$wbEncrypted":1,"envelope":"…"}` 加密信封：这里必须**原样保留**，不能强转字符串 ——
+    // 否则 `accessToken` 取不到 ⇒ `access_token.is_none()` ⇒ 导入**恒失败**；
+    // 即便绕过这一步，切换写回时也会把信封覆盖成空串（毁掉客户端登录态）。
+    let nickname = plain_text_or_envelope(&root, "nickname")
+        .or_else(|| plain_text_or_envelope(&root, "name"))
+        .or_else(|| plain_text_or_envelope(&account_obj, "nickname"))
+        .or_else(|| plain_text_or_envelope(&account_obj, "label"));
     let email = get_str(&root, "email")
         .or_else(|| get_str(&account_obj, "email"))
         .or_else(|| get_str(&auth_obj, "email"));
-    let access_token = get_str(&auth_obj, "accessToken")
-        .or_else(|| get_str(&auth_obj, "access_token"))
-        .or_else(|| get_str(&root, "accessToken"))
-        .or_else(|| get_str(&root, "access_token"));
-    let refresh_token = get_str(&auth_obj, "refreshToken")
-        .or_else(|| get_str(&auth_obj, "refresh_token"))
-        .or_else(|| get_str(&root, "refreshToken"))
-        .or_else(|| get_str(&root, "refresh_token"));
+    let access_token = plain_text_or_envelope(&auth_obj, "accessToken")
+        .or_else(|| plain_text_or_envelope(&auth_obj, "access_token"))
+        .or_else(|| plain_text_or_envelope(&root, "accessToken"))
+        .or_else(|| plain_text_or_envelope(&root, "access_token"));
+    let refresh_token = plain_text_or_envelope(&auth_obj, "refreshToken")
+        .or_else(|| plain_text_or_envelope(&auth_obj, "refresh_token"))
+        .or_else(|| plain_text_or_envelope(&root, "refreshToken"))
+        .or_else(|| plain_text_or_envelope(&root, "refresh_token"));
     let token_type = get_str(&auth_obj, "tokenType")
         .or_else(|| get_str(&auth_obj, "token_type"))
         .unwrap_or_else(|| "Bearer".to_string());
@@ -573,5 +623,179 @@ mod tests {
         assert_eq!(account["uid"], "u-1");
         assert_eq!(account["nickname"], "同名用户");
         assert!(account["email"].is_null());
+    }
+
+    // ── 加密信封（WorkBuddy 5.6）：导入与写回都必须**原样保留**凭据 ──────────
+
+    /// ★ 信封 token 必须能被导入，否则「导入本机账号」在 5.6+ **恒失败**。
+    ///
+    /// 可证伪：把 `plain_text_or_envelope` 换回 `get_str`，本用例即红
+    /// —— `access_token` 取不到 ⇒ `access_token.is_none()` ⇒ 函数返回 `None`。
+    #[test]
+    fn import_preserves_encrypted_envelope_credentials() {
+        let envelope = json!({"$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MSw="});
+        let account = imported_account_from_root(json!({
+            "account": {"uid": "u-1", "nickname": envelope.clone()},
+            "auth": {
+                "accessToken": envelope.clone(),
+                "refreshToken": envelope.clone(),
+                "tokenType": "Bearer",
+                "domain": "www.codebuddy.cn",
+            },
+        }))
+        .expect("信封凭据也必须能导入（否则 5.6+ 用户永远导不进账号）");
+
+        assert_eq!(account["uid"], "u-1");
+        // 凭据原样保留：我方解不开没关系，客户端用同一 keyblob 自己会解；丢掉才是错的。
+        assert_eq!(account["access_token"], envelope);
+        assert_eq!(account["refresh_token"], envelope);
+        // 展示名同样原样保留（切换写回时由客户端解密，覆盖成空串等于把名字丢了）。
+        assert_eq!(account["nickname"], envelope);
+    }
+
+    /// 对照：明文路径的历史回落链**逐字不变**。
+    ///
+    /// `root.nickname` 是空串时必须继续往下落到 `account.nickname`。
+    /// 若把 `get_str` 整体换成不 trim、也不把空串当缺失的 `account::secret_value`，
+    /// 这里会**停在一个空昵称上**（本次刻意不照抄参考实现的原因），故用本用例钉住。
+    #[test]
+    fn import_keeps_plaintext_fallback_chain_for_blank_nickname() {
+        let account = imported_account_from_root(json!({
+            "account": {"uid": "u-1", "nickname": "  小明  "},
+            "auth": {"accessToken": "plain-token", "domain": "www.codebuddy.cn"},
+            "nickname": "",
+        }))
+        .expect("plaintext payload should import");
+
+        // 空串视为缺失 ⇒ 落到 `account.nickname`；明文仍走 trim。
+        assert_eq!(account["nickname"], "小明");
+        assert_eq!(account["access_token"], "plain-token");
+    }
+
+    /// ★ 切换写回：信封 token 必须**原样写回**，绝不能被抹成空串。
+    ///
+    /// 可证伪：把 `build_auth_obj` 换回 `get_str(..).unwrap_or_default()`，
+    /// 前两条断言即红（写回的是 `""`，等于静默毁掉客户端登录态）。
+    #[test]
+    fn build_auth_obj_preserves_envelope_token_instead_of_blanking_it() {
+        let envelope = json!({"$wbEncrypted": 1, "envelope": "blob"});
+        let auth = build_auth_obj(&json!({
+            "uid": "u-1",
+            "access_token": envelope.clone(),
+            "refresh_token": envelope.clone(),
+            "token_type": "Bearer",
+        }));
+        assert_eq!(auth["accessToken"], envelope);
+        assert_eq!(auth["refreshToken"], envelope);
+
+        // 阳性对照：明文仍按明文写。
+        let auth = build_auth_obj(&json!({"access_token": "AT", "refresh_token": "RT"}));
+        assert_eq!(auth["accessToken"], "AT");
+        assert_eq!(auth["refreshToken"], "RT");
+
+        // 两者都没有 ⇒ 空串（历史行为；客户端会自行 refresh 重新加密）。
+        let auth = build_auth_obj(&json!({"uid": "u-1"}));
+        assert_eq!(auth["accessToken"], "");
+    }
+
+    /// ★ 端到端：把信封账号切进认证文件后，读回来**仍是信封**（不是空串）。
+    ///
+    /// 同时钉住「写后校验」那一处的**同源**问题：用 `as_str()` 比较时，写入侧与
+    /// 期望侧的信封都会被折成 `""` ⇒ 两侧都空 ⇒ 校验**恒真** ⇒ 给「token 已被写坏」
+    /// 盖章放行。这里直接断言文件里的值与账号里的值是**同一个 JSON 值**。
+    #[test]
+    fn write_back_keeps_envelope_token_in_auth_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-envelope-writeback-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
+
+        let envelope = json!({"$wbEncrypted": 1, "envelope": "blob"});
+        let acc = json!({
+            "id": "a-1",
+            "uid": "u-1",
+            "nickname": "小明",
+            "domain": "www.codebuddy.cn",
+            "access_token": envelope.clone(),
+            "refresh_token": envelope.clone(),
+        });
+
+        write_account_to_auth_file_for(Region::Cn, &acc).expect("信封 token 也必须能写入");
+        let written = read_auth_file_for(Region::Cn).expect("写回后必须能读回");
+        assert_eq!(written["auth"]["accessToken"], envelope);
+        assert_eq!(written["auth"]["refreshToken"], envelope);
+        assert_eq!(written["auth"]["accessToken"], acc["access_token"]);
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 真机用例（**默认忽略**，需本机装有客户端且当前登录态是信封）：
+    /// 「从本机导入」必须**直接产出明文凭据**，而不是把信封原样存进账号库。
+    ///
+    /// ```bash
+    /// cargo test -p buddy-switch-core --lib -- --ignored import_unlocks_envelope_credentials
+    /// ```
+    ///
+    /// 这是用户看得见的那条链路的收口：导入之后签到 / 积分 / Token 统计应当立刻可用。
+    /// 可证伪：把 `import_from_auth_file_for` 里的解锁那几行去掉 ⇒ `access_token`
+    /// 变回对象，`as_str()` 为 `None`，第一条断言直接红。
+    #[test]
+    #[ignore = "需本机安装 WorkBuddy 客户端"]
+    fn import_unlocks_envelope_credentials() {
+        // ⚠️ 认证文件路径也是 `home_dir()` 派生的（见 `auth_candidates_for`）⇒
+        // 隔离 home 之后就读不到真实文件了。所以先取真实内容，再把它**按生产路径**
+        // 落到临时 home 里 —— 既确定，又不依赖用户当前登录态，也不写用户的文件。
+        let raw_text = auth_candidates_for(Region::Cn)
+            .into_iter()
+            .find_map(|p| std::fs::read_to_string(p).ok())
+            .expect("应能读到本机认证文件");
+        let raw: Value = serde_json::from_str(&raw_text).expect("认证文件应是 JSON");
+        if !crate::modules::account::is_envelope(&raw["auth"], "accessToken") {
+            panic!("本机当前登录态不是信封，无法验证这条链路");
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-import-unlock-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
+
+        let seeded = auth_candidates_for(Region::Cn)
+            .into_iter()
+            .next()
+            .expect("至少有一个候选路径");
+        std::fs::create_dir_all(seeded.parent().expect("parent")).expect("create auth dir");
+        std::fs::write(&seeded, &raw_text).expect("seed auth file");
+        // 临时 home 里没有 exe 缓存 ⇒ 显式种进去（走注册表/盘符扫描是另一条链路）。
+        let exe = crate::modules::at_rest::client_executable_for(Region::Cn);
+        crate::modules::config::save_workbuddy_exe_cache_for(Region::Cn, &exe).expect("cache exe");
+
+        // ★ 走**用户点的那条入口**（`import_local_for` = 导入 + 落盘），
+        // 而不是只测中间函数：这样连「存进账号库的那份也是明文」一起钉住。
+        crate::modules::account::import_local_for(Region::Cn).expect("导入应成功");
+
+        let saved = crate::modules::account::load_accounts_for(Region::Cn);
+        let saved = saved.first().expect("导入后账号库应有一条");
+        let token = saved["access_token"]
+            .as_str()
+            .expect("导入后 access_token 应是明文字符串，而不是信封对象");
+        assert!(token.starts_with("eyJ"), "应是 JWT：{}", &token[..token.len().min(16)]);
+        assert!(
+            saved["refresh_token"].as_str().is_some_and(|v| v.starts_with("eyJ")),
+            "refresh_token 也应解锁：{}",
+            saved["refresh_token"]
+        );
+        assert!(
+            saved["nickname"].as_str().is_some_and(|n| !n.is_empty()),
+            "nickname 也应解锁：{}",
+            saved["nickname"]
+        );
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

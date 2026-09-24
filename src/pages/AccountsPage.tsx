@@ -379,17 +379,36 @@ function RegionPanel({ region }: { region: Region }) {
     };
   }, [accounts.length]);
 
-  /** 首次进入该版本且无账号时自动导入本机账号（本会话每版本只尝试一次，无本机账号时静默） */
-  const autoImportTried = useRef(false);
+  /**
+   * 自动导入「已登录、但还不在账号库里」的本机账号。
+   *
+   * ⚠️ 旧实现是一个「每版本只尝试一次」的布尔闸（`autoImportTried`），且要求
+   * `accounts.length === 0`。于是**登录发生在页面加载之后**时必然错过：
+   * 用户在客户端登录（或重新登录）后回到本页，闸门已经合上 ⇒ 不再导入 ⇒
+   * 账号列表一直空着，只剩一张「当前登录」提示卡（2026-09-24 用户报障：
+   * 「下面怎么是空的了」）。
+   *
+   * 改为**按 uid 记账**：只要「当前登录的 uid」还没为它试过一次，就试一次；
+   * 也不再因 `accounts.length > 0` 提前返回 —— 库非空时当前账号仍可能不在库里。
+   * 导入成功后 `accounts` 里就有该 uid，`accounts.some(...)` 自然成立，不会重复调用；
+   * 导入失败则 uid 已入账，同样不会变成重试循环。
+   */
+  const autoImportTriedUids = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (autoImportTried.current || loading || accounts.length > 0) return;
-    autoImportTried.current = true;
+    if (loading) return;
+    const current = status?.current;
+    if (!current) return;
+    const uid = current.uid;
+    if (!uid) return;
+    if (accounts.some((a) => isWorkbuddyCurrent(a, current))) return;
+    if (autoImportTriedUids.current.has(uid)) return;
+    autoImportTriedUids.current.add(uid);
     void importLocalStore(region)
       .then(() => void reconcileAccounts(region))
       .catch(() => {
-        /* 本机无 WorkBuddy 登录态时静默，不打扰用户 */
+        /* 本机无可用登录态时静默，不打扰用户 */
       });
-  }, [accounts.length, loading, importLocalStore, reconcileAccounts, region]);
+  }, [accounts, status, loading, importLocalStore, reconcileAccounts, region]);
 
   // 切到该版本时立刻重查一次状态：`status.current` 决定卡片上的「当前账号」标记，
   // 若沿用上一次的快照，切换账号（尤其是国际版）后标记会停在旧账号上。
@@ -397,8 +416,15 @@ function RegionPanel({ region }: { region: Region }) {
     void refreshRegionStatus(region);
   }, [refreshRegionStatus, region]);
 
-  // 账号列表变化后并行查询各账号今日签到状态
+  // 账号列表变化后并行查询各账号今日签到状态。
+  //
+  // 这是一次「被动请求」：用户没点任何东西，是我们自己发起的批量查询，所以必须受自动签到开关约束 ——
+  // 开关关掉后还继续查，只会白白消耗上游额度、制造噪声。
+  // `autoCheckinConfig` 为 `null` 表示配置还没读回来，此时同样不发：拿一个「尚未读到」的状态当默认值，
+  // 会在开关实际为关的机器上先误发一轮，等配置回来才停 —— 已经产生的请求收不回来，违背开关本意。
+  // 依赖里带上 `enabled`，开关切换后 effect 才会重跑：开→关立即停，关→开立即补一次。
   useEffect(() => {
+    if (!autoCheckinConfig?.enabled) return;
     if (!accounts.length) return;
     let cancelled = false;
     void fetchTodayCheckinMap(
@@ -413,7 +439,7 @@ function RegionPanel({ region }: { region: Region }) {
     return () => {
       cancelled = true;
     };
-  }, [accounts, region]);
+  }, [accounts, region, autoCheckinConfig?.enabled]);
 
   async function loadTravelMap(accountIds: string[], isStale?: () => boolean) {
     const next = await fetchTravelMap(accountIds, region, isStale);
@@ -423,7 +449,13 @@ function RegionPanel({ region }: { region: Region }) {
   }
 
   // 账号列表变化后并行查询旅行状态；后台领取后每 60 秒再拉一次，避免卡片停在「旅行中」。
+  //
+  // 同样是「被动请求」，必须受自动旅行开关约束：关掉后不仅首查不发，连这个 60 秒轮询定时器都不该建立，
+  // 否则会以每分钟一次的频率持续空打上游 —— 定时器的代价比单次请求更高，更要拦在建立之前。
+  // `autoTravelConfig` 为 `null`（配置尚未读回）时同样不发，理由同上：不能把「未知」当作默认开启先打一轮。
+  // 依赖里带上 `enabled`，开关切换后 effect 才会重跑：关掉时清理函数会顺手 clearInterval，开关打开时重新建表。
   useEffect(() => {
+    if (!autoTravelConfig?.enabled) return;
     if (!accounts.length) return;
     let cancelled = false;
     const ids = accounts.map((account) => account.id);
@@ -436,7 +468,7 @@ function RegionPanel({ region }: { region: Region }) {
       window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accounts, region]);
+  }, [accounts, region, autoTravelConfig?.enabled]);
 
   // 只给尚未缓存的账号拉积分；切回首页不重复请求。点「刷新积分」才强制更新。
   useEffect(() => {
@@ -561,7 +593,15 @@ function RegionPanel({ region }: { region: Region }) {
       const res = await api.refreshAccountToken(a.id, region);
       const label = a.nickname || a.email || a.id;
       if (res.needsRelogin) {
-        toast.error(t("wbAccounts.toast.tokenRefreshFail"), { description: `${label}${t("shared.punct.colon")}${t("wbAccounts.toast.needRelogin")}${res.needsReloginReason ? `${t("shared.punct.openParen")}${res.needsReloginReason}${t("shared.punct.closeParen")}` : ""}` });
+        // `needsReloginReason` 是后端给出的**自足**原因（自带「需重新登录…」这一步），
+        // 旧实现把它塞进「需重新登录（…）」的括号里 ⇒ 同一句话在一条 toast 里出现两遍
+        //（2026-09-24 用户截图：「Andev：需重新登录（缺少 refresh token，无法刷新，需重新登录）」）。
+        // 有原因就**只用原因**；只有原因缺失时才退回本地化的「需重新登录」。
+        toast.error(t("wbAccounts.toast.tokenRefreshFail"), {
+          description: res.needsReloginReason
+            ? `${label}${t("shared.punct.colon")}${res.needsReloginReason}`
+            : `${label}${t("shared.punct.colon")}${t("wbAccounts.toast.needRelogin")}`,
+        });
       } else {
         toast.success(t("wbAccounts.toast.tokenRefreshed"), { description: label });
       }
@@ -758,7 +798,15 @@ function RegionPanel({ region }: { region: Region }) {
   const codebuddyUsesSettingsEnv = codebuddyCli?.authMode === "settings-env";
 
   const presence = regionPresence(status, accounts);
-  const showEmpty = accounts.length === 0;
+  /**
+   * 账号库为空 **且** 当前没有任何登录态，才显示「未检测到 / 未登录」空态。
+   *
+   * ⚠️ 只看 `accounts.length` 会漏掉「客户端已登录、但账号还没保存进账号库」的用户
+   * （从未点过「从本机导入」，或账号库刚丢）—— 那时页签写着「已登录: …」，
+   * 下面却是一张「未检测到 WorkBuddy …」的卡片，同一屏自相矛盾
+   * （2026-09-24 用户报障）。已登录时改走正常面板 + 下方的「当前登录」提示卡片。
+   */
+  const showEmpty = accounts.length === 0 && !current;
   const mismatch = status?.regionMismatch ?? null;
   const expectedAuthFile = status?.authFile || descriptor.authFilename;
 
@@ -936,6 +984,30 @@ function RegionPanel({ region }: { region: Region }) {
               </Alert>
             )}
 
+          {/*
+            「当前登录账号，但还不在账号库里」的提示卡片。
+            账号库为空 ≠ 没有登录态：客户端可能已登录，只是用户还没点过「从本机导入」。
+            这时必须把「当前登录的是谁」明确显示出来，而不是给一张「未检测到」空态卡片。
+          */}
+          {current && !accounts.some((a) => isWorkbuddyCurrent(a, current)) && (
+            <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-4 rounded-2xl border border-border bg-muted/30 px-5 py-4">
+              <div className="min-w-[200px] flex-1">
+                <h2 className="text-sm font-semibold text-foreground">
+                  {t("wbAccounts.currentLogin.title", { name: workbuddyCurrentName })}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {t("wbAccounts.currentLogin.unsaved")}
+                </p>
+              </div>
+              <DemoAction>
+                <Button className="h-9 px-3" variant="outline" onClick={onImport} disabled={importing}>
+                  {importing ? <Loader2 className="animate-spin" /> : <Download />}
+                  {t("wbAccounts.currentLogin.save")}
+                </Button>
+              </DemoAction>
+            </div>
+          )}
+
           <section className="mt-7 min-w-0" aria-labelledby={`accounts-list-title-${region}`}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
@@ -1047,6 +1119,7 @@ function RegionPanel({ region }: { region: Region }) {
                     codebuddyCnIdeBusy={codebuddyCnIdeSwitchingId !== null}
                     codebuddyCnIdeLoading={codebuddyCnIdeSwitchingId === a.id}
                     onSwitchCodebuddyCnIde={onSwitchCodebuddyCnIde}
+                    onAddPlaintextAccount={() => setOauthOpen(true)}
                     featuresDisabled={false}
                   />
                 ))}
@@ -1202,12 +1275,23 @@ function EmptyRegionCard({
       <div className="flex items-start gap-3 px-5 py-5">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-medium">{t("wbAccounts.empty.notDetected", { version: descriptor.versionLabel })}</h2>
+          {/*
+            ⚠️ 标题必须按 `installed` 分叉：客户端已安装、只是没有登录态时说「未检测到」，
+            用户会读成「应用认为我没装」（2026-09-24 报障），而且与页签上那句
+            「未登录」自相矛盾。原因列表同理 —— 已安装时不该再列「未安装客户端」。
+          */}
+          <h2 className="text-sm font-medium">
+            {installed
+              ? t("wbAccounts.empty.notLoggedInTitle", { version: descriptor.versionLabel })
+              : t("wbAccounts.empty.notDetected", { version: descriptor.versionLabel })}
+          </h2>
 
           <div className="mt-3 text-sm text-muted-foreground">
             <p className="font-medium text-foreground/80">{t("wbAccounts.empty.possibleReasons")}</p>
             <ul className="mt-1 list-disc space-y-1 pl-5">
-              <li>{t("wbAccounts.empty.reasonNotInstalled", { version: descriptor.versionLabel })}</li>
+              {!installed && (
+                <li>{t("wbAccounts.empty.reasonNotInstalled", { version: descriptor.versionLabel })}</li>
+              )}
               <li>{t("wbAccounts.empty.reasonNoLogin")}</li>
               {installed && <li>{t("wbAccounts.empty.reasonNoSession")}</li>}
             </ul>

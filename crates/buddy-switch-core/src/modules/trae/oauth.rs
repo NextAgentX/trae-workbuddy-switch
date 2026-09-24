@@ -647,7 +647,7 @@ fn authorize_machine_id(variant: TraeVariant, identity: &DeviceIdentity) -> Stri
 
 /// 构造授权 URL（**22 参数**，逐字对齐抓包固化值；SOLO 线再多一个 `hide_saas_login`）。
 ///
-/// 出处：`reference/TraeWorkAssistant-main/src-tauri/src/commands/oauth.rs:321-355`。
+/// 出处：上游项目 `TraeWorkAssistant` 的 `src-tauri/src/commands/oauth.rs:321-355`（不在本仓库）。
 /// **不要按语义改写参数顺序或取值** —— 授权页按这些参数进入 `native_ide` 原生流程，
 /// 少一个或值不对就会停在 billing status 后不回跳。
 ///
@@ -1897,7 +1897,7 @@ mod tests {
     /// ★ 参数**逐键**对拍（键名与固定值全等），并**按产品线**分别对拍。
     ///
     /// 出处：抓包固化 2026-09-16，
-    /// `reference/TraeWorkAssistant-main/src-tauri/src/commands/oauth.rs:321-355`。
+    /// 上游项目 `TraeWorkAssistant` 的 `src-tauri/src/commands/oauth.rs:321-355`（不在本仓库）。
     ///
     /// ## 为什么必须分成两条线对拍
     ///

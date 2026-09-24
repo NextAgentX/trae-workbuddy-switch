@@ -94,6 +94,7 @@ export const en = {
   "wbStats.credit.loadingResources": "Loading resource packs…",
   "wbStats.credit.noCurrentResource": "No current resource pack collected yet.",
   "wbStats.credit.resourceQueryFail": "Credit resource query failed",
+  "wbStats.credit.fixEncryptedCredential": "Go to Accounts to add a plaintext-credential account",
   "wbStats.credit.noResources": "No resource packs to display.",
   "wbStats.credit.expired": "Expired",
   "wbStats.credit.expiringSoon": "Expires within 7 days",
