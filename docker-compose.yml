@@ -1,0 +1,71 @@
+# =============================================================================
+# Buddy Switch —— Docker Compose 部署（webui 服务 + API 网关）
+# =============================================================================
+#
+# 起服务：
+#   docker compose up -d --build
+#
+# 看日志（首次启动会打印 webui 地址与网关地址）：
+#   docker compose logs -f
+#
+# 停服务（数据保留在卷 buddy-switch-data 里）：
+#   docker compose down
+#
+# 打开界面后要做的第一件事：侧栏「设置」里打开 API 网关，并把它改成允许非回环
+# 监听——详见 docs/DOCKER.md。
+
+services:
+  buddy-switch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: buddy-switch:local
+    container_name: buddy-switch
+    restart: unless-stopped
+
+    ports:
+      # webui 界面。默认只绑宿主回环；要让同网段其他设备访问，把前面改成
+      # "57890:57890"（注意：webui 无鉴权，暴露即等于把账号库交给对方）。
+      - "127.0.0.1:57890:57890"
+      # WorkBuddy API 网关（OpenAI / Anthropic 兼容）。网关自身用 API Key 鉴权，
+      # 可以对外，但仍建议前面保留 127.0.0.1，由反代统一收口。
+      - "127.0.0.1:57891:57891"
+      # Trae API 网关。同上。
+      - "127.0.0.1:7864:7864"
+
+    environment:
+      # 数据目录（账号库 / 配置 / 网关状态 / 日志），与下方卷对应。
+      BUDDY_SWITCH_HOME: /data
+      # 容器内必须监听所有网卡，否则宿主的端口映射连不进来。
+      BUDDY_SWITCH_HOST: 0.0.0.0
+      # webui 端口；改这里时记得同步 ports 段。
+      BUDDY_SWITCH_PORT: "57890"
+      # 签到排程按此时区触发，按需改。
+      TZ: Asia/Shanghai
+
+    volumes:
+      # 唯一需要持久化的东西：整个数据目录。
+      # 账号 token / 网关 API Key 都在这里，备份时直接打包这个卷即可。
+      - buddy-switch-data:/data
+
+    # 网关要向上游（OAuth、积分、模型接口）发起 HTTPS 请求，CA 证书已内置。
+    # 如需走代理，解开下面两行：
+    # environment:
+    #   HTTPS_PROXY: http://host.docker.internal:7890
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:57890/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    # 容器内已是非 root（uid 10001）。如需限制资源可解开：
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.0"
+    #       memory: 512M
+
+volumes:
+  buddy-switch-data:

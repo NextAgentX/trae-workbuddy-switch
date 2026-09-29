@@ -21,6 +21,40 @@ fn default_port() -> u16 {
     57890
 }
 
+/// 监听地址的环境变量名（覆盖默认的 `127.0.0.1`）。
+///
+/// 为什么需要：默认只监听回环地址，界面与网关都只对本机开放。容器化 / 反代部署时
+/// 必须监听 `0.0.0.0` 才能从容器外（或通过宿主端口映射）访问，但**不应**把默认值改成
+/// `0.0.0.0`——那会让所有直接 `npm i -g` 启动的用户在不知情的情况下把 webui 暴露到
+/// 局域网。改为「默认不变、由部署者显式开启」。
+///
+/// 用法：`BUDDY_SWITCH_HOST=0.0.0.0 buddy-switch serve --port 57890 --no-open`
+const BIND_HOST_ENV: &str = "BUDDY_SWITCH_HOST";
+
+/// 解析监听主机：环境变量优先，缺省 / 空白回落 `127.0.0.1`。
+///
+/// 抽成纯函数是为了可测——`serve` 里直接读 env 会让用例之间互相污染（本仓在多处
+/// 已记录过 env 全局状态踩坑，见 main.rs 测试模块末尾的说明）。
+fn resolve_bind_host(env_value: Option<&str>) -> String {
+    match env_value.map(str::trim) {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => "127.0.0.1".to_string(),
+    }
+}
+
+/// 把监听主机转换为可用于浏览器打开的地址。
+///
+/// `0.0.0.0` / `::` 是「监听所有网卡」的通配地址，**不是**可访问的主机地址——
+/// `http://0.0.0.0:57890` 在多数浏览器上不可用。本机打开时统一回落到回环地址；
+/// 其余主机（如显式指定的 `192.168.x.x`）原样保留。
+fn browsable_addr(host: &str, port: u16) -> String {
+    let host = match host.trim() {
+        "0.0.0.0" | "::" | "[::]" | "" => "127.0.0.1",
+        other => other,
+    };
+    format!("{host}:{port}")
+}
+
 /// 为某一类任务起一个独立排程循环。
 ///
 /// 排程语义（重读配置 → 算 `next_fire` → sleep 到点 → 派发）全部在
@@ -237,11 +271,12 @@ async fn serve(args: &[String]) {
     }
 
     let app = api::router();
-    let addr = format!("127.0.0.1:{port}");
+    let host = resolve_bind_host(std::env::var(BIND_HOST_ENV).ok().as_deref());
+    let addr = format!("{host}:{port}");
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("启动失败: 端口 {port} 被占用或不可用（{e}）。可用 --port 指定其他端口。");
+            eprintln!("启动失败: 地址 {addr} 不可用（{e}）。可用 --port 指定其他端口，或用 {BIND_HOST_ENV} 指定监听地址。");
             std::process::exit(1);
         }
     };
@@ -252,7 +287,8 @@ async fn serve(args: &[String]) {
 
     let no_open = args.iter().any(|a| a == "--no-open");
     if !no_open {
-        open_browser(&addr);
+        // 通配监听地址（`0.0.0.0` / `::`）不能直接当 URL 打开，浏览器侧回落到回环。
+        open_browser(&browsable_addr(&host, port));
     }
 
     spawn_background_loops();
@@ -402,5 +438,39 @@ mod tests {
         let empty = snapshot_from_root(&json!({}));
         assert!(empty["uid"].is_null());
         assert!(empty["nickname"].is_null());
+    }
+
+    /// 监听地址解析：环境变量优先，缺省 / 空白 / 纯空格一律回落回环地址。
+    ///
+    /// 回归背景：`serve` 此前把 `127.0.0.1` 写死，容器 / 反代部署无法从外部访问。
+    /// 引入 [`BIND_HOST_ENV`] 后必须守住「**默认值不变**」——否则所有本地直装用户
+    /// 会在不知情的情况下把 webui 暴露到局域网。
+    #[test]
+    fn resolve_bind_host_defaults_to_loopback_and_honors_env() {
+        // 未设置 → 回环（默认行为不得改变）
+        assert_eq!(resolve_bind_host(None), "127.0.0.1");
+        // 空串 / 纯空白 → 回环（视为未设置，避免 `host:` 这种空主机名地址）
+        assert_eq!(resolve_bind_host(Some("")), "127.0.0.1");
+        assert_eq!(resolve_bind_host(Some("   ")), "127.0.0.1");
+        // 显式设置 → 原样采用，并去掉首尾空白
+        assert_eq!(resolve_bind_host(Some("0.0.0.0")), "0.0.0.0");
+        assert_eq!(resolve_bind_host(Some(" 0.0.0.0 ")), "0.0.0.0");
+        assert_eq!(resolve_bind_host(Some("::")), "::");
+        assert_eq!(resolve_bind_host(Some("192.168.1.5")), "192.168.1.5");
+    }
+
+    /// 浏览器打开地址：通配监听地址必须回落到回环，其余主机原样保留。
+    ///
+    /// `http://0.0.0.0:57890` 在多数浏览器不可用；容器里用 `BUDDY_SWITCH_HOST=0.0.0.0`
+    /// 启动、且没加 `--no-open` 时，会走到这条回落逻辑。
+    #[test]
+    fn browsable_addr_falls_back_from_wildcard_hosts() {
+        assert_eq!(browsable_addr("0.0.0.0", 57890), "127.0.0.1:57890");
+        assert_eq!(browsable_addr("::", 57890), "127.0.0.1:57890");
+        assert_eq!(browsable_addr("[::]", 57890), "127.0.0.1:57890");
+        assert_eq!(browsable_addr("", 57890), "127.0.0.1:57890");
+        // 具体主机（含显式回环）保持原样
+        assert_eq!(browsable_addr("127.0.0.1", 57890), "127.0.0.1:57890");
+        assert_eq!(browsable_addr("192.168.1.5", 8080), "192.168.1.5:8080");
     }
 }
