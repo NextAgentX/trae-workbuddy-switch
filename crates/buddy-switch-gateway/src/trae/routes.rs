@@ -43,6 +43,7 @@ use crate::sticky;
 use super::payload;
 use super::pool::{classify_http, classify_solo, PickedTraeAccount, TraeErrKind, TraePool};
 use super::sse::{self, TokenUsage};
+use super::capture;
 use super::{
     now_secs, TraeGatewayState, TRAE_APP_ID, TRAE_IDE_VERSION,
     TRAE_IDE_VERSION_CODE, TRAE_LLM_CHAT_PATH,
@@ -407,6 +408,7 @@ pub async fn messages(
 
 /// 流式路径：先换号直到拿到 2xx，再把响应体交给转换任务。
 #[allow(clippy::too_many_arguments)]
+#[allow(non_snake_case)] // 抓取编号绑定沿用拼音命名规范
 async fn stream_chat(
     state: &TraeGatewayState,
     body: &Bytes,
@@ -443,13 +445,21 @@ async fn stream_chat(
         {
             None => break,
             Some(AttemptResult::Failed { failure, .. }) => last = Some(failure),
-            Some(AttemptResult::Ok { account, response }) => {
+            Some(AttemptResult::Ok { account, response, capture_id }) => {
                 let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(64);
                 let task_state = state.clone();
                 let task_model = model.to_string();
                 let task_chat_id = chat_id.to_string();
+                let task_capture_id = capture_id;
                 tokio::spawn(async move {
-                    let outcome = sse::stream_convert(response, tx, &task_chat_id, &task_model).await;
+                    let outcome = sse::stream_convert(
+                        response,
+                        tx,
+                        &task_chat_id,
+                        &task_model,
+                        &task_capture_id,
+                    )
+                    .await;
                     settle(
                         &task_state,
                         &account,
@@ -489,6 +499,7 @@ async fn stream_chat(
 /// 非流式路径：本地聚合。**流内错误也换号**——聚合完成前客户端一个字节都没收到。
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
+#[allow(non_snake_case)] // 抓取编号绑定沿用拼音命名规范
 async fn aggregate_payload(
     state: &TraeGatewayState,
     body: &Bytes,
@@ -506,7 +517,7 @@ async fn aggregate_payload(
     let mut last: Option<UpstreamFailure> = None;
 
     for _ in 0..max_rotate {
-        let (account, response) = match attempt_once(
+        let (account, response, capture_id) = match attempt_once(
             state,
             body,
             default_model,
@@ -522,10 +533,13 @@ async fn aggregate_payload(
                     last = Some(failure);
                     continue;
                 }
-                Some(AttemptResult::Ok { account, response }) => (account, response),
+                Some(AttemptResult::Ok { account, response, capture_id }) => {
+                    (account, response, capture_id)
+                }
             };
 
-        let (payload, error, usage) = sse::aggregate(response, chat_id, model).await;
+        let (payload, error, usage) =
+            sse::aggregate(response, chat_id, model, &capture_id).await;
 
         match (payload, error) {
             (Some(payload), None) => {
@@ -647,6 +661,9 @@ enum AttemptResult {
     Ok {
         account: PickedTraeAccount,
         response: reqwest::Response,
+        /// 抓取编号：本次尝试落盘文件的文件名前缀（诊断旁路，见 [`super::capture`]）；
+        /// 空串表示抓取开关关闭（落盘函数遇空编号一律跳过）。
+        capture_id: String,
     },
     /// 出站失败：已分类、已写回冷却文件。
     Failed {
@@ -659,7 +676,12 @@ enum AttemptResult {
 /// 选号 + 出站一次。`tried` 在内部累加，调用方反复调用即可自动换号。
 ///
 /// 返回 `None` 表示**已经挑不出新账号**（不是失败，是没得试了）。
+///
+/// 出站前一刻抓取请求对（客户端原文体 + 改写后上游体，诊断旁路）：
+/// 换号重试时每次尝试各生成一个新编号，`AttemptResult::Ok` 把编号带给
+/// 响应消费方，供上游流继续追加落盘。
 #[allow(clippy::too_many_arguments)]
+#[allow(non_snake_case)] // 抓取编号局部变量沿用拼音命名规范
 async fn attempt_once(
     state: &TraeGatewayState,
     body: &Bytes,
@@ -694,13 +716,25 @@ async fn attempt_once(
         &picked.machine_id,
     );
 
-    match send_llm_chat(state, &picked, &converted).await {
+    // 抓取（诊断旁路）：客户端原文体 + 改写后上游体各落一份，编号同时带给响应侧。
+    // 开关由 api_gateway.json 的 capture_enabled 控制（默认关）：关时不生成编号，
+    // 三个落盘函数遇空编号一律静默跳过（空编号即"未启用"的既有哨兵语义）。
+    let capture_id = if state.config_snapshot().await.capture_enabled {
+        let id = capture::new_capture_id();
+        capture::capture_request_pair(&id, body, &converted);
+        id
+    } else {
+        String::new()
+    };
+
+    match send_llm_chat(state, &picked, &converted, &capture_id).await {
         Ok(response) => {
             // 会话粘性：**只在成功之后**绑定，让下一轮优先复用这个账号。
             state.bind_sticky(sticky_key, &picked.uid).await;
             Some(AttemptResult::Ok {
                 account: picked,
                 response,
+                capture_id,
             })
         }
         Err((status, detail)) => {
@@ -748,6 +782,7 @@ async fn send_llm_chat(
     state: &TraeGatewayState,
     account: &PickedTraeAccount,
     body: &[u8],
+    capture_id: &str,
 ) -> Result<reqwest::Response, (u16, String)> {
     let url = format!("{}{TRAE_LLM_CHAT_PATH}", state.upstream);
     let trace_id = trace_id();
@@ -799,6 +834,8 @@ async fn send_llm_chat(
 
     // 错误体可能很长（含堆栈），截断后再回传与落日志。
     let text = response.text().await.unwrap_or_default();
+    // 抓取（诊断旁路）：上游非 2xx 的完整错误响应体。
+    capture::write_capture(capture_id, "_upstream_http_error.txt", text.as_bytes());
     Err((status, preview(&text, 300)))
 }
 
@@ -1410,7 +1447,7 @@ mod tests {
             body["model_name"] = serde_json::json!(model_name);
             let encoded = serde_json::to_vec(&body).expect("序列化");
 
-            match send_llm_chat(&state, &picked, &encoded).await {
+            match send_llm_chat(&state, &picked, &encoded, "").await {
                 Ok(mut response) => {
                     // 累积若干块，直到看见 `event:metadata`（上游认了）或 `event:error`（上游拒了）。
                     // ⚠️ 只看**首块**会把 `event:progress_notice`（排队中）误判成结论 —— 踩过。
@@ -1515,7 +1552,7 @@ mod tests {
             body["model_name"] = serde_json::json!(model_name);
             let encoded = serde_json::to_vec(&body).expect("序列化");
 
-            match send_llm_chat(&state, &picked, &encoded).await {
+            match send_llm_chat(&state, &picked, &encoded, "").await {
                 Ok(mut response) => {
                     let mut buffer = String::new();
                     let mut verdict = "超时".to_string();

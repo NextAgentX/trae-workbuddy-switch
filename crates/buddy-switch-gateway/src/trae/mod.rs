@@ -30,6 +30,7 @@ pub mod payload;
 pub mod pool;
 pub mod routes;
 pub mod sse;
+pub mod capture;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -203,6 +204,13 @@ pub struct TraeGatewayConfig {
     /// 与 WorkBuddy 网关的 `sticky_ttl_ms` 同默认值。
     #[serde(alias = "stickyTtlMs")]
     pub sticky_ttl_ms: i64,
+    /// 对话转发抓取开关（诊断旁路，落盘 `~/.buddy-switch/trae/capture/`）。
+    ///
+    /// 默认 **false**：抓取会把对话正文（含提示词与响应）原样落盘，
+    /// 属敏感内容，只在排查问题时手动打开；开关由 `api_gateway.json` 控制，
+    /// 改后重启网关生效（与 `enabled` 等其他字段同一套加载机制）。
+    #[serde(alias = "captureEnabled")]
+    pub capture_enabled: bool,
 }
 
 impl Default for TraeGatewayConfig {
@@ -219,6 +227,7 @@ impl Default for TraeGatewayConfig {
             max_rotate: DEFAULT_MAX_ROTATE,
             preferred_uid: String::new(),
             sticky_ttl_ms: 30 * 60 * 1000,
+            capture_enabled: false,
         }
     }
 }
@@ -748,6 +757,7 @@ mod tests {
             "max_rotate",
             "preferred_uid",
             "sticky_ttl_ms",
+            "capture_enabled",
         ]
         .into_iter()
         .collect();
