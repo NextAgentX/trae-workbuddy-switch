@@ -244,6 +244,93 @@ fn uuid_like() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// 从 OpenAI 请求体提取"对话稳定标识原文"（移植自本机 Python 转发器
+/// `ZhuanFaFuWuQi.py` 的 `Han_QuHuiHuaBiaoShi`）。
+///
+/// 优先级：
+/// 1. `prompt_cache_key` —— 客户端自带的提示词缓存键，同对话内天然稳定；
+/// 2. `metadata.session_id` —— 部分客户端把自身会话号放在元数据里；
+/// 3. `user` —— 客户端传入的稳定用户标识；
+/// 4. 兜底内容指纹：`system` 提示 + 首条 `user` 消息一起拼串。
+///    OpenAI 协议下多轮对话的历史在 `messages` 头部只增不改，
+///    所以同一对话的多次请求哈希原文完全一致 —— 这就是"对话复用"的根基。
+///
+/// 返回 `None` 表示连指纹都拼不出（无消息/空消息），调用方退回随机 UUID。
+fn conversation_identity_source(object: &serde_json::Map<String, Value>) -> Option<String> {
+    // 1-3：客户端自带标识，加类型前缀防止不同来源的值意外撞车。
+    for (prefix, field) in [
+        ("cache_key:", "prompt_cache_key"),
+        ("metadata:", "metadata"),
+        ("user:", "user"),
+    ] {
+        let raw = object.get(field);
+        let raw = match field {
+            // metadata 是对象，取其 session_id 子字段
+            "metadata" => raw
+                .and_then(|metadata| metadata.get("session_id"))
+                .and_then(Value::as_str),
+            _ => raw.and_then(Value::as_str),
+        };
+        if let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) {
+            return Some(format!("{prefix}{value}"));
+        }
+    }
+
+    // 4：内容指纹 —— 扫描 messages，取首个 system 与首个 user 的文本。
+    let messages = object.get("messages")?.as_array()?;
+    let mut system_text: Option<String> = None;
+    let mut user_text: Option<String> = None;
+    for message in messages {
+        let (Some(role), Some(content)) = (
+            message.get("role").and_then(Value::as_str),
+            message.get("content"),
+        ) else {
+            continue;
+        };
+        // 字符串原样；分段数组等复杂结构整体序列化（同客户端同请求形态稳定）。
+        let text = match content {
+            Value::String(text) => Some(text.clone()),
+            Value::Null => None,
+            other => serde_json::to_string(other).ok(),
+        };
+        match (role, text) {
+            ("system", Some(text)) if system_text.is_none() => system_text = Some(text),
+            ("user", Some(text)) if user_text.is_none() => user_text = Some(text),
+            _ => {}
+        }
+        if system_text.is_some() && user_text.is_some() {
+            break; // 两段都取到，无需继续扫描长对话
+        }
+    }
+    let mut parts = Vec::new();
+    if let Some(text) = system_text {
+        parts.push(format!("system:{text}"));
+    }
+    if let Some(text) = user_text {
+        parts.push(format!("user:{text}"));
+    }
+    (!parts.is_empty()).then(|| parts.join("|"))
+}
+
+/// 由标识原文派生**稳定**的 UUID 形态会话号（移植 Python 转发器的
+/// `Han_ShengChengHuiHuaHao`：SHA256 摘要前 16 字节 → UUID v4 位形）。
+///
+/// `salt` 区分字段用途（conv/sess/proj 各一把盐）：同一对话派生出
+/// 三个互不相同、又各自稳定的 ID。同 Python 实现一样手工置版本/变体位，
+/// 保证上游看到的仍是标准 v4 UUID 形态。
+fn stable_conversation_id(source: &str, salt: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update(b"|");
+    hasher.update(source.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes: [u8; 16] = digest[..16].try_into().expect("摘要必有 16 字节");
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // 版本位 → v4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // 变体位 → RFC 4122
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
 /// 从 OpenAI 请求体读取模型名；缺失或空白时用 `default_model`。
 pub fn model_of(body: &Value, default_model: &str) -> String {
     body.get("model")
@@ -301,12 +388,25 @@ pub fn prepare_llm_chat_body(
     // 上游只支持流式；`stream:false` 由本网关本地聚合。
     object.insert("stream".into(), json!(true));
     object.insert("function".into(), json!(function_for(variant)));
-    object.insert("conversation_id".into(), json!(uuid_like()));
+    // 会话三 ID：按「对话内容 + 账号」稳定派生（对话复用），取不到指纹才随机。
+    // 同一对话的多次请求（含多轮追加历史）派生出相同的 ID，
+    // 上游侧得以做路由亲和与提示词缓存；不同对话互不串号。
+    // `uid` 必须混入哈希：两个账号发起内容相同的对话时，若只按内容派生
+    // 会得到完全相同的 ID —— 跨账号同会话号是典型的风控特征。
+    // 实测上游对任意 UUID 形态的值都接受（随机 v4 也一直通过）。
+    let identity_source = conversation_identity_source(object);
+    let derive_id = |salt: &str| {
+        identity_source
+            .as_deref()
+            .map(|source| stable_conversation_id(&format!("{source}|uid:{uid}"), salt))
+            .unwrap_or_else(uuid_like)
+    };
+    object.insert("conversation_id".into(), json!(derive_id("conv:")));
     object.insert("user_id".into(), json!(uid));
-    object.insert("session_id".into(), json!(uuid_like()));
+    object.insert("session_id".into(), json!(derive_id("sess:")));
     object.insert("device_id".into(), json!(device_id));
     object.insert("machine_id".into(), json!(machine_id));
-    object.insert("project_id".into(), json!(uuid_like()));
+    object.insert("project_id".into(), json!(derive_id("proj:")));
     object.insert("workspace_id".into(), json!("e04cdd"));
     object.insert("prompt_max_tokens".into(), json!(168_000));
     object.insert("mode".into(), json!("FunctionCall"));
@@ -465,6 +565,119 @@ mod tests {
             "mach1",
         );
         serde_json::from_slice(&out).expect("output must stay valid JSON")
+    }
+
+    /// 对话复用护栏：同一对话（system + 首条 user 不变，仅追加历史）
+    /// 的多次请求必须派生出**相同**的三个会话 ID；不同对话互不相同；
+    /// 三个 ID 彼此也不同（盐前缀隔离）。
+    #[test]
+    fn conversation_ids_are_stable_per_conversation() {
+        let first_turn = json!({
+            "model": "glm-5.3-flash",
+            "messages": [
+                {"role": "system", "content": "你是助手"},
+                {"role": "user", "content": "第一轮提问"}
+            ]
+        });
+        // 模拟多轮对话：历史头部不动，末尾追加 assistant 与新 user。
+        let second_turn = {
+            let mut body = first_turn.clone();
+            body["messages"].as_array_mut().unwrap().push(
+                json!({"role": "assistant", "content": "第一轮回答"}),
+            );
+            body["messages"].as_array_mut().unwrap().push(
+                json!({"role": "user", "content": "第二轮提问"}),
+            );
+            body
+        };
+        let first = prepared(first_turn);
+        let second = prepared(second_turn);
+        for field in ["conversation_id", "session_id", "project_id"] {
+            let a = first[field].as_str().unwrap();
+            let b = second[field].as_str().unwrap();
+            assert_eq!(a, b, "{field} 同一对话多轮必须复用同值");
+            assert!(a.len() == 36 && a.chars().filter(|c| *c == '-').count() == 4,
+                    "{field} 必须保持 UUID 形态：{a}");
+        }
+        // 三个 ID 互不相同（不同盐派生）。
+        assert_ne!(first["conversation_id"], first["session_id"]);
+        assert_ne!(first["session_id"], first["project_id"]);
+        // 不同对话（不同首条 user）不得串号。
+        let other = prepared(json!({
+            "messages": [
+                {"role": "system", "content": "你是助手"},
+                {"role": "user", "content": "另一段对话"}
+            ]
+        }));
+        for field in ["conversation_id", "session_id", "project_id"] {
+            assert_ne!(first[field], other[field], "{field} 不同对话必须不同");
+        }
+    }
+
+    /// 客户端自带标识优先于内容指纹：prompt_cache_key 存在时以其为准，
+    /// 即使消息内容完全不同也复用同一套 ID（与 Python 转发器语义一致）。
+    #[test]
+    fn client_cache_key_wins_over_content_fingerprint() {
+        let plain = prepared(json!({
+            "prompt_cache_key": "dialog-42",
+            "messages": [{"role": "user", "content": "甲"}]
+        }));
+        let padded = prepared(json!({
+            "prompt_cache_key": " dialog-42 ",
+            "messages": [{"role": "user", "content": "乙"}]
+        }));
+        for field in ["conversation_id", "session_id", "project_id"] {
+            assert_eq!(plain[field], padded[field],
+                "{field} 相同 cache_key（含空白差异）必须同值");
+        }
+    }
+
+    /// 无任何标识且无消息指纹（空 messages）时退回随机 UUID ——
+    /// 每请求不同，但仍是合法 v4 形态（上游只认 UUID）。
+    #[test]
+    fn empty_messages_fall_back_to_random_uuid() {
+        let first = prepared(json!({"messages": []}));
+        let second = prepared(json!({"messages": []}));
+        for field in ["conversation_id", "session_id", "project_id"] {
+            let value = first[field].as_str().unwrap();
+            assert_ne!(first[field], second[field], "{field} 无指纹时应每请求随机");
+            assert!(value.len() == 36, "{field} 随机兜底也须 UUID 形态：{value}");
+        }
+    }
+
+    /// 跨账号隔离护栏：**相同对话内容 + 不同账号**必须派生出不同 ID。
+    ///
+    /// 反例（改坏会红）：派生只混对话内容不混 `uid` ⇒ 两个账号发同一段
+    /// "你好"会得到完全相同的 session_id —— 跨账号同会话号是典型的
+    /// 风控特征，且号池切换账号时同一 ID 被反复提交。
+    #[test]
+    fn same_conversation_different_uid_must_differ() {
+        let make_body = || {
+            json!({
+                "messages": [
+                    {"role": "system", "content": "你是助手"},
+                    {"role": "user", "content": "你好"}
+                ]
+            })
+        };
+        let bytes = serde_json::to_vec(&make_body()).unwrap();
+        let prepare_for = |uid: &str| {
+            serde_json::from_slice::<Value>(&prepare_llm_chat_body(
+                &bytes,
+                TraeVariant::TraeWork,
+                "deepseek-v4-flash",
+                uid,
+                "dev1",
+                "mach1",
+            ))
+            .unwrap()
+        };
+        let account_a = prepare_for("1958692729393946");
+        let account_b = prepare_for("2958692729393947");
+        for field in ["conversation_id", "session_id", "project_id"] {
+            assert_ne!(account_a[field], account_b[field],
+                "{field} 相同对话不同账号必须不同");
+        }
     }
 
     #[test]

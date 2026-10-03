@@ -279,11 +279,15 @@ pub struct StreamOutcome {
 /// 把上游响应体流式转换为 OpenAI SSE，逐块送入 `sender`。
 ///
 /// **总是**以 `data: [DONE]` 收尾（除非发送端已被对端丢弃），保证客户端不会悬挂。
+///
+/// `capture_id` 为抓取编号（诊断旁路）：非空时上游原始流逐块追加落盘
+/// `<编号>_upstream_resp.ndjson`；空串表示不抓取（单元测试）。
 pub async fn stream_convert(
     response: reqwest::Response,
     sender: mpsc::Sender<Result<Bytes, io::Error>>,
     chat_id: &str,
     model: &str,
+    capture_id: &str,
 ) -> StreamOutcome {
     let mut parser = SoloParser::new();
     let mut outcome = StreamOutcome::default();
@@ -301,6 +305,8 @@ pub async fn stream_convert(
                 break;
             }
         };
+        // 抓取（诊断旁路）：上游原始流逐块追加，先于解析——解析失败也有据可查。
+        super::capture::append_capture(capture_id, "_upstream_resp.ndjson", &chunk);
         for event in parser.feed(&chunk) {
             if emit(&event, sender.clone(), chat_id, model, &mut pending_usage, &mut outcome)
                 .await
@@ -412,10 +418,14 @@ async fn emit(
 /// 非流式聚合：读完整条事件流，拼成单个 `chat.completion`。
 ///
 /// 返回 `(响应体, 上游错误, 用量)`。上游报错时响应体为 `None`。
+///
+/// `capture_id` 为抓取编号（诊断旁路）：非空时上游原始流逐块追加落盘
+/// `<编号>_upstream_resp.ndjson`；空串表示不抓取（单元测试）。
 pub async fn aggregate(
     response: reqwest::Response,
     chat_id: &str,
     model: &str,
+    capture_id: &str,
 ) -> (Option<Value>, Option<(i64, String)>, TokenUsage) {
     let mut parser = SoloParser::new();
     let mut content = String::new();
@@ -468,6 +478,8 @@ pub async fn aggregate(
                 break;
             }
         };
+        // 抓取（诊断旁路）：上游原始流逐块追加，先于解析——解析失败也有据可查。
+        super::capture::append_capture(capture_id, "_upstream_resp.ndjson", &chunk);
         for event in parser.feed(&chunk) {
             consume(
                 event,
