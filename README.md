@@ -322,6 +322,24 @@ flowchart LR
 
 > 架构与决策：[UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · 接入片段：[guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
+## ❓ 常见问题 / Troubleshooting
+
+### 网关返回 `400 {"code":11128,"msg":"request illegal"}`（"请求被拦截 / 非官方客户端"）
+
+**现象**：本机 AI 工具（Cursor / Claude Code / OpenWebUI / DeepSeek Harness 等）经网关（如 `:57891` WorkBuddy）调用**国际版**（`wb-global`，如 lilyco-42 账号）时，请求返回：
+
+```json
+{"code":11128,"msg":"request illegal","displayTips":{"zh":"这次调用没通过渠道校验，可能不是官方客户端发出的..."}}
+```
+
+**根因**：WorkBuddy 服务端对出站请求做**渠道校验**，要求携带会话头三件套 —— `X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID`；缺任一头即判「非官方客户端」（11128）。旧版网关转发时未恒发这三件套，因此被拦截。官方客户端自带完整头，不受影响；此问题**与账号额度、登录态无关**。
+
+**修复**：升级到 **v2026.10.171833 或更新版本**（已含 commit `092c5e3`：chat 出站恒发会话头三件套，修国际版 11128 渠道校验拦截）。升级后重启网关，重发请求即恢复 200。
+
+**验证**：`POST http://127.0.0.1:57891/v1/messages`（Anthropic 兼容）携带 `Authorization: Bearer sk-wb-…`、`model: deepseek-v4.1-flash`，返回 200 与正常文本即为修复完成。
+
+**关联参考**：DeepSeek Harness 集成示例见 [GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)。
+
 ## 自动化
 
 计划任务支持**分钟粒度**时点（如 `09:37`）、多个时点，以及**随机抖动**（±5/15/30 分钟）——让每天的实际触发时刻错开，而不是整点齐发。
